@@ -380,7 +380,7 @@ export async function scanOtter(
       } catch (err: any) {
         stats.skipped++;
         if (options.verbose) {
-          console.log(`\n    ⚠ Failed: ${speech.title} — ${err.message?.slice(0, 100)}`);
+          console.log(`\n    ⚠ Failed: ${speechMeta.title || speechMeta.otid} — ${err.message?.slice(0, 100)}`);
         }
       }
     }));
