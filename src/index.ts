@@ -1706,4 +1706,176 @@ program
     console.log(`  ✓ Set ${key}\n`);
   });
 
+// ============================================================
+// prime team — list your AI employees
+// ============================================================
+program
+  .command('team')
+  .description('List your AI team — agents, schedules, and last activity')
+  .action(async () => {
+    const { listAgents } = await import('./team.js');
+    const agents = listAgents();
+
+    if (agents.length === 0) {
+      console.log('\n  No agents hired yet.');
+      console.log('  Try: recall hire cos');
+      console.log('  Available templates: cos, follow-up, deal-monitor, commitment-tracker\n');
+      return;
+    }
+
+    console.log(`\n⚡ YOUR TEAM (${agents.length} agents)\n`);
+
+    for (const a of agents) {
+      const status = a.enabled ? '🟢' : '⚫';
+      const lastRun = a.last_run
+        ? `${Math.floor((Date.now() - new Date(a.last_run).getTime()) / 3600000)}h ago`
+        : 'never';
+      console.log(`  ${status} ${a.role} (${a.name})`);
+      console.log(`     Schedule: ${a.schedule} | Last run: ${lastRun} | Notify: ${a.notify}+`);
+      if (a.project) console.log(`     Project: ${a.project}`);
+      if (a.last_report) console.log(`     Last report: ${a.last_report.slice(0, 100)}...`);
+      console.log('');
+    }
+  });
+
+// ============================================================
+// prime hire <name> — hire a new AI employee
+// ============================================================
+program
+  .command('hire <name>')
+  .description('Hire a new AI agent (templates: cos, follow-up, deal-monitor, commitment-tracker)')
+  .option('-r, --role <role>', 'Role title')
+  .option('-s, --schedule <cron>', 'Cron schedule (e.g., "0 7 * * *" for 7am daily)')
+  .option('-p, --project <project>', 'Project scope')
+  .option('-n, --notify <level>', 'Minimum notification urgency: critical, high, normal, fyi')
+  .option('--install', 'Install launchd schedule immediately')
+  .action(async (name: string, opts: any) => {
+    const { hireAgent, TEMPLATES, generateLaunchdPlist } = await import('./team.js');
+
+    const template = TEMPLATES[name];
+    if (!template && !opts.role) {
+      console.log(`\n  No template for "${name}". Available: ${Object.keys(TEMPLATES).join(', ')}`);
+      console.log('  Or specify a role: recall hire myagent --role "Research Assistant"\n');
+      return;
+    }
+
+    const agent = hireAgent(name, {
+      role: opts.role,
+      schedule: opts.schedule,
+      project: opts.project,
+      notify: opts.notify,
+    });
+
+    console.log(`\n  ✓ Hired: ${agent.role} (${agent.name})`);
+    console.log(`    Schedule: ${agent.schedule}`);
+    console.log(`    Notify: ${agent.notify}+`);
+    if (agent.project) console.log(`    Project: ${agent.project}`);
+
+    if (opts.install) {
+      const { writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const { homedir } = await import('os');
+      const { execSync } = await import('child_process');
+
+      const plist = generateLaunchdPlist(agent);
+      const plistPath = join(homedir(), 'Library', 'LaunchAgents', `com.prime-recall.agent.${name}.plist`);
+      writeFileSync(plistPath, plist);
+      execSync(`launchctl load "${plistPath}"`);
+      console.log(`    ✓ Installed launchd schedule: ${plistPath}`);
+    } else {
+      console.log(`\n    To activate schedule: recall hire ${name} --install`);
+      console.log(`    To run now: recall run-agent ${name}`);
+    }
+    console.log('');
+  });
+
+// ============================================================
+// prime fire <name> — remove an AI employee
+// ============================================================
+program
+  .command('fire <name>')
+  .description('Remove an AI agent')
+  .action(async (name: string) => {
+    const { removeAgent } = await import('./team.js');
+    const { existsSync, unlinkSync } = await import('fs');
+    const { join } = await import('path');
+    const { homedir } = await import('os');
+
+    // Unload launchd if exists
+    const plistPath = join(homedir(), 'Library', 'LaunchAgents', `com.prime-recall.agent.${name}.plist`);
+    if (existsSync(plistPath)) {
+      try {
+        const { execSync } = await import('child_process');
+        execSync(`launchctl unload "${plistPath}"`);
+        unlinkSync(plistPath);
+      } catch {}
+    }
+
+    if (removeAgent(name)) {
+      console.log(`\n  ✓ Fired: ${name}. Agent config and schedule removed.\n`);
+    } else {
+      console.log(`\n  Agent "${name}" not found. See: recall team\n`);
+    }
+  });
+
+// ============================================================
+// prime run-agent <name> — run an agent immediately
+// ============================================================
+program
+  .command('run-agent <name>')
+  .description('Run an agent immediately (foreground)')
+  .option('-t, --task <task>', 'Override with a specific task')
+  .option('-b, --background', 'Run in background')
+  .action(async (name: string, opts: any) => {
+    const { runAgent, getAgent } = await import('./team.js');
+
+    const agent = getAgent(name);
+    if (!agent) {
+      console.log(`\n  Agent "${name}" not found. See: recall team\n`);
+      return;
+    }
+
+    console.log(`\n⚡ Running ${agent.role} (${name})...\n`);
+
+    const result = await runAgent(name, {
+      background: opts.background,
+      task: opts.task,
+    });
+
+    if (result.status === 'running') {
+      console.log(`  ✓ Agent running in background. Check: recall agents\n`);
+    } else if (result.status === 'completed') {
+      console.log(result.output);
+      console.log('');
+    } else {
+      console.log(`  ✗ Error: ${result.output}\n`);
+    }
+  });
+
+// ============================================================
+// prime assign <agent> <task> — give an agent a specific task
+// ============================================================
+program
+  .command('assign <agent> <task>')
+  .description('Assign a specific task to an agent')
+  .action(async (agentName: string, task: string) => {
+    const { runAgent, getAgent } = await import('./team.js');
+
+    const agent = getAgent(agentName);
+    if (!agent) {
+      console.log(`\n  Agent "${agentName}" not found. See: recall team\n`);
+      return;
+    }
+
+    console.log(`\n⚡ Assigning to ${agent.role}: "${task}"\n`);
+
+    const result = await runAgent(agentName, { background: true, task });
+
+    if (result.status === 'running') {
+      console.log(`  ✓ ${agent.role} is working on it. Check: recall agents\n`);
+    } else {
+      console.log(`  ✗ Error: ${result.output}\n`);
+    }
+  });
+
 program.parse();
