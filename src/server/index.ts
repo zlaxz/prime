@@ -4,6 +4,7 @@ import { generateEmbedding } from '../embedding.js';
 import { extractIntelligence } from '../ai/extract.js';
 import { ask } from '../ai/ask.js';
 import { v4 as uuid } from 'uuid';
+import { processOtterMeeting } from '../connectors/otter.js';
 
 export async function startServer(port: number = 3210) {
   const app = express();
@@ -155,6 +156,16 @@ export async function startServer(port: number = 3210) {
 
       insertKnowledge(db, item);
       res.json({ id: item.id, title: item.title });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Webhooks
+  app.post('/api/webhooks/otter', async (req, res) => {
+    try {
+      const result = await processOtterMeeting(db, req.body);
+      res.json({ ok: true, ...result });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
