@@ -27,7 +27,7 @@
 
 Your knowledge is scattered across Gmail, Google Calendar, Claude conversations, meeting notes, and your head. AI tools start every session knowing nothing about you. You repeat yourself. Things fall through cracks. People wait for replies you forgot about.
 
-Worse: your Claude conversations are trapped in project silos. The Carefront analysis you did last week? Invisible to the conversation you're having about Foresite today.
+Worse: your Claude conversations are trapped in project silos. The pricing analysis you did last week? Invisible to the conversation you're having about a partnership today.
 
 **Prime Recall unifies everything into one searchable knowledge base that any AI can query.**
 
@@ -56,7 +56,7 @@ $ recall connect claude
 
   Try: recall search "who should I follow up with"
   Try: recall alerts
-  Try: recall open "carefront"
+  Try: recall open "pricing strategy"
 ```
 
 Every Claude conversation across every project and every org — unified. The silos are broken.
@@ -107,8 +107,8 @@ These are the features that make Prime Recall more than a search engine.
 |---------|-------------|
 | `recall alerts` | What needs attention NOW — dropped balls, overdue commitments, cold relationships |
 | `recall briefing` | Morning intelligence brief — priorities, schedule, commitments, relationship health |
-| `recall prep "Adam May"` | Intelligence dossier — every interaction, commitment, decision about a person or topic |
-| `recall deal "Carefront"` | Deal intelligence — timeline, people, decisions, status, risks, next steps |
+| `recall prep "Sarah Chen"` | Intelligence dossier — every interaction, commitment, decision about a person or topic |
+| `recall deal "Project Alpha"` | Deal intelligence — timeline, people, decisions, status, risks, next steps |
 | `recall catchup` | What happened while you were away — narrative summary across all sources |
 | `recall relationships` | Contact health dashboard — who's active, warm, cooling, cold, dormant |
 | `recall commitments` | Outstanding promises tracker — overdue, due soon, active, fulfilled, dropped |
@@ -119,21 +119,21 @@ These are the features that make Prime Recall more than a search engine.
 ```
 ⚠️  12 ALERTS
 
-  🔴 [CRITICAL] Brayden Jessen waiting on your reply
-     "SentryWest Partnership Proposal" — 23 days with no response
-     📁 SentryWest
+  🔴 [CRITICAL] Sarah Chen waiting on your reply
+     "Partnership Proposal Follow-up" — 23 days with no response
+     📁 Acme Partnership
 
-  🟠 [HIGH] Overdue: Send updated proposal to Charlie
-     Due 2026-03-22 (4d ago) — Carefront
+  🟠 [HIGH] Overdue: Send updated proposal to Mike
+     Due 2025-03-22 (4d ago) — Project Alpha
 
   🟡 Due TOMORROW: Certification deck review with team
-     Due 2026-03-27 — Carefront
+     Due 2025-03-27 — Project Alpha
 
-  🔵 Chris Burand going cold
+  🔵 David Park going cold
      Last interaction 28d ago (15 total mentions)
 ```
 
-### Example: `recall prep "Forrest Pullen"`
+### Example: `recall prep "Sarah Chen"`
 
 Generates a full intelligence dossier: every email, every Claude conversation, every meeting, every commitment, every decision — across all sources. Chronological history, current status, recommended talking points.
 
@@ -159,8 +159,8 @@ After restarting Claude Desktop, **every conversation** has access to your entir
 | `prime_search` | Any question about your business, contacts, or projects |
 | `prime_ask` | Deep questions requiring AI reasoning over your knowledge |
 | `prime_alerts` | "What needs attention?", "Any urgent items?" |
-| `prime_prep` | "Brief me on Forrest", "Prep me for my meeting" |
-| `prime_deal` | "Status of Carefront?", "Where are we with Foresite?" |
+| `prime_prep` | "Brief me on Sarah", "Prep me for my meeting" |
+| `prime_deal` | "Status of Project Alpha?", "Where are we with Acme?" |
 | `prime_briefing` | "Morning briefing", "What's my day look like?" |
 | `prime_catchup` | "Catch me up", "What did I miss?" |
 | `prime_relationships` | "Who should I follow up with?" |
@@ -279,7 +279,7 @@ Your data never leaves your machine except for embedding generation.
 - [ ] Slack, Notion, HubSpot connectors
 - [ ] Knowledge graph visualization
 - [ ] Competitive intelligence monitoring (web search on schedule)
-- [ ] Voice capture ("Hey Prime, I just talked to Costas...")
+- [ ] Voice capture ("Hey Prime, I just talked to Sarah...")
 - [ ] Multi-user / team knowledge sharing
 
 ## Contributing
