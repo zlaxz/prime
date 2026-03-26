@@ -1,40 +1,153 @@
 import OpenAI from 'openai';
 
-let _client: OpenAI | null = null;
+// ============================================================
+// Embedding providers: OpenAI (cloud) or Ollama (local, free)
+// ============================================================
 
-function getClient(apiKey: string): OpenAI {
-  if (!_client) {
-    _client = new OpenAI({ apiKey });
-  }
-  return _client;
+export type EmbeddingProvider = 'openai' | 'ollama';
+
+export interface EmbeddingConfig {
+  provider: EmbeddingProvider;
+  apiKey?: string;           // OpenAI API key (not needed for Ollama)
+  model?: string;            // Override model name
+  ollamaUrl?: string;        // Ollama base URL (default: http://localhost:11434)
+  dimensions?: number;       // Set after first embedding call
 }
 
-export async function generateEmbedding(text: string, apiKey: string): Promise<number[]> {
-  const client = getClient(apiKey);
-  const input = text.slice(0, 8000); // text-embedding-3-small limit
+let _openaiClient: OpenAI | null = null;
 
-  const response = await client.embeddings.create({
-    model: 'text-embedding-3-small',
-    input,
+function getOpenAIClient(apiKey: string): OpenAI {
+  if (!_openaiClient) {
+    _openaiClient = new OpenAI({ apiKey });
+  }
+  return _openaiClient;
+}
+
+// ── Ollama embeddings ─────────────────────────────────────────
+
+async function ollamaEmbed(texts: string[], config: EmbeddingConfig): Promise<number[][]> {
+  const url = config.ollamaUrl || 'http://localhost:11434';
+  const model = config.model || 'nomic-embed-text';
+
+  const response = await fetch(`${url}/api/embed`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, input: texts }),
   });
 
-  return response.data[0].embedding;
+  if (!response.ok) {
+    throw new Error(`Ollama embedding error: ${response.status} ${await response.text()}`);
+  }
+
+  const data: any = await response.json();
+  return data.embeddings;
 }
 
-export async function generateEmbeddings(texts: string[], apiKey: string): Promise<number[][]> {
-  const client = getClient(apiKey);
-  const inputs = texts.map(t => t.slice(0, 8000));
+// ── OpenAI embeddings ─────────────────────────────────────────
+
+async function openaiEmbed(texts: string[], apiKey: string, model?: string): Promise<number[][]> {
+  const client = getOpenAIClient(apiKey);
+  const results: number[][] = [];
 
   // Batch up to 100 at a time
-  const results: number[][] = [];
-  for (let i = 0; i < inputs.length; i += 100) {
-    const batch = inputs.slice(i, i + 100);
+  for (let i = 0; i < texts.length; i += 100) {
+    const batch = texts.slice(i, i + 100);
     const response = await client.embeddings.create({
-      model: 'text-embedding-3-small',
+      model: model || 'text-embedding-3-small',
       input: batch,
     });
     results.push(...response.data.map(d => d.embedding));
   }
 
   return results;
+}
+
+// ── Public API ────────────────────────────────────────────────
+
+/**
+ * Resolve the embedding config from the database or env.
+ * Called by consumers to figure out which provider to use.
+ */
+export function resolveEmbeddingConfig(dbConfig: {
+  openai_api_key?: string;
+  embedding_provider?: string;
+  ollama_url?: string;
+  embedding_model?: string;
+}): EmbeddingConfig {
+  const provider = (dbConfig.embedding_provider as EmbeddingProvider) ||
+    (process.env.EMBEDDING_PROVIDER as EmbeddingProvider) ||
+    (dbConfig.openai_api_key ? 'openai' : 'ollama');
+
+  return {
+    provider,
+    apiKey: dbConfig.openai_api_key,
+    model: dbConfig.embedding_model || process.env.EMBEDDING_MODEL,
+    ollamaUrl: dbConfig.ollama_url || process.env.OLLAMA_URL || 'http://localhost:11434',
+  };
+}
+
+/**
+ * Generate a single embedding. Falls back to Ollama if no OpenAI key.
+ *
+ * For backward compatibility, accepts (text, apiKey) signature.
+ * New code should use generateEmbeddingWithConfig().
+ */
+export async function generateEmbedding(text: string, apiKeyOrConfig: string | EmbeddingConfig): Promise<number[]> {
+  const input = text.slice(0, 8000);
+
+  if (typeof apiKeyOrConfig === 'string') {
+    // Legacy signature: (text, apiKey) — use OpenAI
+    const apiKey = apiKeyOrConfig;
+    if (!apiKey || apiKey === 'ollama' || apiKey === 'local') {
+      // User passed a sentinel value meaning "use ollama"
+      const result = await ollamaEmbed([input], { provider: 'ollama' });
+      return result[0];
+    }
+    const result = await openaiEmbed([input], apiKey);
+    return result[0];
+  }
+
+  // New config-based signature
+  const config = apiKeyOrConfig;
+  if (config.provider === 'ollama') {
+    const result = await ollamaEmbed([input], config);
+    return result[0];
+  } else {
+    if (!config.apiKey) throw new Error('OpenAI API key required for OpenAI embeddings');
+    const result = await openaiEmbed([input], config.apiKey, config.model);
+    return result[0];
+  }
+}
+
+/**
+ * Generate embeddings for multiple texts in batch.
+ *
+ * For backward compatibility, accepts (texts, apiKey) signature.
+ */
+export async function generateEmbeddings(texts: string[], apiKeyOrConfig: string | EmbeddingConfig): Promise<number[][]> {
+  const inputs = texts.map(t => t.slice(0, 8000));
+
+  if (typeof apiKeyOrConfig === 'string') {
+    const apiKey = apiKeyOrConfig;
+    if (!apiKey || apiKey === 'ollama' || apiKey === 'local') {
+      return ollamaEmbed(inputs, { provider: 'ollama' });
+    }
+    return openaiEmbed(inputs, apiKey);
+  }
+
+  const config = apiKeyOrConfig;
+  if (config.provider === 'ollama') {
+    return ollamaEmbed(inputs, config);
+  } else {
+    if (!config.apiKey) throw new Error('OpenAI API key required for OpenAI embeddings');
+    return openaiEmbed(inputs, config.apiKey, config.model);
+  }
+}
+
+/**
+ * Get the dimensions for the configured embedding provider.
+ */
+export async function getEmbeddingDimensions(config: EmbeddingConfig): Promise<number> {
+  const test = await generateEmbedding('test', config);
+  return test.length;
 }
