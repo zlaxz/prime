@@ -5,8 +5,12 @@ import { getDb, saveDb, getStats, setConfig, getConfig, searchByText, searchByEm
 import { generateEmbedding } from './embedding.js';
 import { extractIntelligence } from './ai/extract.js';
 import { ask as askPrime } from './ai/ask.js';
+import { startServer } from './server/index.js';
 import { v4 as uuid } from 'uuid';
 import { connectGmail, scanGmail } from './connectors/gmail.js';
+import { connectCalendar, scanCalendar } from './connectors/calendar.js';
+import { indexDirectory } from './connectors/files.js';
+import { importClaudeConversations } from './connectors/claude.js';
 
 const program = new Command();
 
@@ -297,7 +301,15 @@ program
   .action(async (source: string) => {
     const db = await getDb();
 
-    if (source === 'gmail') {
+    if (source === 'calendar') {
+      console.log('\n⚡ Connecting Google Calendar...\n');
+      const success = await connectCalendar(db);
+      if (success) {
+        console.log('\n  Scanning calendar events...\n');
+        const { events, items } = await scanCalendar(db);
+        console.log(`  ✓ ${events} events → ${items} knowledge items\n`);
+      }
+    } else if (source === 'gmail') {
       console.log('\n⚡ Connecting Gmail...\n');
       const success = await connectGmail(db);
 
@@ -336,7 +348,49 @@ program
         console.log('  ✗ Failed to connect Gmail\n');
       }
     } else {
-      console.log(`  Unknown source: ${source}. Available: gmail\n`);
+      console.log(`  Unknown source: ${source}. Available: gmail, calendar\n`);
+    }
+  });
+
+// ============================================================
+// prime index <directory>
+// ============================================================
+program
+  .command('index <directory>')
+  .description('Index a directory of files into the knowledge base')
+  .option('-p, --project <project>', 'Associate with a project')
+  .option('--no-recursive', 'Don\'t recurse into subdirectories')
+  .action(async (directory: string, opts: any) => {
+    const db = await getDb();
+    const { resolve } = await import('path');
+    const dir = resolve(directory);
+
+    console.log(`\n  Indexing ${dir}...\n`);
+    const { files, items, skipped } = await indexDirectory(db, dir, {
+      project: opts.project,
+      recursive: opts.recursive !== false,
+    });
+    console.log(`  ✓ ${files} files processed → ${items} knowledge items (${skipped} skipped)\n`);
+  });
+
+// ============================================================
+// prime import <source> <path>
+// ============================================================
+program
+  .command('import <source> <path>')
+  .description('Import data from an export (claude conversations.json or directory)')
+  .option('-p, --project <project>', 'Associate with a project')
+  .action(async (source: string, importPath: string, opts: any) => {
+    const db = await getDb();
+    const { resolve } = await import('path');
+    const fullPath = resolve(importPath);
+
+    if (source === 'claude') {
+      console.log(`\n  Importing Claude conversations from ${fullPath}...\n`);
+      const { conversations, items } = await importClaudeConversations(db, fullPath, { project: opts.project });
+      console.log(`  ✓ ${conversations} conversations → ${items} knowledge items\n`);
+    } else {
+      console.log(`  Unknown import source: ${source}. Available: claude\n`);
     }
   });
 
@@ -357,8 +411,26 @@ program
       console.log(`  ✓ Gmail: ${threads} threads → ${items} new items`);
     }
 
+    const calTokens = getConfig(db, 'calendar_tokens');
+    if (calTokens) {
+      console.log('  Syncing Calendar...');
+      const { events, items } = await scanCalendar(db);
+      console.log(`  ✓ Calendar: ${events} events → ${items} new items`);
+    }
+
     const stats = getStats(db);
     console.log(`\n  Total knowledge: ${stats.total_items} items\n`);
+  });
+
+// ============================================================
+// prime serve
+// ============================================================
+program
+  .command('serve')
+  .description('Start the Prime API server (REST + future MCP)')
+  .option('-p, --port <port>', 'Port number', '3210')
+  .action(async (opts: any) => {
+    await startServer(parseInt(opts.port) || 3210);
   });
 
 program.parse();
