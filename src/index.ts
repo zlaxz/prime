@@ -455,6 +455,25 @@ program
       } else {
         console.log('  ✗ Failed to connect Claude.ai\n');
       }
+    } else if (source === 'otter') {
+      console.log('\n⚡ Connecting Otter.ai...\n');
+      const success = await connectOtter(db);
+
+      if (success) {
+        console.log('\n  Scanning your Otter meetings...\n');
+
+        const { meetings, items } = await scanOtter(db, { days: 90, maxMeetings: 200 });
+
+        console.log(`\n  ✓ ${meetings} meetings → ${items} knowledge items`);
+
+        const stats = getStats(db);
+        console.log(`\n  Total knowledge: ${stats.total_items} items`);
+
+        console.log('\n  Try: recall search "meeting with..."');
+        console.log('  Try: recall ask "what action items came out of my last meeting?"\n');
+      } else {
+        console.log('  ✗ Failed to connect Otter.ai\n');
+      }
     } else if (source === 'cowork') {
       console.log('\n⚡ Connecting Cowork (Claude Desktop agent mode)...\n');
       const success = await connectCowork(db);
@@ -472,7 +491,7 @@ program
         console.log('  ✗ Failed to connect Cowork\n');
       }
     } else {
-      console.log(`  Unknown source: ${source}. Available: gmail, calendar, claude, cowork\n`);
+      console.log(`  Unknown source: ${source}. Available: gmail, calendar, claude, otter, cowork\n`);
     }
   });
 
