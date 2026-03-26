@@ -1,4 +1,7 @@
 import express from 'express';
+import { readdirSync, readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import { getDb, searchByText, searchByEmbedding, insertKnowledge, getStats, getConfig, type KnowledgeItem } from '../db.js';
 import { generateEmbedding } from '../embedding.js';
 import { extractIntelligence } from '../ai/extract.js';
@@ -233,7 +236,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
   });
 
   // ── Dashboard ────────────────────────────────────────────
-  app.get('/dashboard', (_req, res) => {
+  app.get('/dashboard', async (_req, res) => {
     const stats = getStats(db);
 
     // Get agent reports
@@ -247,9 +250,6 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     ).all() as any[];
 
     // Get team config
-    const { readdirSync, readFileSync, existsSync } = require('fs');
-    const { join } = require('path');
-    const { homedir } = require('os');
     const agentsDir = join(homedir(), '.prime', 'agents');
     let agents: any[] = [];
     if (existsSync(agentsDir)) {
