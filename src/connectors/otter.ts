@@ -303,7 +303,8 @@ export async function scanOtter(
     await Promise.all(batch.map(async (speechMeta) => {
       try {
         // Fetch full speech data
-        const speech = await otterApiGet<OtterSpeech>(`/speech?otid=${speechMeta.otid}`, creds);
+        const speechResponse = await otterApiGet<{ speech: OtterSpeech }>(`/speech?otid=${speechMeta.otid}`, creds);
+        const speech = speechResponse.speech;
 
         // Build content for extraction
         const speakerNames = (speech.speakers || []).map(s => s.speaker_name).filter(Boolean);
@@ -376,8 +377,11 @@ export async function scanOtter(
         insertKnowledge(db, item);
         stats.meetings++;
         stats.items++;
-      } catch {
-        // Skip failed meetings silently
+      } catch (err: any) {
+        stats.skipped++;
+        if (options.verbose) {
+          console.log(`\n    ⚠ Failed: ${speech.title} — ${err.message?.slice(0, 100)}`);
+        }
       }
     }));
 
