@@ -2,8 +2,8 @@ import { google } from 'googleapis';
 import { createServer } from 'http';
 import { URL } from 'url';
 import { v4 as uuid } from 'uuid';
-import type { Database as SqlJsDatabase } from 'sql.js';
-import { insertKnowledge, setConfig, getConfig, saveDb, type KnowledgeItem } from '../db.js';
+import type Database from 'better-sqlite3';
+import { insertKnowledge, setConfig, getConfig, type KnowledgeItem } from '../db.js';
 import { generateEmbedding } from '../embedding.js';
 import { extractIntelligence } from '../ai/extract.js';
 
@@ -16,7 +16,7 @@ const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const REDIRECT_URI = 'http://localhost:9876/callback';
 
-export async function connectGmail(db: SqlJsDatabase): Promise<boolean> {
+export async function connectGmail(db: Database.Database): Promise<boolean> {
   const oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
 
   const authUrl = oauth2Client.generateAuthUrl({
@@ -51,11 +51,9 @@ export async function connectGmail(db: SqlJsDatabase): Promise<boolean> {
           setConfig(db, 'gmail_email', profile.data.emailAddress);
 
           // Update sync state
-          db.run(
-            `INSERT OR REPLACE INTO sync_state (source, status, config, updated_at) VALUES ('gmail', 'connected', ?, datetime('now'))`,
-            [JSON.stringify({ email: profile.data.emailAddress })]
-          );
-          saveDb();
+          db.prepare(
+            `INSERT OR REPLACE INTO sync_state (source, status, config, updated_at) VALUES ('gmail', 'connected', ?, datetime('now'))`
+          ).run(JSON.stringify({ email: profile.data.emailAddress }));
 
           res.writeHead(200, { 'Content-Type': 'text/html' });
           res.end('<html><body><h1>✓ Connected to Gmail</h1><p>You can close this window.</p></body></html>');
@@ -88,7 +86,7 @@ export async function connectGmail(db: SqlJsDatabase): Promise<boolean> {
 }
 
 export async function scanGmail(
-  db: SqlJsDatabase,
+  db: Database.Database,
   options: { days?: number; maxThreads?: number } = {}
 ): Promise<{ threads: number; items: number }> {
   const days = options.days || 90;
@@ -202,6 +200,19 @@ export async function scanGmail(
   }
   console.log(`\n  ${threadData.length} threads with content`);
 
+  // Dedup: skip threads already in the knowledge base
+  const beforeDedup = threadData.length;
+  const deduped = threadData.filter(td => {
+    const existing = db.prepare('SELECT id FROM knowledge WHERE source_ref = ?').get(`thread:${td.id}`);
+    return !existing;
+  });
+  if (beforeDedup - deduped.length > 0) {
+    console.log(`  Skipping ${beforeDedup - deduped.length} already indexed threads`);
+  }
+  // Replace threadData with deduped for processing
+  threadData.length = 0;
+  threadData.push(...deduped);
+
   // Phase 2: AI extraction in parallel (Claude Code CLI calls)
   console.log(`  Extracting intelligence (${CONCURRENCY} concurrent)...`);
   let extracted = 0;
@@ -264,12 +275,10 @@ export async function scanGmail(
   console.log('');
 
   // Update sync state
-  db.run(
+  db.prepare(
     `INSERT OR REPLACE INTO sync_state (source, last_sync_at, items_synced, status, updated_at)
-     VALUES ('gmail', datetime('now'), ?, 'idle', datetime('now'))`,
-    [items]
-  );
-  saveDb();
+     VALUES ('gmail', datetime('now'), ?, 'idle', datetime('now'))`
+  ).run(items);
 
   return { threads: threads.length, items };
 }

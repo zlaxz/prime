@@ -1,4 +1,4 @@
-import type { Database as SqlJsDatabase } from 'sql.js';
+import type Database from 'better-sqlite3';
 import { v4 as uuid } from 'uuid';
 import { getConfig, insertKnowledge, getCommitments, type KnowledgeItem } from '../db.js';
 import { getDefaultProvider } from './providers.js';
@@ -16,7 +16,7 @@ export interface BriefingResult {
 }
 
 export async function generateBriefing(
-  db: SqlJsDatabase,
+  db: Database.Database,
   options: { verbose?: boolean; days?: number; save?: boolean } = {}
 ): Promise<BriefingResult> {
   const days = options.days ?? 7;
@@ -241,22 +241,16 @@ Keep each section concise but actionable. If a section has no relevant data, say
 
 // ── Helpers ───────────────────────────────────────────────────
 
-function queryRows(db: SqlJsDatabase, sql: string, params: any[]): any[] {
-  const stmt = db.prepare(sql);
-  if (params.length > 0) stmt.bind(params);
-
-  const results: any[] = [];
-  while (stmt.step()) {
-    const row = stmt.getAsObject();
+function queryRows(db: Database.Database, sql: string, params: any[]): any[] {
+  const rows = db.prepare(sql).all(...params) as any[];
+  for (const row of rows) {
     for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
       if (row[field] && typeof row[field] === 'string') {
         try { row[field] = JSON.parse(row[field] as string); } catch {}
       }
     }
-    results.push(row);
   }
-  stmt.free();
-  return results;
+  return rows;
 }
 
 function parseJsonField(value: any): any {

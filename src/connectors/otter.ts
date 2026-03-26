@@ -1,7 +1,7 @@
 import { v4 as uuid } from 'uuid';
 import { readFileSync } from 'fs';
-import type { Database as SqlJsDatabase } from 'sql.js';
-import { insertKnowledge, getConfig, saveDb, type KnowledgeItem } from '../db.js';
+import type Database from 'better-sqlite3';
+import { insertKnowledge, getConfig, type KnowledgeItem } from '../db.js';
 import { generateEmbedding } from '../embedding.js';
 import { extractIntelligence } from '../ai/extract.js';
 
@@ -13,7 +13,7 @@ import { extractIntelligence } from '../ai/extract.js';
  * 3. Manual — paste transcript text
  */
 export async function processOtterMeeting(
-  db: SqlJsDatabase,
+  db: Database.Database,
   meeting: {
     title: string;
     transcript?: string;
@@ -76,7 +76,7 @@ export async function processOtterMeeting(
 }
 
 export async function importOtterFile(
-  db: SqlJsDatabase,
+  db: Database.Database,
   filePath: string,
   options: { project?: string } = {}
 ): Promise<{ id: string; title: string }> {

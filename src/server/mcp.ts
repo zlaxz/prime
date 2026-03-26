@@ -33,7 +33,7 @@ server.tool(
     project: z.string().optional().describe("Filter by project name"),
   },
   async ({ query, limit, source, project }) => {
-    const db = await getDb();
+    const db = getDb();
     const apiKey = getConfig(db, 'openai_api_key');
     let results: any[];
     if (apiKey) {
@@ -83,7 +83,7 @@ server.tool(
   "Ask a question about the user's business. AI answer grounded in knowledge base with cited sources.",
   { question: z.string().describe("Question about the user's business") },
   async ({ question }) => {
-    const db = await getDb();
+    const db = getDb();
     const { answer, sources } = await askWithSources(db, question);
     const sourceList = sources.slice(0, 8).map(s => `[${s.num}] ${s.title} (${s.source})`).join('\n');
     return { content: [{ type: "text" as const, text: `${answer}\n\nSources:\n${sourceList}` }] };
@@ -99,7 +99,7 @@ server.tool(
     importance: z.enum(["low", "normal", "high", "critical"]).optional().describe("Importance level"),
   },
   async ({ content, project, importance }) => {
-    const db = await getDb();
+    const db = getDb();
     const apiKey = getConfig(db, 'openai_api_key');
     if (!apiKey) return { content: [{ type: "text" as const, text: "No API key. Run: recall init" }] };
     const extracted = await extractIntelligence(content, apiKey);
@@ -121,7 +121,7 @@ server.tool(
 );
 
 server.tool("prime_get_contacts", "List all known contacts sorted by mention frequency.", {}, async () => {
-  const db = await getDb();
+  const db = getDb();
   const all = searchByText(db, '', 1000);
   const contacts = new Map<string, number>();
   for (const item of all) {
@@ -141,7 +141,7 @@ server.tool(
     overdue_only: z.boolean().optional().describe("Show only overdue commitments"),
   },
   async ({ state, project, overdue_only }) => {
-    const db = await getDb();
+    const db = getDb();
     const stats = getCommitmentStats(db);
 
     // If no commitments in the table, fall back to knowledge item scan
@@ -193,7 +193,7 @@ server.tool(
 );
 
 server.tool("prime_get_projects", "List projects identified in the knowledge base.", {}, async () => {
-  const db = await getDb();
+  const db = getDb();
   const all = searchByText(db, '', 1000);
   const projects = new Map<string, number>();
   for (const item of all) { if (item.project) projects.set(item.project, (projects.get(item.project) || 0) + 1); }
@@ -202,7 +202,7 @@ server.tool("prime_get_projects", "List projects identified in the knowledge bas
 });
 
 server.tool("prime_status", "Knowledge base statistics.", {}, async () => {
-  const db = await getDb();
+  const db = getDb();
   const stats = getStats(db);
   let text = `Prime Recall: ${stats.total_items} knowledge items\n`;
   for (const s of stats.by_source) text += `  ${s.source}: ${s.count}\n`;
@@ -217,7 +217,7 @@ server.tool(
     depth: z.number().optional().default(2).describe("Graph traversal depth (1=direct only, 2=connections of connections)"),
   },
   async ({ query, depth }) => {
-    const db = await getDb();
+    const db = getDb();
 
     // First try to find as a contact
     const allItems = searchByText(db, '', 1000);
@@ -324,7 +324,7 @@ server.tool(
   "Generate a daily intelligence briefing — priorities, commitments, dropped balls, relationship health.",
   { days: z.number().optional().default(7).describe("Days to look back") },
   async ({ days }) => {
-    const db = await getDb();
+    const db = getDb();
     try {
       const result = await generateBriefing(db, { days, save: true });
       const meta = [
@@ -346,7 +346,7 @@ server.tool(
   "URGENT: Get all current alerts — dropped balls (people waiting on user), overdue commitments, approaching deadlines, cold relationships. Call this proactively when the user asks about priorities or what needs attention.",
   {},
   async () => {
-    const db = await getDb();
+    const db = getDb();
     const { getAlerts } = await import('../ai/intelligence.js');
     const alerts = getAlerts(db);
 
@@ -374,7 +374,7 @@ server.tool(
   "Generate an intelligence dossier on a person, deal, topic, or upcoming meeting. Pulls everything from all sources: emails, Claude conversations, meetings, commitments. USE THIS before meetings or when the user asks about a specific person or topic.",
   { query: z.string().describe("Person name, topic, deal name, or meeting subject") },
   async ({ query }) => {
-    const db = await getDb();
+    const db = getDb();
     const { generatePrep } = await import('../ai/intelligence.js');
     try {
       const result = await generatePrep(db, query);
@@ -390,7 +390,7 @@ server.tool(
   "What happened while the user was away. Generates a narrative catch-up briefing. Use when the user says 'catch me up', 'what did I miss', or 'what happened'.",
   { days: z.number().optional().default(3).describe("Days to catch up on") },
   async ({ days }) => {
-    const db = await getDb();
+    const db = getDb();
     const { generateCatchup } = await import('../ai/intelligence.js');
     try {
       const result = await generateCatchup(db, { days });
@@ -406,7 +406,7 @@ server.tool(
   "Relationship health dashboard. Shows all contacts with their status (active/warm/cooling/cold/dormant), last interaction date, and mention frequency. Use when the user asks about contacts, relationships, or who to follow up with.",
   { cold_only: z.boolean().optional().describe("Show only cold/dormant contacts") },
   async ({ cold_only }) => {
-    const db = await getDb();
+    const db = getDb();
     const { getRelationshipHealth } = await import('../ai/intelligence.js');
     let contacts = getRelationshipHealth(db);
 
@@ -427,7 +427,7 @@ server.tool(
   "Comprehensive deal/project intelligence dossier. Pulls all knowledge items, people, decisions, commitments, and timeline for a specific project or deal. Use when the user asks about a deal, project status, or needs to prepare for a strategic discussion.",
   { project: z.string().describe("Project or deal name to analyze") },
   async ({ project }) => {
-    const db = await getDb();
+    const db = getDb();
     const { generateDealBrief } = await import('../ai/intelligence.js');
     try {
       const result = await generateDealBrief(db, project);

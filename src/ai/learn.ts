@@ -1,4 +1,4 @@
-import type { Database as SqlJsDatabase } from 'sql.js';
+import type Database from 'better-sqlite3';
 import { searchByText, getConfig, setConfig } from '../db.js';
 import { setBusinessContext } from './extract.js';
 import { getDefaultProvider } from './providers.js';
@@ -11,7 +11,7 @@ import { getDefaultProvider } from './providers.js';
  *
  * Uses Claude Code CLI (free via Max subscription) for reasoning.
  */
-export async function learnBusinessContext(db: SqlJsDatabase): Promise<string> {
+export async function learnBusinessContext(db: Database.Database): Promise<string> {
   const apiKey = getConfig(db, 'openai_api_key');
   const provider = await getDefaultProvider(apiKey || undefined);
 

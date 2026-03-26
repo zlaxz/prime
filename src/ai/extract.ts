@@ -21,7 +21,7 @@ export async function loadBusinessContext(): Promise<string> {
   try {
     // Dynamic import to avoid circular dependency
     const { getDb, getConfig } = await import('../db.js');
-    const db = await getDb();
+    const db = getDb();
     const ctx = getConfig(db, 'business_context');
     if (ctx) {
       _cachedBusinessContext = typeof ctx === 'string' ? ctx : JSON.stringify(ctx);

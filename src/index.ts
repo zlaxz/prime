@@ -2,7 +2,7 @@
 
 import 'dotenv/config';
 import { Command } from 'commander';
-import { getDb, saveDb, getStats, setConfig, getConfig, searchByText, searchByEmbedding, insertKnowledge, getAllKnowledge, updateKnowledgeExtraction, type KnowledgeItem } from './db.js';
+import { getDb, getStats, setConfig, getConfig, searchByText, searchByEmbedding, insertKnowledge, getAllKnowledge, updateKnowledgeExtraction, type KnowledgeItem } from './db.js';
 import { generateEmbedding } from './embedding.js';
 import { extractIntelligence } from './ai/extract.js';
 import { askWithSources } from './ai/ask.js';
@@ -42,7 +42,7 @@ program
   .action(async () => {
     console.log('\n⚡ PRIME RECALL — The AI that already knows your business\n');
 
-    const db = await getDb();
+    const db = getDb();
 
     // Check if already initialized
     const existing = getConfig(db, 'openai_api_key');
@@ -102,8 +102,6 @@ program
       console.log('    in your .env file or environment. See: README.md#google-setup');
     }
 
-    saveDb();
-
     console.log('\n  ✓ Knowledge base created at ~/.prime/prime.db');
     console.log(`  ✓ AI provider: ${hasClaudeCode ? 'Claude Code (free)' : 'OpenAI API'}`);
     console.log('  ✓ Embeddings: OpenAI text-embedding-3-small');
@@ -122,7 +120,7 @@ program
   .command('status')
   .description('Show what Prime knows')
   .action(async () => {
-    const db = await getDb();
+    const db = getDb();
     const stats = getStats(db);
 
     console.log('\n⚡ PRIME STATUS\n');
@@ -163,7 +161,7 @@ program
   .option('-s, --source <source>', 'Filter by source')
   .option('-p, --project <project>', 'Filter by project')
   .action(async (query: string, opts: any) => {
-    const db = await getDb();
+    const db = getDb();
     const apiKey = getConfig(db, 'openai_api_key');
     const limit = parseInt(opts.limit) || 10;
 
@@ -231,7 +229,7 @@ program
   .option('-p, --project <project>', 'Associate with a project')
   .option('-i, --importance <level>', 'Importance: low/normal/high/critical', 'normal')
   .action(async (text: string, opts: any) => {
-    const db = await getDb();
+    const db = getDb();
     const apiKey = getConfig(db, 'openai_api_key');
 
     if (!apiKey) {
@@ -286,7 +284,7 @@ program
 
     const filePath = resolve(file);
     const content = readFileSync(filePath, 'utf-8');
-    const db = await getDb();
+    const db = getDb();
     const apiKey = getConfig(db, 'openai_api_key');
 
     if (!apiKey) {
@@ -332,7 +330,7 @@ program
   .description('Ask Prime anything about your business')
   .option('-m, --model <model>', 'LLM model to use', 'gpt-4o-mini')
   .action(async (question: string, opts: any) => {
-    const db = await getDb();
+    const db = getDb();
     console.log('\n  ⚡ Thinking...\n');
 
     try {
@@ -361,7 +359,7 @@ program
   .command('context <text>')
   .description('Set your business context — Prime uses this to prioritize everything')
   .action(async (text: string) => {
-    const db = await getDb();
+    const db = getDb();
     setConfig(db, 'business_context', text);
     console.log('\n  ✓ Business context saved. Prime will use this to prioritize.\n');
   });
@@ -375,7 +373,7 @@ program
   .description('Connect a data source')
   .option('--session-key <key>', 'Session key for Claude.ai (avoids Keychain/manual entry)')
   .action(async (source: string, opts: any) => {
-    const db = await getDb();
+    const db = getDb();
 
     if (source === 'calendar') {
       console.log('\n⚡ Connecting Google Calendar...\n');
@@ -469,7 +467,7 @@ program
   .option('-p, --project <project>', 'Associate with a project')
   .option('--no-recursive', 'Don\'t recurse into subdirectories')
   .action(async (directory: string, opts: any) => {
-    const db = await getDb();
+    const db = getDb();
     const { resolve } = await import('path');
     const dir = resolve(directory);
 
@@ -489,7 +487,7 @@ program
   .description('Import data from an export (claude conversations.json or directory)')
   .option('-p, --project <project>', 'Associate with a project')
   .action(async (source: string, importPath: string, opts: any) => {
-    const db = await getDb();
+    const db = getDb();
     const { resolve } = await import('path');
     const fullPath = resolve(importPath);
 
@@ -509,7 +507,7 @@ program
   .command('learn')
   .description('Re-learn business context from all ingested data')
   .action(async () => {
-    const db = await getDb();
+    const db = getDb();
     console.log('\n  🧠 Learning business context from all knowledge...\n');
 
     try {
@@ -535,7 +533,7 @@ program
   .description('Refine the knowledge base — dedup contacts, reclassify projects, detect stale items')
   .option('-v, --verbose', 'Show detailed progress')
   .action(async (opts: any) => {
-    const db = await getDb();
+    const db = getDb();
     console.log('\n⚡ Refining knowledge base...\n');
 
     try {
@@ -570,7 +568,7 @@ program
   .command('sync')
   .description('Refresh all connected sources')
   .action(async () => {
-    const db = await getDb();
+    const db = getDb();
     console.log('\n⚡ Syncing...\n');
 
     const gmailTokens = getConfig(db, 'gmail_tokens');
@@ -611,7 +609,7 @@ program
   .command('open <query>')
   .description('Search and open the source conversation in your browser')
   .action(async (query: string) => {
-    const db = await getDb();
+    const db = getDb();
     const apiKey = getConfig(db, 'openai_api_key');
 
     let results: any[];
@@ -692,7 +690,7 @@ program
   .option('-n, --dry-run', 'Show what would change without writing')
   .option('-l, --limit <n>', 'Process only first N items')
   .action(async (opts: any) => {
-    const db = await getDb();
+    const db = getDb();
     const limit = opts.limit ? parseInt(opts.limit) : undefined;
     const dryRun = opts.dryRun || false;
 
@@ -818,7 +816,7 @@ program
   .option('-v, --verbose', 'Show detailed theme contents')
   .option('--build', 'Force rebuild the hierarchy now')
   .action(async (opts: any) => {
-    const db = await getDb();
+    const db = getDb();
 
     if (opts.build) {
       console.log('\n  Building knowledge hierarchy...\n');
@@ -884,7 +882,7 @@ program
   .description('Show connections graph for a contact or knowledge item')
   .option('-d, --depth <n>', 'Graph traversal depth', '2')
   .action(async (query: string, opts: any) => {
-    const db = await getDb();
+    const db = getDb();
     const depth = parseInt(opts.depth) || 2;
 
     // First, try to find as a contact
@@ -998,7 +996,7 @@ program
   .option('-p, --project <project>', 'Filter by project')
   .option('-s, --state <state>', 'Filter by state (detected, active, fulfilled, overdue, dropped)')
   .action(async (opts: any) => {
-    const db = await getDb();
+    const db = getDb();
 
     // If specific filters requested, use getCommitments directly
     if (opts.overdue || opts.state || opts.project) {
@@ -1118,7 +1116,7 @@ program
   .option('--no-save', 'Generate but don\'t save to knowledge base')
   .option('--days <n>', 'Look back N days instead of default 7', '7')
   .action(async (opts: any) => {
-    const db = await getDb();
+    const db = getDb();
     const days = parseInt(opts.days) || 7;
     const save = opts.save !== false;
 
@@ -1162,7 +1160,7 @@ program
   .option('--remove-tag <tag>', 'Remove a tag')
   .option('--re-extract', 'Re-run AI extraction on this item')
   .action(async (query: string, opts: any) => {
-    const db = await getDb();
+    const db = getDb();
 
     // Find the item
     const results = searchByText(db, query, 5);
@@ -1245,8 +1243,7 @@ program
     } else if (updates.length > 0) {
       updates.push("updated_at = datetime('now')");
       params.push(item.id);
-      db.run(`UPDATE knowledge SET ${updates.join(', ')} WHERE id = ?`, params);
-      saveDb();
+      db.prepare(`UPDATE knowledge SET ${updates.join(', ')} WHERE id = ?`).run(...params);
     }
 
     if (updates.length === 0 && !opts.reExtract) {
@@ -1264,7 +1261,7 @@ program
   .command('alerts')
   .description('What needs your attention RIGHT NOW — dropped balls, overdue commitments, cold relationships')
   .action(async () => {
-    const db = await getDb();
+    const db = getDb();
     const alerts = getAlerts(db);
 
     if (alerts.length === 0) {
@@ -1302,7 +1299,7 @@ program
   .command('prep <query>')
   .description('Intelligence dossier on a person, topic, or upcoming meeting')
   .action(async (query: string) => {
-    const db = await getDb();
+    const db = getDb();
     console.log(`\n⚡ Generating intelligence prep for "${query}"...\n`);
     const result = await generatePrep(db, query);
     console.log(result);
@@ -1317,7 +1314,7 @@ program
   .description('What happened while you were away')
   .option('-d, --days <n>', 'Days to catch up on', '3')
   .action(async (opts: any) => {
-    const db = await getDb();
+    const db = getDb();
     const days = parseInt(opts.days) || 3;
     console.log(`\n⚡ Catching you up on the last ${days} days...\n`);
     const result = await generateCatchup(db, { days });
@@ -1333,7 +1330,7 @@ program
   .description('Relationship health dashboard — who\'s active, warm, cooling, cold')
   .option('--cold', 'Show only cold/dormant contacts')
   .action(async (opts: any) => {
-    const db = await getDb();
+    const db = getDb();
     let contacts = getRelationshipHealth(db);
 
     if (opts.cold) {
@@ -1375,7 +1372,7 @@ program
   .command('deal <project>')
   .description('Deal intelligence dossier — everything about a project/deal')
   .action(async (project: string) => {
-    const db = await getDb();
+    const db = getDb();
     console.log(`\n⚡ Generating deal intelligence for "${project}"...\n`);
     const result = await generateDealBrief(db, project);
     console.log(result);
@@ -1395,7 +1392,7 @@ program
       return;
     }
 
-    const db = await getDb();
+    const db = getDb();
     const { existsSync, readFileSync, writeFileSync } = await import('fs');
     const { join } = await import('path');
     const { homedir, platform } = await import('os');

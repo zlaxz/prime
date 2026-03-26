@@ -1,4 +1,4 @@
-import type { Database as SqlJsDatabase } from 'sql.js';
+import type Database from 'better-sqlite3';
 import { scanGmail } from './gmail.js';
 import { scanCalendar } from './calendar.js';
 import { scanClaude } from './claude.js';
@@ -10,7 +10,7 @@ export interface SyncResult {
   error?: string;
 }
 
-export async function syncAll(db: SqlJsDatabase): Promise<SyncResult[]> {
+export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
   const results: SyncResult[] = [];
 
   // Gmail

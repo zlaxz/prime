@@ -1,8 +1,8 @@
 import { readdirSync, readFileSync, statSync } from 'fs';
 import { join, extname, basename } from 'path';
 import { v4 as uuid } from 'uuid';
-import type { Database as SqlJsDatabase } from 'sql.js';
-import { insertKnowledge, getConfig, saveDb, type KnowledgeItem } from '../db.js';
+import type Database from 'better-sqlite3';
+import { insertKnowledge, getConfig, type KnowledgeItem } from '../db.js';
 import { generateEmbedding } from '../embedding.js';
 import { extractIntelligence } from '../ai/extract.js';
 
@@ -13,7 +13,7 @@ const SUPPORTED_EXTENSIONS = new Set([
 ]);
 
 export async function indexDirectory(
-  db: SqlJsDatabase,
+  db: Database.Database,
   dirPath: string,
   options: { project?: string; recursive?: boolean } = {}
 ): Promise<{ files: number; items: number; skipped: number }> {
@@ -103,12 +103,10 @@ export async function indexDirectory(
     }
   }
 
-  db.run(
+  db.prepare(
     `INSERT OR REPLACE INTO sync_state (source, last_sync_at, items_synced, status, updated_at)
-     VALUES ('files', datetime('now'), ?, 'idle', datetime('now'))`,
-    [stats.items]
-  );
-  saveDb();
+     VALUES ('files', datetime('now'), ?, 'idle', datetime('now'))`
+  ).run(stats.items);
 
   return stats;
 }

@@ -1,4 +1,4 @@
-import type { Database as SqlJsDatabase } from 'sql.js';
+import type Database from 'better-sqlite3';
 import { v4 as uuid } from 'uuid';
 import { getAllKnowledge, getCommitments, insertCommitment, updateCommitmentState, getConfig, searchByText } from '../db.js';
 import { getDefaultProvider } from './providers.js';
@@ -33,7 +33,7 @@ function similarity(a: string, b: string): number {
  * Called during `recall refine`.
  */
 export async function extractCommitments(
-  db: SqlJsDatabase,
+  db: Database.Database,
   options: { verbose?: boolean } = {}
 ): Promise<{ extracted: number; skipped: number; errors: number }> {
   const log = options.verbose ? console.log : () => {};
@@ -139,7 +139,7 @@ Source item context:
  * - Check for fulfillment evidence in recent knowledge items
  */
 export async function updateCommitmentStates(
-  db: SqlJsDatabase,
+  db: Database.Database,
   options: { verbose?: boolean } = {}
 ): Promise<{ newOverdue: number; newDropped: number; newFulfilled: number }> {
   const log = options.verbose ? console.log : () => {};
@@ -246,7 +246,7 @@ ${candidateSummaries}`,
 /**
  * Returns structured commitment summary for use in briefings.
  */
-export function getCommitmentSummary(db: SqlJsDatabase): {
+export function getCommitmentSummary(db: Database.Database): {
   fires: any[];
   due_soon: any[];
   active: any[];

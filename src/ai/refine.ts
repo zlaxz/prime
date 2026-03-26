@@ -1,5 +1,5 @@
-import type { Database as SqlJsDatabase } from 'sql.js';
-import { searchByText, getConfig, setConfig, saveDb, insertKnowledge, type KnowledgeItem } from '../db.js';
+import type Database from 'better-sqlite3';
+import { searchByText, getConfig, setConfig, insertKnowledge, type KnowledgeItem } from '../db.js';
 import { learnBusinessContext } from './learn.js';
 import { getDefaultProvider } from './providers.js';
 import { buildHierarchy } from './hierarchy.js';
@@ -18,7 +18,7 @@ import { extractCommitments, updateCommitmentStates } from './commitments.js';
  * 5. Flag stale/outdated knowledge
  */
 export async function refineKnowledgeBase(
-  db: SqlJsDatabase,
+  db: Database.Database,
   options: { verbose?: boolean } = {}
 ): Promise<{
   contextUpdated: boolean;
@@ -79,7 +79,7 @@ export async function refineKnowledgeBase(
           if (idx >= 0) {
             const fullName = contactMap.get(longer)?.[0] || longer;
             contacts[idx] = fullName;
-            db.run('UPDATE knowledge SET contacts = ?, updated_at = datetime(\'now\') WHERE id = ?', [JSON.stringify(contacts), item.id]);
+            db.prepare('UPDATE knowledge SET contacts = ?, updated_at = datetime(\'now\') WHERE id = ?').run(JSON.stringify(contacts), item.id);
             stats.duplicatesMerged++;
           }
         }
@@ -87,8 +87,7 @@ export async function refineKnowledgeBase(
     }
   }
   if (stats.duplicatesMerged > 0) {
-    saveDb();
-    log(`  ✓ Merged ${stats.duplicatesMerged} duplicate contact references`);
+        log(`  ✓ Merged ${stats.duplicatesMerged} duplicate contact references`);
   }
 
   // ========================================================
@@ -138,7 +137,7 @@ ${context}`,
           for (const [idx, project] of Object.entries(assignments)) {
             const item = batch[parseInt(idx)];
             if (item && project && typeof project === 'string') {
-              db.run('UPDATE knowledge SET project = ?, updated_at = datetime(\'now\') WHERE id = ?', [project, item.id]);
+              db.prepare('UPDATE knowledge SET project = ?, updated_at = datetime(\'now\') WHERE id = ?').run(project as string, item.id);
               stats.reclassified++;
             }
           }
@@ -146,8 +145,7 @@ ${context}`,
       }
 
       if (stats.reclassified > 0) {
-        saveDb();
-        log(`  ✓ Reclassified ${stats.reclassified} items to correct projects`);
+                log(`  ✓ Reclassified ${stats.reclassified} items to correct projects`);
       }
     }
   }
@@ -168,12 +166,8 @@ ${context}`,
   // ========================================================
   log('  ⏰ Checking for stale knowledge...');
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString();
-  const stmt = db.prepare('SELECT id FROM knowledge WHERE source_date < $date AND importance != \'critical\' AND valid_until IS NULL');
-  stmt.bind({ $date: thirtyDaysAgo });
-  while (stmt.step()) {
-    stats.staleItems++;
-  }
-  stmt.free();
+  const staleRows = db.prepare('SELECT id FROM knowledge WHERE source_date < ? AND importance != \'critical\' AND valid_until IS NULL').all(thirtyDaysAgo);
+  stats.staleItems = staleRows.length;
   if (stats.staleItems > 0) {
     log(`  ⚠ ${stats.staleItems} items are 30+ days old (may need refresh)`);
   }

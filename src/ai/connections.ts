@@ -1,10 +1,9 @@
-import type { Database as SqlJsDatabase } from 'sql.js';
+import type Database from 'better-sqlite3';
 import { v4 as uuid } from 'uuid';
 import {
   searchByText,
   cosineSimilarity,
   getConfig,
-  saveDb,
   insertConnection,
   clearConnections,
   getConnectionsForItem,
@@ -44,7 +43,7 @@ interface ContactGraph {
 
 function decodeEmbedding(blob: any): number[] | null {
   if (!blob) return null;
-  if (blob instanceof Uint8Array) {
+  if (Buffer.isBuffer(blob) || blob instanceof Uint8Array) {
     const floats = new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
     return Array.from(floats);
   }
@@ -68,7 +67,7 @@ function parseJsonField(val: any): any[] {
 // ============================================================
 
 export async function buildConnections(
-  db: SqlJsDatabase,
+  db: Database.Database,
   options?: { verbose?: boolean }
 ): Promise<ConnectionStats> {
   const log = options?.verbose ? console.log : () => {};
@@ -348,7 +347,6 @@ Only include pairs that genuinely contradict. Empty array if none.`,
   }
   log(`      ${stats.byType.contradicts} contradicts connections`);
 
-  saveDb();
   log(`    Total: ${stats.total} connections created`);
 
   return stats;
@@ -359,7 +357,7 @@ Only include pairs that genuinely contradict. Empty array if none.`,
 // ============================================================
 
 export function getConnections(
-  db: SqlJsDatabase,
+  db: Database.Database,
   itemId: string,
   depth: number = 1
 ): ConnectedItem[] {
@@ -381,11 +379,8 @@ export function getConnections(
         visited.add(connectedId);
 
         // Fetch the connected item
-        const stmt = db.prepare('SELECT * FROM knowledge WHERE id = ?');
-        stmt.bind([connectedId]);
-        let item: any = null;
-        if (stmt.step()) {
-          item = stmt.getAsObject();
+        let item: any = db.prepare('SELECT * FROM knowledge WHERE id = ?').get(connectedId) as any || null;
+        if (item) {
           // Parse JSON fields
           for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
             if (item[field] && typeof item[field] === 'string') {
@@ -394,7 +389,6 @@ export function getConnections(
           }
           item.embedding = null; // Don't return embeddings
         }
-        stmt.free();
 
         if (item) {
           results.push({
@@ -422,7 +416,7 @@ export function getConnections(
 // ============================================================
 
 export function getContactGraph(
-  db: SqlJsDatabase,
+  db: Database.Database,
   contactName: string
 ): ContactGraph {
   const nameLower = contactName.toLowerCase().trim();
@@ -446,10 +440,8 @@ export function getContactGraph(
       if (connectedItemMap.has(connectedId)) continue;
 
       // Fetch the item
-      const stmt = db.prepare('SELECT * FROM knowledge WHERE id = ?');
-      stmt.bind([connectedId]);
-      if (stmt.step()) {
-        const connItem = stmt.getAsObject();
+      const connItem = db.prepare('SELECT * FROM knowledge WHERE id = ?').get(connectedId) as any;
+      if (connItem) {
         for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
           if (connItem[field] && typeof connItem[field] === 'string') {
             try { connItem[field] = JSON.parse(connItem[field] as string); } catch {}
@@ -467,7 +459,6 @@ export function getContactGraph(
 
         connectedItemMap.set(connectedId, { item: connItem, via });
       }
-      stmt.free();
     }
   }
 

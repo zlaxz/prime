@@ -20,7 +20,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     next();
   });
 
-  const db = await getDb();
+  const db = getDb();
 
   // Health check
   app.get('/api/health', (_req, res) => {
@@ -180,9 +180,9 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     for (const item of results) {
       const itemContacts = Array.isArray(item.contacts) ? item.contacts : JSON.parse(item.contacts || '[]');
       for (const name of itemContacts) {
-        const existing = contacts.get(name) || { name, count: 0, sources: [] };
+        const existing = contacts.get(name) || { name, count: 0, sources: [] as string[] };
         existing.count++;
-        if (!existing.sources.includes(item.source)) existing.sources.push(item.source);
+        if (!existing.sources.includes(item.source as string)) existing.sources.push(item.source as string);
         contacts.set(name, existing);
       }
     }

@@ -1,9 +1,8 @@
-import type { Database as SqlJsDatabase } from 'sql.js';
+import type Database from 'better-sqlite3';
 import { v4 as uuid } from 'uuid';
 import {
   getAllKnowledge,
   getConfig,
-  saveDb,
   insertEpisode,
   insertSemantic,
   insertTheme,
@@ -115,7 +114,7 @@ function averageEmbeddings(embeddings: number[][]): number[] {
 
 function decodeEmbedding(blob: any): number[] | null {
   if (!blob) return null;
-  if (blob instanceof Uint8Array) {
+  if (Buffer.isBuffer(blob) || blob instanceof Uint8Array) {
     const floats = new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
     return Array.from(floats);
   }
@@ -184,7 +183,7 @@ function kMeans(vectors: number[][], k: number, maxIter = 20): number[][] {
 // ============================================================
 
 export async function buildHierarchy(
-  db: SqlJsDatabase,
+  db: Database.Database,
   options: { verbose?: boolean } = {}
 ): Promise<{ episodes: number; semantics: number; themes: number; merged: number; split: number }> {
   const apiKey = getConfig(db, 'openai_api_key');
@@ -194,10 +193,9 @@ export async function buildHierarchy(
   const stats = { episodes: 0, semantics: 0, themes: 0, merged: 0, split: 0 };
 
   // Clear existing hierarchy tables for a clean rebuild
-  db.run('DELETE FROM themes');
-  db.run('DELETE FROM semantics');
-  db.run('DELETE FROM episodes');
-  saveDb();
+  db.prepare('DELETE FROM themes').run();
+  db.prepare('DELETE FROM semantics').run();
+  db.prepare('DELETE FROM episodes').run();
 
   // ========================================================
   // 1. Episode Detection
@@ -326,16 +324,12 @@ Return JSON: {"episodes": [{"index": 0, "title": "Episode title", "summary": "On
   log('  Extracting semantic facts from episodes...');
 
   // Get all episodes we just created
-  const stmt = db.prepare('SELECT * FROM episodes ORDER BY date_start DESC');
-  const episodes: any[] = [];
-  while (stmt.step()) {
-    const row = stmt.getAsObject();
+  const episodes = db.prepare('SELECT * FROM episodes ORDER BY date_start DESC').all() as any[];
+  for (const row of episodes) {
     if (row.item_ids && typeof row.item_ids === 'string') {
       try { row.item_ids = JSON.parse(row.item_ids); } catch {}
     }
-    episodes.push(row);
   }
-  stmt.free();
 
   // Process episodes in parallel batches for semantic extraction
   // Batch size: 10 episodes per Claude call, 5 concurrent calls
@@ -643,7 +637,7 @@ Return JSON: {"themes": [{"index": 0, "name": "Theme Name (2-4 words)", "descrip
 // ============================================================
 
 export async function getHierarchicalContext(
-  db: SqlJsDatabase,
+  db: Database.Database,
   query: string,
   queryEmbedding: number[]
 ): Promise<string> {
@@ -715,16 +709,13 @@ export async function getHierarchicalContext(
 
     if (episodeIds.size > 0) {
       const placeholders = Array.from(episodeIds).map(() => '?').join(',');
-      const epStmt = db.prepare(`SELECT * FROM episodes WHERE id IN (${placeholders})`);
-      epStmt.bind(Array.from(episodeIds));
+      const epRows = db.prepare(`SELECT * FROM episodes WHERE id IN (${placeholders})`).all(...Array.from(episodeIds)) as any[];
 
       parts.push('');
       parts.push('Expanded Episode Context:');
-      while (epStmt.step()) {
-        const ep = epStmt.getAsObject();
+      for (const ep of epRows) {
         parts.push(`  - ${ep.title}: ${ep.summary || ''}`);
       }
-      epStmt.free();
     }
   }
 

@@ -4,8 +4,8 @@ import { homedir } from 'os';
 import { execSync } from 'child_process';
 import { createHash } from 'crypto';
 import { v4 as uuid } from 'uuid';
-import type { Database as SqlJsDatabase } from 'sql.js';
-import { insertKnowledge, setConfig, getConfig, saveDb, type KnowledgeItem } from '../db.js';
+import type Database from 'better-sqlite3';
+import { insertKnowledge, setConfig, getConfig, type KnowledgeItem } from '../db.js';
 import { generateEmbedding } from '../embedding.js';
 import { extractIntelligence } from '../ai/extract.js';
 
@@ -51,10 +51,8 @@ interface ClaudeOrganization {
   capabilities?: string[];
 }
 
-async function claudeApiGet<T>(path: string, sessionKey: string): Promise<T> {
+async function claudeApiGetRaw<T>(path: string, sessionKey: string): Promise<T> {
   const url = `${CLAUDE_API_BASE}${path}`;
-
-  // Dynamic import for node built-in
   const { request: httpsRequest } = await import('https');
 
   return new Promise((resolve, reject) => {
@@ -76,19 +74,25 @@ async function claudeApiGet<T>(path: string, sessionKey: string): Promise<T> {
       res.on('end', async () => {
         let data = Buffer.concat(chunks);
 
-        // Handle gzip
         if (res.headers['content-encoding'] === 'gzip') {
           const { gunzipSync } = await import('zlib');
           data = gunzipSync(data);
         }
 
-        if (res.statusCode !== 200) {
+        if (res.statusCode === 403 || res.statusCode === 401) {
           const body = data.toString();
-          if (body.includes('Just a moment')) {
-            reject(new Error(`Cloudflare blocked request to ${path}. Session key may be expired.`));
-          } else {
-            reject(new Error(`Claude API error ${res.statusCode}: ${body.slice(0, 200)}`));
-          }
+          const isCloudflare = body.includes('Just a moment');
+          reject(Object.assign(
+            new Error(isCloudflare
+              ? `Session expired or Cloudflare blocked: ${path}`
+              : `Claude API ${res.statusCode}: ${body.slice(0, 200)}`),
+            { statusCode: res.statusCode, isSessionExpired: true }
+          ));
+          return;
+        }
+
+        if (res.statusCode !== 200) {
+          reject(new Error(`Claude API error ${res.statusCode}: ${data.toString().slice(0, 200)}`));
           return;
         }
 
@@ -103,6 +107,40 @@ async function claudeApiGet<T>(path: string, sessionKey: string): Promise<T> {
     req.on('error', reject);
     req.end();
   });
+}
+
+/**
+ * Wrapper around claudeApiGetRaw that detects expired sessions and
+ * attempts one auto-refresh from Claude Desktop's cookie store.
+ */
+let _sessionRefreshAttempted = false;
+
+async function claudeApiGet<T>(path: string, sessionKey: string, db?: import('better-sqlite3').Database): Promise<T> {
+  try {
+    return await claudeApiGetRaw<T>(path, sessionKey);
+  } catch (err: any) {
+    if (err.isSessionExpired && !_sessionRefreshAttempted && db) {
+      _sessionRefreshAttempted = true;
+      console.log('\n  ⚠ Session key may be expired. Attempting auto-refresh...');
+
+      const newKey = await extractSessionKey();
+      if (newKey && newKey !== sessionKey) {
+        setConfig(db, 'claude_session_key', newKey);
+        console.log('  ✓ Session key refreshed from Claude Desktop');
+        try {
+          const result = await claudeApiGetRaw<T>(path, newKey);
+          _sessionRefreshAttempted = false;
+          return result;
+        } catch {
+          // Refresh didn't help
+        }
+      }
+
+      console.log('  ✗ Auto-refresh failed. Re-run: recall connect claude');
+      _sessionRefreshAttempted = false;
+    }
+    throw err;
+  }
 }
 
 // ============================================================
@@ -209,7 +247,7 @@ export async function extractSessionKey(): Promise<string | null> {
  * 4. Auto-extract from Claude Desktop cookie store (requires Keychain access)
  * 5. Manual paste as last resort
  */
-export async function connectClaude(db: SqlJsDatabase, sessionKeyParam?: string): Promise<boolean> {
+export async function connectClaude(db: Database.Database, sessionKeyParam?: string): Promise<boolean> {
   let sessionKey = sessionKeyParam || null;
 
   // Try env var
@@ -277,11 +315,9 @@ export async function connectClaude(db: SqlJsDatabase, sessionKeyParam?: string)
 
     setConfig(db, 'claude_active_org', chatOrg.uuid);
 
-    db.run(
-      `INSERT OR REPLACE INTO sync_state (source, status, config, updated_at) VALUES ('claude', 'connected', ?, datetime('now'))`,
-      [JSON.stringify({ org: chatOrg.name, org_uuid: chatOrg.uuid, org_count: orgs.length })]
-    );
-    saveDb();
+    db.prepare(
+      `INSERT OR REPLACE INTO sync_state (source, status, config, updated_at) VALUES ('claude', 'connected', ?, datetime('now'))`
+    ).run(JSON.stringify({ org: chatOrg.name, org_uuid: chatOrg.uuid, org_count: orgs.length }));
 
     console.log(`  ✓ Connected to Claude.ai`);
     console.log(`  Organizations:`);
@@ -340,7 +376,7 @@ function stripArtifacts(text: string): string {
  * Scan Claude.ai conversations and ingest into the knowledge base.
  */
 export async function scanClaude(
-  db: SqlJsDatabase,
+  db: Database.Database,
   options: { days?: number; maxConversations?: number; orgId?: string } = {}
 ): Promise<{ conversations: number; items: number; artifacts: number; skipped: number }> {
   const days = options.days || 90;
@@ -389,11 +425,10 @@ export async function scanClaude(
   // Filter out already-indexed conversations first
   const toFetch: ClaudeConversation[] = [];
   for (const convoMeta of conversations) {
-    const existing = db.exec(
-      `SELECT id FROM knowledge WHERE source_ref = ? AND updated_at > ?`,
-      [`claude:${convoMeta.uuid}`, convoMeta.updated_at]
-    );
-    if (existing.length > 0 && existing[0].values.length > 0) {
+    const existing = db.prepare(
+      `SELECT id FROM knowledge WHERE source_ref = ? AND updated_at > ?`
+    ).get(`claude:${convoMeta.uuid}`, convoMeta.updated_at);
+    if (existing) {
       stats.skipped++;
     } else {
       toFetch.push(convoMeta);
@@ -600,12 +635,10 @@ export async function scanClaude(
   }
 
   // Update sync state
-  db.run(
+  db.prepare(
     `INSERT OR REPLACE INTO sync_state (source, last_sync_at, items_synced, status, updated_at)
-     VALUES ('claude', datetime('now'), ?, 'idle', datetime('now'))`,
-    [stats.items]
-  );
-  saveDb();
+     VALUES ('claude', datetime('now'), ?, 'idle', datetime('now'))`
+  ).run(stats.items);
 
   return stats;
 }
@@ -615,7 +648,7 @@ export async function scanClaude(
 // ============================================================
 
 export async function importClaudeConversations(
-  db: SqlJsDatabase,
+  db: Database.Database,
   path: string,
   options: { project?: string } = {}
 ): Promise<{ conversations: number; items: number }> {
@@ -729,12 +762,10 @@ export async function importClaudeConversations(
     }
   }
 
-  db.run(
+  db.prepare(
     `INSERT OR REPLACE INTO sync_state (source, last_sync_at, items_synced, status, updated_at)
-     VALUES ('claude', datetime('now'), ?, 'idle', datetime('now'))`,
-    [stats.items]
-  );
-  saveDb();
+     VALUES ('claude', datetime('now'), ?, 'idle', datetime('now'))`
+  ).run(stats.items);
 
   return stats;
 }

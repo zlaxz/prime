@@ -1,4 +1,4 @@
-import { getDb, saveDb, getConfig } from './db.js';
+import { getDb, getConfig } from './db.js';
 import { syncAll } from './connectors/index.js';
 
 /**
@@ -9,7 +9,7 @@ export async function startScheduler(intervalMinutes: number = 15) {
   console.log(`  ⏰ Background sync every ${intervalMinutes} minutes`);
 
   const run = async () => {
-    const db = await getDb();
+    const db = getDb();
     const timestamp = new Date().toISOString().slice(0, 19);
 
     try {

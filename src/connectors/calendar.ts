@@ -2,8 +2,8 @@ import { google } from 'googleapis';
 import { createServer } from 'http';
 import { URL } from 'url';
 import { v4 as uuid } from 'uuid';
-import type { Database as SqlJsDatabase } from 'sql.js';
-import { insertKnowledge, setConfig, getConfig, saveDb, type KnowledgeItem } from '../db.js';
+import type Database from 'better-sqlite3';
+import { insertKnowledge, setConfig, getConfig, type KnowledgeItem } from '../db.js';
 import { generateEmbedding } from '../embedding.js';
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
@@ -11,7 +11,7 @@ const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const REDIRECT_URI = 'http://localhost:9877/callback';
 const SCOPES = ['https://www.googleapis.com/auth/calendar.readonly'];
 
-export async function connectCalendar(db: SqlJsDatabase): Promise<boolean> {
+export async function connectCalendar(db: Database.Database): Promise<boolean> {
   const oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
 
   const authUrl = oauth2Client.generateAuthUrl({
@@ -35,10 +35,9 @@ export async function connectCalendar(db: SqlJsDatabase): Promise<boolean> {
           const { tokens } = await oauth2Client.getToken(code);
           setConfig(db, 'calendar_tokens', tokens);
 
-          db.run(
+          db.prepare(
             `INSERT OR REPLACE INTO sync_state (source, status, updated_at) VALUES ('calendar', 'connected', datetime('now'))`
-          );
-          saveDb();
+          ).run();
 
           res.writeHead(200, { 'Content-Type': 'text/html' });
           res.end('<html><body><h1>✓ Connected to Google Calendar</h1><p>You can close this window.</p></body></html>');
@@ -61,7 +60,7 @@ export async function connectCalendar(db: SqlJsDatabase): Promise<boolean> {
 }
 
 export async function scanCalendar(
-  db: SqlJsDatabase,
+  db: Database.Database,
   options: { daysBack?: number; daysForward?: number } = {}
 ): Promise<{ events: number; items: number }> {
   const daysBack = options.daysBack || 7;
@@ -154,12 +153,10 @@ export async function scanCalendar(
     await new Promise(r => setTimeout(r, 50));
   }
 
-  db.run(
+  db.prepare(
     `INSERT OR REPLACE INTO sync_state (source, last_sync_at, items_synced, status, updated_at)
-     VALUES ('calendar', datetime('now'), ?, 'idle', datetime('now'))`,
-    [items]
-  );
-  saveDb();
+     VALUES ('calendar', datetime('now'), ?, 'idle', datetime('now'))`
+  ).run(items);
 
   return { events: events.length, items };
 }

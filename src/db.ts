@@ -1,12 +1,12 @@
-import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import Database from 'better-sqlite3';
+import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
 const PRIME_DIR = join(homedir(), '.prime');
 const DB_PATH = join(PRIME_DIR, 'prime.db');
 
-let _db: SqlJsDatabase | null = null;
+let _db: Database.Database | null = null;
 
 export function ensurePrimeDir(): string {
   if (!existsSync(PRIME_DIR)) {
@@ -19,32 +19,20 @@ export function ensurePrimeDir(): string {
   return PRIME_DIR;
 }
 
-export async function getDb(): Promise<SqlJsDatabase> {
+export function getDb(): Database.Database {
   if (_db) return _db;
 
   ensurePrimeDir();
-  const SQL = await initSqlJs();
-
-  if (existsSync(DB_PATH)) {
-    const buffer = readFileSync(DB_PATH);
-    _db = new SQL.Database(buffer);
-  } else {
-    _db = new SQL.Database();
-  }
+  _db = new Database(DB_PATH);
+  _db.pragma('journal_mode = WAL');
+  _db.pragma('busy_timeout = 10000');
 
   initSchema(_db);
   return _db;
 }
 
-export function saveDb() {
-  if (!_db) return;
-  const data = _db.export();
-  const buffer = Buffer.from(data);
-  writeFileSync(DB_PATH, buffer);
-}
-
-function initSchema(db: SqlJsDatabase) {
-  db.run(`
+function initSchema(db: Database.Database) {
+  db.exec(`
     CREATE TABLE IF NOT EXISTS knowledge (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
@@ -171,8 +159,6 @@ function initSchema(db: SqlJsDatabase) {
     CREATE INDEX IF NOT EXISTS idx_commitments_due ON commitments(due_date);
     CREATE INDEX IF NOT EXISTS idx_commitments_owner ON commitments(owner);
   `);
-
-  saveDb();
 }
 
 export interface KnowledgeItem {
@@ -188,53 +174,50 @@ export interface KnowledgeItem {
   commitments?: string[];
   action_items?: string[];
   tags?: string[];
-  project?: string;
+  project?: string | null;
   importance?: string;
   embedding?: number[];
   artifact_path?: string;
   metadata?: Record<string, any>;
 }
 
-export function insertKnowledge(db: SqlJsDatabase, item: KnowledgeItem) {
+export function insertKnowledge(db: Database.Database, item: KnowledgeItem) {
   const embeddingBlob = item.embedding
     ? Buffer.from(new Float32Array(item.embedding).buffer)
     : null;
 
-  db.run(
+  db.prepare(
     `INSERT OR REPLACE INTO knowledge
     (id, title, summary, source, source_ref, source_date, contacts, organizations,
      decisions, commitments, action_items, tags, project, importance, embedding,
      artifact_path, metadata, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-    [
-      item.id,
-      item.title,
-      item.summary,
-      item.source,
-      item.source_ref,
-      item.source_date || null,
-      JSON.stringify(item.contacts || []),
-      JSON.stringify(item.organizations || []),
-      JSON.stringify(item.decisions || []),
-      JSON.stringify(item.commitments || []),
-      JSON.stringify(item.action_items || []),
-      JSON.stringify(item.tags || []),
-      item.project || null,
-      item.importance || 'normal',
-      embeddingBlob,
-      item.artifact_path || null,
-      JSON.stringify(item.metadata || {}),
-    ]
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+  ).run(
+    item.id,
+    item.title,
+    item.summary,
+    item.source,
+    item.source_ref,
+    item.source_date || null,
+    JSON.stringify(item.contacts || []),
+    JSON.stringify(item.organizations || []),
+    JSON.stringify(item.decisions || []),
+    JSON.stringify(item.commitments || []),
+    JSON.stringify(item.action_items || []),
+    JSON.stringify(item.tags || []),
+    item.project || null,
+    item.importance || 'normal',
+    embeddingBlob,
+    item.artifact_path || null,
+    JSON.stringify(item.metadata || {}),
   );
-
-  saveDb();
 }
 
-export function searchByText(db: SqlJsDatabase, query: string, limit = 20): any[] {
+export function searchByText(db: Database.Database, query: string, limit = 20): any[] {
   const pattern = `%${query}%`;
-  const stmt = db.prepare(
+  const rows = db.prepare(
     `SELECT * FROM knowledge
-    WHERE title LIKE $pattern OR summary LIKE $pattern OR contacts LIKE $pattern OR organizations LIKE $pattern OR tags LIKE $pattern
+    WHERE title LIKE ? OR summary LIKE ? OR contacts LIKE ? OR organizations LIKE ? OR tags LIKE ?
     ORDER BY
       CASE importance
         WHEN 'critical' THEN 0
@@ -243,24 +226,17 @@ export function searchByText(db: SqlJsDatabase, query: string, limit = 20): any[
         WHEN 'low' THEN 3
       END,
       source_date DESC
-    LIMIT $limit`
-  );
+    LIMIT ?`
+  ).all(pattern, pattern, pattern, pattern, pattern, limit) as any[];
 
-  stmt.bind({ $pattern: pattern, $limit: limit });
-
-  const results: any[] = [];
-  while (stmt.step()) {
-    const row = stmt.getAsObject();
-    // Parse JSON fields
+  for (const row of rows) {
     for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
       if (row[field] && typeof row[field] === 'string') {
         try { row[field] = JSON.parse(row[field] as string); } catch {}
       }
     }
-    results.push(row);
   }
-  stmt.free();
-  return results;
+  return rows;
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
@@ -273,21 +249,16 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-export function searchByEmbedding(db: SqlJsDatabase, queryEmbedding: number[], limit = 10, threshold = 0.7): any[] {
-  // Get all items with embeddings using prepared statement
-  const stmt = db.prepare('SELECT * FROM knowledge WHERE embedding IS NOT NULL');
-  const items: any[] = [];
-  while (stmt.step()) {
-    items.push(stmt.getAsObject());
-  }
-  stmt.free();
+export function searchByEmbedding(db: Database.Database, queryEmbedding: number[], limit = 10, threshold = 0.7): any[] {
+  const items = db.prepare('SELECT * FROM knowledge WHERE embedding IS NOT NULL').all() as any[];
   if (!items.length) return [];
 
   const scored = items
     .map(obj => {
-      // Decode embedding from Uint8Array
-      if (obj.embedding && obj.embedding instanceof Uint8Array) {
-        const floats = new Float32Array(obj.embedding.buffer, obj.embedding.byteOffset, obj.embedding.byteLength / 4);
+      // Decode embedding from Buffer
+      if (obj.embedding && Buffer.isBuffer(obj.embedding)) {
+        const buf = obj.embedding as Buffer;
+        const floats = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
         const similarity = cosineSimilarity(queryEmbedding, Array.from(floats));
         obj.similarity = similarity;
         obj.embedding = null;
@@ -311,54 +282,48 @@ export function searchByEmbedding(db: SqlJsDatabase, queryEmbedding: number[], l
   return scored;
 }
 
-export function getStats(db: SqlJsDatabase) {
-  const total = db.exec('SELECT COUNT(*) as count FROM knowledge');
-  const bySrc = db.exec('SELECT source, COUNT(*) as count FROM knowledge GROUP BY source');
-  const byImportance = db.exec('SELECT importance, COUNT(*) as count FROM knowledge GROUP BY importance');
-  const connections = db.exec('SELECT COUNT(*) as count FROM connections');
-  const lastSync = db.exec('SELECT source, last_sync_at, items_synced FROM sync_state ORDER BY last_sync_at DESC');
+export function getStats(db: Database.Database) {
+  const total = db.prepare('SELECT COUNT(*) as count FROM knowledge').get() as any;
+  const bySrc = db.prepare('SELECT source, COUNT(*) as count FROM knowledge GROUP BY source').all() as any[];
+  const byImportance = db.prepare('SELECT importance, COUNT(*) as count FROM knowledge GROUP BY importance').all() as any[];
+  const connections = db.prepare('SELECT COUNT(*) as count FROM connections').get() as any;
+  const lastSync = db.prepare('SELECT source, last_sync_at, items_synced FROM sync_state ORDER BY last_sync_at DESC').all() as any[];
 
   return {
-    total_items: total[0]?.values[0]?.[0] || 0,
-    by_source: bySrc[0]?.values.map(r => ({ source: r[0], count: r[1] })) || [],
-    by_importance: byImportance[0]?.values.map(r => ({ importance: r[0], count: r[1] })) || [],
-    total_connections: connections[0]?.values[0]?.[0] || 0,
-    sync_state: lastSync[0]?.values.map(r => ({ source: r[0], last_sync_at: r[1], items_synced: r[2] })) || [],
+    total_items: total?.count || 0,
+    by_source: bySrc.map(r => ({ source: r.source, count: r.count })),
+    by_importance: byImportance.map(r => ({ importance: r.importance, count: r.count })),
+    total_connections: connections?.count || 0,
+    sync_state: lastSync.map(r => ({ source: r.source, last_sync_at: r.last_sync_at, items_synced: r.items_synced })),
   };
 }
 
-export function getConfig(db: SqlJsDatabase, key: string): any {
-  const result = db.exec('SELECT value FROM config WHERE key = ?', [key]);
-  if (!result.length || !result[0].values.length) return null;
-  try { return JSON.parse(result[0].values[0][0] as string); } catch { return result[0].values[0][0]; }
+export function getConfig(db: Database.Database, key: string): any {
+  const result = db.prepare('SELECT value FROM config WHERE key = ?').get(key) as any;
+  if (!result) return null;
+  try { return JSON.parse(result.value); } catch { return result.value; }
 }
 
-export function setConfig(db: SqlJsDatabase, key: string, value: any) {
-  db.run('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', [key, JSON.stringify(value)]);
-  saveDb();
+export function setConfig(db: Database.Database, key: string, value: any) {
+  db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run(key, JSON.stringify(value));
 }
 
-export function getAllKnowledge(db: SqlJsDatabase, limit?: number): any[] {
-  const sql = limit
-    ? 'SELECT * FROM knowledge ORDER BY source_date DESC LIMIT ?'
-    : 'SELECT * FROM knowledge ORDER BY source_date DESC';
-  const stmt = limit ? db.prepare(sql).bind([limit]) : db.prepare(sql);
+export function getAllKnowledge(db: Database.Database, limit?: number): any[] {
+  const rows = limit
+    ? db.prepare('SELECT * FROM knowledge ORDER BY source_date DESC LIMIT ?').all(limit) as any[]
+    : db.prepare('SELECT * FROM knowledge ORDER BY source_date DESC').all() as any[];
 
-  const results: any[] = [];
-  while (stmt.step()) {
-    const row = stmt.getAsObject();
+  for (const row of rows) {
     for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
       if (row[field] && typeof row[field] === 'string') {
         try { row[field] = JSON.parse(row[field] as string); } catch {}
       }
     }
-    results.push(row);
   }
-  stmt.free();
-  return results;
+  return rows;
 }
 
-export function updateKnowledgeExtraction(db: SqlJsDatabase, id: string, fields: {
+export function updateKnowledgeExtraction(db: Database.Database, id: string, fields: {
   contacts?: string[];
   organizations?: string[];
   decisions?: string[];
@@ -368,25 +333,23 @@ export function updateKnowledgeExtraction(db: SqlJsDatabase, id: string, fields:
   project?: string | null;
   importance?: string;
 }) {
-  db.run(
+  db.prepare(
     `UPDATE knowledge SET
       contacts = ?, organizations = ?, decisions = ?, commitments = ?,
       action_items = ?, tags = ?, project = ?, importance = ?,
       updated_at = datetime('now')
-    WHERE id = ?`,
-    [
-      JSON.stringify(fields.contacts || []),
-      JSON.stringify(fields.organizations || []),
-      JSON.stringify(fields.decisions || []),
-      JSON.stringify(fields.commitments || []),
-      JSON.stringify(fields.action_items || []),
-      JSON.stringify(fields.tags || []),
-      fields.project || null,
-      fields.importance || 'normal',
-      id,
-    ]
+    WHERE id = ?`
+  ).run(
+    JSON.stringify(fields.contacts || []),
+    JSON.stringify(fields.organizations || []),
+    JSON.stringify(fields.decisions || []),
+    JSON.stringify(fields.commitments || []),
+    JSON.stringify(fields.action_items || []),
+    JSON.stringify(fields.tags || []),
+    fields.project || null,
+    fields.importance || 'normal',
+    id,
   );
-  saveDb();
 }
 
 // ============================================================
@@ -405,47 +368,39 @@ export interface Episode {
   embedding?: number[];
 }
 
-export function insertEpisode(db: SqlJsDatabase, episode: Episode) {
+export function insertEpisode(db: Database.Database, episode: Episode) {
   const embeddingBlob = episode.embedding
     ? Buffer.from(new Float32Array(episode.embedding).buffer)
     : null;
 
-  db.run(
+  db.prepare(
     `INSERT OR REPLACE INTO episodes
     (id, title, summary, item_ids, source, project, date_start, date_end, embedding)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      episode.id,
-      episode.title,
-      episode.summary || null,
-      JSON.stringify(episode.item_ids),
-      episode.source || null,
-      episode.project || null,
-      episode.date_start || null,
-      episode.date_end || null,
-      embeddingBlob,
-    ]
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    episode.id,
+    episode.title,
+    episode.summary || null,
+    JSON.stringify(episode.item_ids),
+    episode.source || null,
+    episode.project || null,
+    episode.date_start || null,
+    episode.date_end || null,
+    embeddingBlob,
   );
-
-  saveDb();
 }
 
-export function getEpisodes(db: SqlJsDatabase, limit?: number): any[] {
-  const sql = limit
-    ? 'SELECT * FROM episodes ORDER BY date_start DESC LIMIT ?'
-    : 'SELECT * FROM episodes ORDER BY date_start DESC';
-  const stmt = limit ? db.prepare(sql).bind([limit]) : db.prepare(sql);
+export function getEpisodes(db: Database.Database, limit?: number): any[] {
+  const rows = limit
+    ? db.prepare('SELECT * FROM episodes ORDER BY date_start DESC LIMIT ?').all(limit) as any[]
+    : db.prepare('SELECT * FROM episodes ORDER BY date_start DESC').all() as any[];
 
-  const results: any[] = [];
-  while (stmt.step()) {
-    const row = stmt.getAsObject();
+  for (const row of rows) {
     if (row.item_ids && typeof row.item_ids === 'string') {
       try { row.item_ids = JSON.parse(row.item_ids); } catch {}
     }
-    results.push(row);
   }
-  stmt.free();
-  return results;
+  return rows;
 }
 
 // ============================================================
@@ -467,35 +422,32 @@ export interface Semantic {
   embedding?: number[];
 }
 
-export function insertSemantic(db: SqlJsDatabase, semantic: Semantic) {
+export function insertSemantic(db: Database.Database, semantic: Semantic) {
   const embeddingBlob = semantic.embedding
     ? Buffer.from(new Float32Array(semantic.embedding).buffer)
     : null;
 
-  db.run(
+  db.prepare(
     `INSERT OR REPLACE INTO semantics
     (id, fact, fact_type, episode_ids, item_ids, project, contacts, valid_from, valid_until, superseded_by, confidence, embedding)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      semantic.id,
-      semantic.fact,
-      semantic.fact_type,
-      JSON.stringify(semantic.episode_ids || []),
-      JSON.stringify(semantic.item_ids || []),
-      semantic.project || null,
-      JSON.stringify(semantic.contacts || []),
-      semantic.valid_from || null,
-      semantic.valid_until || null,
-      semantic.superseded_by || null,
-      semantic.confidence ?? 1.0,
-      embeddingBlob,
-    ]
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    semantic.id,
+    semantic.fact,
+    semantic.fact_type,
+    JSON.stringify(semantic.episode_ids || []),
+    JSON.stringify(semantic.item_ids || []),
+    semantic.project || null,
+    JSON.stringify(semantic.contacts || []),
+    semantic.valid_from || null,
+    semantic.valid_until || null,
+    semantic.superseded_by || null,
+    semantic.confidence ?? 1.0,
+    embeddingBlob,
   );
-
-  saveDb();
 }
 
-export function getSemantics(db: SqlJsDatabase, options?: { project?: string; factType?: string; current?: boolean }): any[] {
+export function getSemantics(db: Database.Database, options?: { project?: string; factType?: string; current?: boolean }): any[] {
   let sql = 'SELECT * FROM semantics WHERE 1=1';
   const params: any[] = [];
 
@@ -513,21 +465,16 @@ export function getSemantics(db: SqlJsDatabase, options?: { project?: string; fa
 
   sql += ' ORDER BY created_at DESC';
 
-  const stmt = db.prepare(sql);
-  if (params.length > 0) stmt.bind(params);
+  const rows = db.prepare(sql).all(...params) as any[];
 
-  const results: any[] = [];
-  while (stmt.step()) {
-    const row = stmt.getAsObject();
+  for (const row of rows) {
     for (const field of ['episode_ids', 'item_ids', 'contacts']) {
       if (row[field] && typeof row[field] === 'string') {
         try { row[field] = JSON.parse(row[field] as string); } catch {}
       }
     }
-    results.push(row);
   }
-  stmt.free();
-  return results;
+  return rows;
 }
 
 // ============================================================
@@ -544,59 +491,52 @@ export interface Theme {
   centroid?: number[];
 }
 
-export function insertTheme(db: SqlJsDatabase, theme: Theme) {
+export function insertTheme(db: Database.Database, theme: Theme) {
   const centroidBlob = theme.centroid
     ? Buffer.from(new Float32Array(theme.centroid).buffer)
     : null;
 
-  db.run(
+  db.prepare(
     `INSERT OR REPLACE INTO themes
     (id, name, description, semantic_ids, parent_theme_id, size, centroid, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-    [
-      theme.id,
-      theme.name,
-      theme.description || null,
-      JSON.stringify(theme.semantic_ids),
-      theme.parent_theme_id || null,
-      theme.size ?? theme.semantic_ids.length,
-      centroidBlob,
-    ]
+    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+  ).run(
+    theme.id,
+    theme.name,
+    theme.description || null,
+    JSON.stringify(theme.semantic_ids),
+    theme.parent_theme_id || null,
+    theme.size ?? theme.semantic_ids.length,
+    centroidBlob,
   );
-
-  saveDb();
 }
 
-export function getThemes(db: SqlJsDatabase): any[] {
-  const stmt = db.prepare('SELECT * FROM themes ORDER BY size DESC');
+export function getThemes(db: Database.Database): any[] {
+  const rows = db.prepare('SELECT * FROM themes ORDER BY size DESC').all() as any[];
 
-  const results: any[] = [];
-  while (stmt.step()) {
-    const row = stmt.getAsObject();
+  for (const row of rows) {
     if (row.semantic_ids && typeof row.semantic_ids === 'string') {
       try { row.semantic_ids = JSON.parse(row.semantic_ids); } catch {}
     }
-    results.push(row);
   }
-  stmt.free();
-  return results;
+  return rows;
 }
 
 // ============================================================
 // Hierarchy stats
 // ============================================================
 
-export function getHierarchyStats(db: SqlJsDatabase): { themes: number; semantics: number; episodes: number; items: number } {
-  const themes = db.exec('SELECT COUNT(*) FROM themes');
-  const semantics = db.exec('SELECT COUNT(*) FROM semantics');
-  const episodes = db.exec('SELECT COUNT(*) FROM episodes');
-  const items = db.exec('SELECT COUNT(*) FROM knowledge');
+export function getHierarchyStats(db: Database.Database): { themes: number; semantics: number; episodes: number; items: number } {
+  const themes = db.prepare('SELECT COUNT(*) as count FROM themes').get() as any;
+  const semantics = db.prepare('SELECT COUNT(*) as count FROM semantics').get() as any;
+  const episodes = db.prepare('SELECT COUNT(*) as count FROM episodes').get() as any;
+  const items = db.prepare('SELECT COUNT(*) as count FROM knowledge').get() as any;
 
   return {
-    themes: (themes[0]?.values[0]?.[0] as number) || 0,
-    semantics: (semantics[0]?.values[0]?.[0] as number) || 0,
-    episodes: (episodes[0]?.values[0]?.[0] as number) || 0,
-    items: (items[0]?.values[0]?.[0] as number) || 0,
+    themes: themes?.count || 0,
+    semantics: semantics?.count || 0,
+    episodes: episodes?.count || 0,
+    items: items?.count || 0,
   };
 }
 
@@ -612,45 +552,35 @@ export interface Connection {
   confidence: number;
 }
 
-export function insertConnection(db: SqlJsDatabase, conn: { id: string; source_id: string; target_id: string; relationship: string; confidence: number }) {
-  db.run(
-    `INSERT OR IGNORE INTO connections (id, source_id, target_id, relationship, confidence) VALUES (?, ?, ?, ?, ?)`,
-    [conn.id, conn.source_id, conn.target_id, conn.relationship, conn.confidence]
-  );
+export function insertConnection(db: Database.Database, conn: { id: string; source_id: string; target_id: string; relationship: string; confidence: number }) {
+  db.prepare(
+    `INSERT OR IGNORE INTO connections (id, source_id, target_id, relationship, confidence) VALUES (?, ?, ?, ?, ?)`
+  ).run(conn.id, conn.source_id, conn.target_id, conn.relationship, conn.confidence);
 }
 
-export function getConnectionsForItem(db: SqlJsDatabase, itemId: string): Connection[] {
-  const stmt = db.prepare(
-    `SELECT * FROM connections WHERE source_id = $id OR target_id = $id`
-  );
-  stmt.bind({ $id: itemId });
+export function getConnectionsForItem(db: Database.Database, itemId: string): Connection[] {
+  const rows = db.prepare(
+    `SELECT * FROM connections WHERE source_id = ? OR target_id = ?`
+  ).all(itemId, itemId) as any[];
 
-  const results: Connection[] = [];
-  while (stmt.step()) {
-    const row = stmt.getAsObject();
-    results.push({
-      id: row.id as string,
-      source_id: row.source_id as string,
-      target_id: row.target_id as string,
-      relationship: row.relationship as string,
-      confidence: row.confidence as number,
-    });
-  }
-  stmt.free();
-  return results;
+  return rows.map(row => ({
+    id: row.id as string,
+    source_id: row.source_id as string,
+    target_id: row.target_id as string,
+    relationship: row.relationship as string,
+    confidence: row.confidence as number,
+  }));
 }
 
-export function clearConnections(db: SqlJsDatabase) {
-  db.run('DELETE FROM connections');
+export function clearConnections(db: Database.Database) {
+  db.prepare('DELETE FROM connections').run();
 }
 
-export function getConnectionStats(db: SqlJsDatabase): Record<string, number> {
-  const result = db.exec('SELECT relationship, COUNT(*) as count FROM connections GROUP BY relationship');
+export function getConnectionStats(db: Database.Database): Record<string, number> {
+  const rows = db.prepare('SELECT relationship, COUNT(*) as count FROM connections GROUP BY relationship').all() as any[];
   const stats: Record<string, number> = {};
-  if (result.length > 0) {
-    for (const row of result[0].values) {
-      stats[row[0] as string] = row[1] as number;
-    }
+  for (const row of rows) {
+    stats[row.relationship as string] = row.count as number;
   }
   return stats;
 }
@@ -675,32 +605,29 @@ export interface Commitment {
   importance?: string;
 }
 
-export function insertCommitment(db: SqlJsDatabase, commitment: Commitment) {
-  db.run(
+export function insertCommitment(db: Database.Database, commitment: Commitment) {
+  db.prepare(
     `INSERT OR REPLACE INTO commitments
     (id, text, owner, assigned_to, due_date, detected_from, detected_at, state, state_changed_at, fulfilled_evidence, context, project, importance, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-    [
-      commitment.id,
-      commitment.text,
-      commitment.owner || null,
-      commitment.assigned_to || null,
-      commitment.due_date || null,
-      commitment.detected_from || null,
-      commitment.detected_at || null,
-      commitment.state || 'detected',
-      commitment.state_changed_at || null,
-      commitment.fulfilled_evidence || null,
-      commitment.context || null,
-      commitment.project || null,
-      commitment.importance || 'normal',
-    ]
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+  ).run(
+    commitment.id,
+    commitment.text,
+    commitment.owner || null,
+    commitment.assigned_to || null,
+    commitment.due_date || null,
+    commitment.detected_from || null,
+    commitment.detected_at || null,
+    commitment.state || 'detected',
+    commitment.state_changed_at || null,
+    commitment.fulfilled_evidence || null,
+    commitment.context || null,
+    commitment.project || null,
+    commitment.importance || 'normal',
   );
-
-  saveDb();
 }
 
-export function getCommitments(db: SqlJsDatabase, options?: { state?: string; owner?: string; project?: string; overdue?: boolean }): any[] {
+export function getCommitments(db: Database.Database, options?: { state?: string; owner?: string; project?: string; overdue?: boolean }): any[] {
   let sql = 'SELECT * FROM commitments WHERE 1=1';
   const params: any[] = [];
 
@@ -722,42 +649,31 @@ export function getCommitments(db: SqlJsDatabase, options?: { state?: string; ow
 
   sql += ' ORDER BY due_date ASC, importance DESC';
 
-  const stmt = db.prepare(sql);
-  if (params.length > 0) stmt.bind(params);
-
-  const results: any[] = [];
-  while (stmt.step()) {
-    results.push(stmt.getAsObject());
-  }
-  stmt.free();
-  return results;
+  return db.prepare(sql).all(...params) as any[];
 }
 
-export function updateCommitmentState(db: SqlJsDatabase, id: string, newState: string, evidence?: string) {
-  db.run(
-    `UPDATE commitments SET state = ?, state_changed_at = datetime('now'), fulfilled_evidence = COALESCE(?, fulfilled_evidence), updated_at = datetime('now') WHERE id = ?`,
-    [newState, evidence || null, id]
-  );
-  saveDb();
+export function updateCommitmentState(db: Database.Database, id: string, newState: string, evidence?: string) {
+  db.prepare(
+    `UPDATE commitments SET state = ?, state_changed_at = datetime('now'), fulfilled_evidence = COALESCE(?, fulfilled_evidence), updated_at = datetime('now') WHERE id = ?`
+  ).run(newState, evidence || null, id);
 }
 
-export function getCommitmentStats(db: SqlJsDatabase): { total: number; byState: Record<string, number>; overdueCount: number } {
-  const total = db.exec('SELECT COUNT(*) FROM commitments');
-  const byState = db.exec('SELECT state, COUNT(*) FROM commitments GROUP BY state');
-  const overdue = db.exec("SELECT COUNT(*) FROM commitments WHERE state = 'active' AND due_date < datetime('now')");
+export function getCommitmentStats(db: Database.Database): { total: number; byState: Record<string, number>; overdueCount: number } {
+  const total = db.prepare('SELECT COUNT(*) as count FROM commitments').get() as any;
+  const byState = db.prepare('SELECT state, COUNT(*) as count FROM commitments GROUP BY state').all() as any[];
+  const overdue = db.prepare("SELECT COUNT(*) as count FROM commitments WHERE state = 'active' AND due_date < datetime('now')").get() as any;
 
   const stateMap: Record<string, number> = {};
-  if (byState.length > 0) {
-    for (const row of byState[0].values) {
-      stateMap[row[0] as string] = row[1] as number;
-    }
+  for (const row of byState) {
+    stateMap[row.state as string] = row.count as number;
   }
 
   return {
-    total: (total[0]?.values[0]?.[0] as number) || 0,
+    total: total?.count || 0,
     byState: stateMap,
-    overdueCount: (overdue[0]?.values[0]?.[0] as number) || 0,
+    overdueCount: overdue?.count || 0,
   };
 }
 
+export type { Database } from 'better-sqlite3';
 export { PRIME_DIR, DB_PATH };

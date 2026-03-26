@@ -1,4 +1,4 @@
-import type { Database as SqlJsDatabase } from 'sql.js';
+import type Database from 'better-sqlite3';
 import { getConfig, searchByText, searchByEmbedding } from '../db.js';
 import { generateEmbedding } from '../embedding.js';
 import { getDefaultProvider } from './providers.js';
@@ -7,21 +7,16 @@ import { getDefaultProvider } from './providers.js';
 // Shared helpers
 // ============================================================
 
-function queryRows(db: SqlJsDatabase, sql: string, params: any[] = []): any[] {
-  const stmt = db.prepare(sql);
-  if (params.length > 0) stmt.bind(params);
-  const results: any[] = [];
-  while (stmt.step()) {
-    const row = stmt.getAsObject();
+function queryRows(db: Database.Database, sql: string, params: any[] = []): any[] {
+  const rows = db.prepare(sql).all(...params) as any[];
+  for (const row of rows) {
     for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
       if (row[field] && typeof row[field] === 'string') {
         try { row[field] = JSON.parse(row[field] as string); } catch {}
       }
     }
-    results.push(row);
   }
-  stmt.free();
-  return results;
+  return rows;
 }
 
 function parseJson(value: any): any {
@@ -51,7 +46,7 @@ export interface AlertItem {
   conversation_uuid?: string;
 }
 
-export function getAlerts(db: SqlJsDatabase): AlertItem[] {
+export function getAlerts(db: Database.Database): AlertItem[] {
   const alerts: AlertItem[] = [];
   const allItems = queryRows(db, `SELECT * FROM knowledge ORDER BY source_date DESC`, []);
   const now = new Date();
@@ -149,7 +144,7 @@ export function getAlerts(db: SqlJsDatabase): AlertItem[] {
 // ============================================================
 
 export async function generatePrep(
-  db: SqlJsDatabase,
+  db: Database.Database,
   query: string,
 ): Promise<string> {
   const apiKey = getConfig(db, 'openai_api_key');
@@ -231,7 +226,7 @@ If this is a person, focus on the relationship. If it's a project/deal, focus on
 // ============================================================
 
 export async function generateCatchup(
-  db: SqlJsDatabase,
+  db: Database.Database,
   options: { days?: number } = {}
 ): Promise<string> {
   const days = options.days ?? 3;
@@ -339,7 +334,7 @@ export interface ContactHealth {
   commitments: string[];
 }
 
-export function getRelationshipHealth(db: SqlJsDatabase): ContactHealth[] {
+export function getRelationshipHealth(db: Database.Database): ContactHealth[] {
   const allItems = queryRows(db, `SELECT * FROM knowledge ORDER BY source_date DESC`, []);
 
   const contactMap = new Map<string, {
@@ -402,7 +397,7 @@ export function getRelationshipHealth(db: SqlJsDatabase): ContactHealth[] {
 // ============================================================
 
 export async function generateDealBrief(
-  db: SqlJsDatabase,
+  db: Database.Database,
   projectQuery: string,
 ): Promise<string> {
   const apiKey = getConfig(db, 'openai_api_key');

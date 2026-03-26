@@ -1,4 +1,4 @@
-import type { Database as SqlJsDatabase } from 'sql.js';
+import type Database from 'better-sqlite3';
 import { searchByEmbedding, searchByText, getConfig } from '../db.js';
 import { generateEmbedding } from '../embedding.js';
 import { getDefaultProvider } from './providers.js';
@@ -9,7 +9,7 @@ export interface AskResult {
 }
 
 export async function ask(
-  db: SqlJsDatabase,
+  db: Database.Database,
   question: string,
   options: { model?: string; provider?: string } = {}
 ): Promise<string> {
@@ -18,7 +18,7 @@ export async function ask(
 }
 
 export async function askWithSources(
-  db: SqlJsDatabase,
+  db: Database.Database,
   question: string,
   options: { model?: string; provider?: string } = {}
 ): Promise<AskResult> {
