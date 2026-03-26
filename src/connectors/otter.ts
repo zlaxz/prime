@@ -320,9 +320,9 @@ export async function scanOtter(
           speech.duration ? `Duration: ${Math.round(speech.duration / 60)} minutes` : '',
           speech.calendar_meeting_id ? `Calendar meeting: ${speech.calendar_meeting_id}` : '',
           speech.calendar_guests?.length ? `Calendar guests: ${speech.calendar_guests.join(', ')}` : '',
-          outlineTexts.length ? `\nOutline:\n${outlineTexts.join('\n')}` : '',
+          outlineTexts.length ? `\nOutline:\n${outlineTexts.slice(0, 30).join('\n')}` : '',
           speech.action_item_count ? `\nAction items: ${speech.action_item_count} items noted` : '',
-        ].filter(Boolean).join('\n');
+        ].filter(Boolean).join('\n').slice(0, 4000); // Truncate to avoid shell arg limits
 
         // Run AI extraction
         const extracted = await extractIntelligence(content, apiKey);
