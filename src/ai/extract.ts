@@ -1,4 +1,37 @@
-import OpenAI from 'openai';
+import { getDefaultProvider, type LLMProvider } from './providers.js';
+
+// Cache business context to avoid reading DB every call
+let _cachedBusinessContext: string | null = null;
+let _contextLoadedAt = 0;
+
+// Cache the provider instance
+let _cachedProvider: LLMProvider | null = null;
+
+export function setBusinessContext(ctx: string) {
+  _cachedBusinessContext = ctx;
+  _contextLoadedAt = Date.now();
+}
+
+export async function loadBusinessContext(): Promise<string> {
+  // Cache for 5 minutes
+  if (_cachedBusinessContext && Date.now() - _contextLoadedAt < 300000) {
+    return _cachedBusinessContext;
+  }
+
+  try {
+    // Dynamic import to avoid circular dependency
+    const { getDb, getConfig } = await import('../db.js');
+    const db = await getDb();
+    const ctx = getConfig(db, 'business_context');
+    if (ctx) {
+      _cachedBusinessContext = typeof ctx === 'string' ? ctx : JSON.stringify(ctx);
+      _contextLoadedAt = Date.now();
+      return _cachedBusinessContext;
+    }
+  } catch {}
+
+  return '';
+}
 
 export interface ExtractionResult {
   title: string;
@@ -37,28 +70,37 @@ Rules:
 - project: Only set if clearly related to a known initiative
 - Be concise. Summaries under 3 sentences. Title under 80 chars.`;
 
+async function getProvider(apiKey?: string): Promise<LLMProvider> {
+  if (_cachedProvider) return _cachedProvider;
+  _cachedProvider = await getDefaultProvider(apiKey);
+  return _cachedProvider;
+}
+
 export async function extractIntelligence(
   content: string,
-  apiKey: string,
-  model: string = 'gpt-4o-mini'
+  apiKey?: string,
+  _model?: string,
+  businessContext?: string
 ): Promise<ExtractionResult> {
-  const client = new OpenAI({ apiKey });
+  const provider = await getProvider(apiKey);
 
-  const response = await client.chat.completions.create({
-    model,
-    messages: [
-      { role: 'system', content: EXTRACTION_PROMPT },
+  // Auto-load business context if not passed
+  const ctx = businessContext || await loadBusinessContext();
+  let systemPrompt = EXTRACTION_PROMPT;
+  if (ctx) {
+    systemPrompt += `\n\nBUSINESS CONTEXT (use this to correctly assign projects and importance):\n${ctx}`;
+  }
+
+  const response = await provider.chat(
+    [
+      { role: 'system', content: systemPrompt },
       { role: 'user', content: content.slice(0, 6000) },
     ],
-    temperature: 0.1,
-    max_tokens: 1000,
-    response_format: { type: 'json_object' },
-  });
-
-  const text = response.choices[0]?.message?.content || '{}';
+    { temperature: 0.1, max_tokens: 1000, json: true }
+  );
 
   try {
-    return JSON.parse(text) as ExtractionResult;
+    return JSON.parse(response) as ExtractionResult;
   } catch {
     return {
       title: content.slice(0, 80),
@@ -77,19 +119,19 @@ export async function extractIntelligence(
 
 export async function extractBatch(
   items: { id: string; content: string }[],
-  apiKey: string,
-  model: string = 'gpt-4o-mini'
+  apiKey?: string,
+  _model?: string
 ): Promise<Map<string, ExtractionResult>> {
   const results = new Map<string, ExtractionResult>();
 
-  // Process in parallel, 5 at a time
-  const concurrency = 5;
+  // Process in parallel, 3 at a time (claude CLI has its own concurrency limits)
+  const concurrency = 3;
   for (let i = 0; i < items.length; i += concurrency) {
     const batch = items.slice(i, i + concurrency);
     const extractions = await Promise.all(
       batch.map(async (item) => {
         try {
-          const result = await extractIntelligence(item.content, apiKey, model);
+          const result = await extractIntelligence(item.content, apiKey);
           return { id: item.id, result };
         } catch {
           return {

@@ -1,11 +1,11 @@
-import OpenAI from 'openai';
 import type { Database as SqlJsDatabase } from 'sql.js';
 import { searchByEmbedding, searchByText, getConfig } from '../db.js';
 import { generateEmbedding } from '../embedding.js';
+import { getDefaultProvider } from './providers.js';
 
 export interface AskResult {
   answer: string;
-  sources: { id: string; title: string; source: string; source_ref: string; similarity?: number }[];
+  sources: { id: string; num: number; title: string; source: string; source_ref: string; similarity?: number }[];
 }
 
 export async function ask(
@@ -23,16 +23,20 @@ export async function askWithSources(
   options: { model?: string; provider?: string } = {}
 ): Promise<AskResult> {
   const apiKey = getConfig(db, 'openai_api_key');
-  if (!apiKey) throw new Error('No API key. Run: recall init');
+  const provider = await getDefaultProvider(apiKey || undefined);
 
   const businessContext = getConfig(db, 'business_context') || '';
 
-  // Semantic search for relevant knowledge
+  // Semantic search for relevant knowledge (still needs OpenAI for embeddings)
   let relevantItems: any[] = [];
-  try {
-    const queryEmb = await generateEmbedding(question, apiKey);
-    relevantItems = searchByEmbedding(db, queryEmb, 15, 0.25);
-  } catch {
+  if (apiKey) {
+    try {
+      const queryEmb = await generateEmbedding(question, apiKey);
+      relevantItems = searchByEmbedding(db, queryEmb, 15, 0.25);
+    } catch {
+      relevantItems = searchByText(db, question, 15);
+    }
+  } else {
     relevantItems = searchByText(db, question, 15);
   }
 
@@ -88,18 +92,13 @@ RULES:
 - Be concise and actionable.
 - End with a "Sources:" section listing the cited source numbers, titles, and origins.`;
 
-  const client = new OpenAI({ apiKey });
-  const response = await client.chat.completions.create({
-    model: options.model || 'gpt-4o-mini',
-    messages: [
+  const answer = await provider.chat(
+    [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: question },
     ],
-    temperature: 0.3,
-    max_tokens: 2000,
-  });
-
-  const answer = response.choices[0]?.message?.content || 'Unable to generate response.';
+    { temperature: 0.3, max_tokens: 2000 }
+  );
 
   return { answer, sources };
 }

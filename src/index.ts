@@ -8,6 +8,8 @@ import { askWithSources } from './ai/ask.js';
 import { startServer } from './server/index.js';
 import { v4 as uuid } from 'uuid';
 import { connectGmail, scanGmail } from './connectors/gmail.js';
+import { learnBusinessContext } from './ai/learn.js';
+import { refineKnowledgeBase } from './ai/refine.js';
 import { connectCalendar, scanCalendar } from './connectors/calendar.js';
 import { indexDirectory } from './connectors/files.js';
 import { importClaudeConversations } from './connectors/claude.js';
@@ -353,8 +355,19 @@ program
           }
         }
 
-        console.log('\n  Try: prime search "who should I follow up with"');
-        console.log('  Try: prime ask "what should I focus on today?"\n');
+        // Auto-learn business context from ingested data
+        console.log('\n  🧠 Learning your business context...');
+        try {
+          const context = await learnBusinessContext(db);
+          if (context) {
+            console.log('  ✓ Business context auto-generated. Future extractions will be more accurate.');
+          }
+        } catch {
+          console.log('  ⚠ Could not auto-generate business context. Use: recall context "..."');
+        }
+
+        console.log('\n  Try: recall search "who should I follow up with"');
+        console.log('  Try: recall ask "what should I focus on today?"\n');
       } else {
         console.log('  ✗ Failed to connect Gmail\n');
       }
@@ -402,6 +415,59 @@ program
       console.log(`  ✓ ${conversations} conversations → ${items} knowledge items\n`);
     } else {
       console.log(`  Unknown import source: ${source}. Available: claude\n`);
+    }
+  });
+
+// ============================================================
+// prime learn
+// ============================================================
+program
+  .command('learn')
+  .description('Re-learn business context from all ingested data')
+  .action(async () => {
+    const db = await getDb();
+    console.log('\n  🧠 Learning business context from all knowledge...\n');
+
+    try {
+      const context = await learnBusinessContext(db);
+      if (context) {
+        console.log('  ✓ Business context generated:\n');
+        // Show first 500 chars of context
+        const preview = context.length > 500 ? context.substring(0, 500) + '...' : context;
+        console.log(`  ${preview.replace(/\n/g, '\n  ')}\n`);
+      } else {
+        console.log('  ⚠ Not enough data to learn context. Add more knowledge first.\n');
+      }
+    } catch (err: any) {
+      console.error(`  Error: ${err.message}\n`);
+    }
+  });
+
+// ============================================================
+// prime refine
+// ============================================================
+program
+  .command('refine')
+  .description('Refine the knowledge base — dedup contacts, reclassify projects, detect stale items')
+  .option('-v, --verbose', 'Show detailed progress')
+  .action(async (opts: any) => {
+    const db = await getDb();
+    console.log('\n⚡ Refining knowledge base...\n');
+
+    try {
+      const stats = await refineKnowledgeBase(db, { verbose: opts.verbose });
+
+      console.log('\n  Refinement complete:');
+      if (stats.contextUpdated) console.log('    ✓ Business context updated');
+      if (stats.duplicatesMerged > 0) console.log(`    ✓ ${stats.duplicatesMerged} duplicate contacts merged`);
+      if (stats.reclassified > 0) console.log(`    ✓ ${stats.reclassified} items reclassified to correct projects`);
+      if (stats.staleItems > 0) console.log(`    ⚠ ${stats.staleItems} items are 30+ days old (may need refresh)`);
+      if (!stats.contextUpdated && stats.duplicatesMerged === 0 && stats.reclassified === 0 && stats.staleItems === 0) {
+        console.log('    ✓ Knowledge base is already clean');
+      }
+      console.log('');
+    } catch (err: any) {
+      console.error(`  Error: ${err.message}\n`);
     }
   });
 

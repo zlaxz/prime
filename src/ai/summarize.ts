@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import { getDefaultProvider } from './providers.js';
 
 export async function summarizeThreads(
   threads: { id: string; subject: string; from: string; lastFrom: string; lastDate: string; snippet: string; messageCount: number }[],
@@ -10,7 +10,7 @@ export async function summarizeThreads(
   commitments: { text: string; threadId: string }[];
   summary: string;
 }> {
-  const client = new OpenAI({ apiKey });
+  const provider = await getDefaultProvider(apiKey || undefined);
 
   const threadSummaries = threads.map(t => {
     const daysSince = Math.floor((Date.now() - new Date(t.lastDate).getTime()) / 86400000);
@@ -18,9 +18,8 @@ export async function summarizeThreads(
     return `Thread "${t.subject}" (${t.messageCount} msgs)\n  From: ${t.from}\n  Last: ${t.lastFrom} ${daysSince}d ago\n  ${lastFromUser ? '[YOU SENT LAST]' : '[THEY SENT LAST - WAITING ON YOU]'}\n  Snippet: ${t.snippet}`;
   }).join('\n\n');
 
-  const response = await client.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [
+  const response = await provider.chat(
+    [
       {
         role: 'system',
         content: `Analyze these email thread summaries and identify:
@@ -38,14 +37,11 @@ Return JSON:
       },
       { role: 'user', content: `User email: ${userEmail}\n\n${threadSummaries}` }
     ],
-    temperature: 0.1,
-    max_tokens: 2000,
-    response_format: { type: 'json_object' },
-  });
+    { temperature: 0.1, max_tokens: 2000, json: true }
+  );
 
-  const text = response.choices[0]?.message?.content || '{}';
   try {
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(response);
     return {
       droppedBalls: parsed.dropped_balls || [],
       goingCold: parsed.going_cold || [],
