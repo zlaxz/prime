@@ -1878,4 +1878,42 @@ program
     }
   });
 
+// ============================================================
+// prime report [agent] — show the latest full agent report
+// ============================================================
+program
+  .command('report [agent]')
+  .description('Show the latest full agent report (default: most recent from any agent)')
+  .action(async (agentName?: string) => {
+    const db = await getDb();
+
+    let sql: string;
+    let params: any[];
+
+    if (agentName) {
+      sql = `SELECT * FROM knowledge WHERE source = 'agent-report' AND tags LIKE ? ORDER BY source_date DESC LIMIT 1`;
+      params = [`%agent:${agentName}%`];
+    } else {
+      sql = `SELECT * FROM knowledge WHERE source = 'agent-report' ORDER BY source_date DESC LIMIT 1`;
+      params = [];
+    }
+
+    const row = db.prepare(sql).get(...params) as any;
+
+    if (!row) {
+      console.log(`\n  No agent reports found.${agentName ? ` Try: recall run-agent ${agentName}` : ''}\n`);
+      return;
+    }
+
+    const meta = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata || {});
+    const fullReport = meta.full_report || row.summary || 'No report content.';
+    const age = row.source_date
+      ? `${Math.floor((Date.now() - new Date(row.source_date).getTime()) / 3600000)}h ago`
+      : '';
+
+    console.log(`\n📊 ${row.title} (${age})\n`);
+    console.log(fullReport);
+    console.log('');
+  });
+
 program.parse();
