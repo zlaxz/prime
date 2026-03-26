@@ -530,7 +530,8 @@ program
 // ============================================================
 program
   .command('refine')
-  .description('Refine the knowledge base — dedup contacts, reclassify projects, detect stale items')
+  .alias('dream')
+  .description('Refine the knowledge base — dedup, classify, extract, consolidate, connect (alias: dream)')
   .option('-v, --verbose', 'Show detailed progress')
   .action(async (opts: any) => {
     const db = getDb();
