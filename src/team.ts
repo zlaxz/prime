@@ -4,7 +4,12 @@ import { homedir } from 'os';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import type Database from 'better-sqlite3';
-import { getConfig } from './db.js';
+import { getConfig, getDb, insertKnowledge, searchByText, searchByEmbedding, type KnowledgeItem } from './db.js';
+import { generateEmbedding } from './embedding.js';
+import { getAlerts } from './ai/intelligence.js';
+import { notify } from './notify.js';
+import OpenAI from 'openai';
+import { v4 as uuid } from 'uuid';
 
 const execFileAsync = promisify(execFile);
 
