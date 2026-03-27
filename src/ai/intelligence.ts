@@ -298,17 +298,24 @@ ${itemDetails}
 ${allCommitments.length > 0 ? '\nCOMMITMENTS MADE:\n' + allCommitments.map(c => `- ${c}`).join('\n') : ''}
 ${allDecisions.length > 0 ? '\nDECISIONS MADE:\n' + allDecisions.map(d => `- ${d}`).join('\n') : ''}
 
-Generate a catch-up briefing:
+Generate a catch-up briefing. The user has ADHD — structure for quick scanning, lead with GOOD NEWS.
 
-1. EXECUTIVE SUMMARY — 3-4 sentences on what happened
-2. BY PROJECT — What moved forward on each project/deal
-3. PEOPLE — Who was involved, any new contacts, relationship updates
-4. COMMITMENTS — What was promised during this period
-5. DECISIONS — What was decided
-6. NEEDS YOUR ATTENTION — What's waiting on you or requires action
-7. WHAT'S NEXT — Recommended priorities
+1. RESOLVED WITHOUT YOU (good news first — reduces shame/overwhelm):
+   - Things that got handled, commitments fulfilled, threads closed
+   - This section exists to say "the world didn't end while you were away"
 
-Be specific. Reference source numbers. Prioritize by business impact.`;
+2. STILL NEEDS YOU (keep this SHORT — count items):
+   - Numbered list, max 5 items
+   - Each with one clear action: [RESPOND / DRAFT / DEFER / DISMISS]
+   - Cite source numbers
+
+3. NOTHING ELSE IS ON FIRE (or: "X items can wait")
+   - Explicitly reassure: "Everything else is routine" or "3 items can wait until next week"
+
+4. BY PROJECT (optional — only if user asks "tell me more"):
+   - Brief status per active project
+
+Be specific. Reference source numbers. Lead with good news. Keep "STILL NEEDS YOU" under 5 items.`;
 
   return await provider.chat(
     [

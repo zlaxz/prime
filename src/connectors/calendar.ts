@@ -1,6 +1,4 @@
 import { google } from 'googleapis';
-import { createServer } from 'http';
-import { URL } from 'url';
 import { v4 as uuid } from 'uuid';
 import type Database from 'better-sqlite3';
 import { insertKnowledge, setConfig, getConfig, type KnowledgeItem } from '../db.js';
@@ -8,55 +6,36 @@ import { generateEmbedding } from '../embedding.js';
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
-const REDIRECT_URI = 'http://localhost:9877/callback';
-const SCOPES = ['https://www.googleapis.com/auth/calendar.readonly'];
+const REDIRECT_URI = 'http://localhost:9876/callback';
 
+/**
+ * Connect Calendar — reuses Gmail OAuth tokens (calendar.readonly scope added to Gmail flow).
+ * No separate OAuth dance needed.
+ */
 export async function connectCalendar(db: Database.Database): Promise<boolean> {
-  const oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+  const tokens = getConfig(db, 'gmail_tokens');
+  if (!tokens) {
+    console.log('  ✗ Gmail not connected. Calendar shares Gmail OAuth tokens.');
+    console.log('    Run: recall connect gmail  (calendar scope is included automatically)');
+    return false;
+  }
 
-  const authUrl = oauth2Client.generateAuthUrl({
-    access_type: 'offline',
-    scope: SCOPES,
-    prompt: 'consent',
-    login_hint: getConfig(db, 'gmail_email') || '',
-  });
+  // Check if the existing token has calendar scope
+  const scope = tokens.scope || '';
+  if (!scope.includes('calendar')) {
+    console.log('  ⚠ Gmail token missing calendar scope. Re-authenticate:');
+    console.log('    Run: recall connect gmail  (now includes calendar.readonly scope)');
+    return false;
+  }
 
-  const open = (await import('open')).default;
-  console.log('  Opening browser for Google Calendar sign-in...');
-  await open(authUrl);
+  // Mark calendar as connected using shared gmail tokens
+  setConfig(db, 'calendar_tokens', tokens);
+  db.prepare(
+    `INSERT OR REPLACE INTO sync_state (source, status, updated_at) VALUES ('calendar', 'connected', datetime('now'))`
+  ).run();
 
-  return new Promise((resolve) => {
-    const server = createServer(async (req, res) => {
-      const url = new URL(req.url!, `http://localhost:9877`);
-      const code = url.searchParams.get('code');
-
-      if (code) {
-        try {
-          const { tokens } = await oauth2Client.getToken(code);
-          setConfig(db, 'calendar_tokens', tokens);
-
-          db.prepare(
-            `INSERT OR REPLACE INTO sync_state (source, status, updated_at) VALUES ('calendar', 'connected', datetime('now'))`
-          ).run();
-
-          res.writeHead(200, { 'Content-Type': 'text/html' });
-          res.end('<html><body><h1>✓ Connected to Google Calendar</h1><p>You can close this window.</p></body></html>');
-
-          console.log('  ✓ Connected to Google Calendar');
-          server.close();
-          resolve(true);
-        } catch {
-          res.writeHead(500);
-          res.end('Error');
-          server.close();
-          resolve(false);
-        }
-      }
-    });
-
-    server.listen(9877);
-    setTimeout(() => { server.close(); resolve(false); }, 120000);
-  });
+  console.log('  ✓ Calendar connected (sharing Gmail OAuth tokens)');
+  return true;
 }
 
 export async function scanCalendar(
@@ -66,10 +45,11 @@ export async function scanCalendar(
   const daysBack = options.daysBack || 7;
   const daysForward = options.daysForward || 7;
 
-  const tokens = getConfig(db, 'calendar_tokens');
+  // Use calendar_tokens or fall back to gmail_tokens (shared OAuth)
+  const tokens = getConfig(db, 'calendar_tokens') || getConfig(db, 'gmail_tokens');
   const apiKey = getConfig(db, 'openai_api_key');
-  if (!tokens) throw new Error('Calendar not connected. Run: prime connect calendar');
-  if (!apiKey) throw new Error('No API key. Run: prime init');
+  if (!tokens) throw new Error('Calendar not connected. Run: recall connect gmail (includes calendar scope)');
+  if (!apiKey) throw new Error('No API key. Run: recall init');
 
   const clientId = CLIENT_ID || getConfig(db, 'google_client_id') || '';
   const clientSecret = CLIENT_SECRET || getConfig(db, 'google_client_secret') || '';
@@ -78,7 +58,9 @@ export async function scanCalendar(
   oauth2Client.setCredentials(tokens);
 
   oauth2Client.on('tokens', (newTokens) => {
-    const current = getConfig(db, 'calendar_tokens');
+    // Update both token stores
+    const current = getConfig(db, 'gmail_tokens');
+    if (current) setConfig(db, 'gmail_tokens', { ...current, ...newTokens });
     setConfig(db, 'calendar_tokens', { ...current, ...newTokens });
   });
 

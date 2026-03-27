@@ -158,6 +158,143 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_commitments_state ON commitments(state);
     CREATE INDEX IF NOT EXISTS idx_commitments_due ON commitments(due_date);
     CREATE INDEX IF NOT EXISTS idx_commitments_owner ON commitments(owner);
+
+    -- ============================================================
+    -- ENTITY GRAPH (Phase 2 of v1.0 Brain Architecture)
+    -- ============================================================
+
+    CREATE TABLE IF NOT EXISTS entities (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      canonical_name TEXT NOT NULL,
+      email TEXT,
+      domain TEXT,
+      relationship_type TEXT,
+      relationship_confidence REAL DEFAULT 0.0,
+      user_label TEXT,
+      user_dismissed INTEGER DEFAULT 0,
+      user_notes TEXT,
+      properties TEXT DEFAULT '{}',
+      first_seen_date TEXT,
+      last_seen_date TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS entity_aliases (
+      id TEXT PRIMARY KEY,
+      entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+      alias TEXT NOT NULL,
+      alias_normalized TEXT NOT NULL,
+      source TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(entity_id, alias_normalized)
+    );
+
+    CREATE TABLE IF NOT EXISTS entity_mentions (
+      id TEXT PRIMARY KEY,
+      entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+      knowledge_item_id TEXT NOT NULL,
+      role TEXT,
+      direction TEXT,
+      mention_date TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(entity_id, knowledge_item_id, role)
+    );
+
+    CREATE TABLE IF NOT EXISTS entity_edges (
+      id TEXT PRIMARY KEY,
+      source_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+      target_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+      edge_type TEXT NOT NULL,
+      co_occurrence_count INTEGER DEFAULT 0,
+      confidence REAL DEFAULT 0.0,
+      user_confirmed INTEGER DEFAULT 0,
+      user_denied INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(source_entity_id, target_entity_id, edge_type)
+    );
+
+    CREATE TABLE IF NOT EXISTS edge_evidence (
+      id TEXT PRIMARY KEY,
+      edge_id TEXT NOT NULL REFERENCES entity_edges(id) ON DELETE CASCADE,
+      knowledge_item_id TEXT NOT NULL,
+      quote TEXT,
+      evidence_date TEXT,
+      UNIQUE(edge_id, knowledge_item_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS dismissals (
+      id TEXT PRIMARY KEY,
+      entity_id TEXT REFERENCES entities(id) ON DELETE CASCADE,
+      knowledge_item_id TEXT,
+      pattern TEXT,
+      domain TEXT,
+      reason TEXT,
+      dismissed_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS entity_signals (
+      id TEXT PRIMARY KEY,
+      entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+      signal_type TEXT NOT NULL,
+      count INTEGER DEFAULT 1,
+      last_seen TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(entity_id, signal_type)
+    );
+
+    CREATE TABLE IF NOT EXISTS graph_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- ============================================================
+    -- FACTS TABLE (Phase 3 — subsumes semantics)
+    -- ============================================================
+
+    CREATE TABLE IF NOT EXISTS facts (
+      id TEXT PRIMARY KEY,
+      tier TEXT NOT NULL,
+      fact_type TEXT NOT NULL,
+      text TEXT NOT NULL,
+      quote TEXT,
+      source_item_id TEXT,
+      basis_count INTEGER,
+      basis_item_ids TEXT,
+      confidence REAL DEFAULT 1.0,
+      entity_ids TEXT DEFAULT '[]',
+      project TEXT,
+      valid_from TEXT,
+      valid_until TEXT,
+      superseded_by TEXT,
+      embedding BLOB,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_facts_project ON facts(project) WHERE valid_until IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_facts_type ON facts(fact_type, tier) WHERE valid_until IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source_item_id) WHERE source_item_id IS NOT NULL;
+
+    -- Entity indexes
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_email ON entities(email) WHERE email IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
+    CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(canonical_name);
+    CREATE INDEX IF NOT EXISTS idx_entities_relationship ON entities(relationship_type);
+    CREATE INDEX IF NOT EXISTS idx_entities_active ON entities(user_dismissed, last_seen_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_entity_aliases_normalized ON entity_aliases(alias_normalized);
+    CREATE INDEX IF NOT EXISTS idx_mentions_entity ON entity_mentions(entity_id, mention_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_mentions_item ON entity_mentions(knowledge_item_id);
+    CREATE INDEX IF NOT EXISTS idx_mentions_direction ON entity_mentions(entity_id, direction);
+    CREATE INDEX IF NOT EXISTS idx_edges_source ON entity_edges(source_entity_id);
+    CREATE INDEX IF NOT EXISTS idx_edges_target ON entity_edges(target_entity_id);
+    CREATE INDEX IF NOT EXISTS idx_evidence_edge ON edge_evidence(edge_id);
+    CREATE INDEX IF NOT EXISTS idx_evidence_item ON edge_evidence(knowledge_item_id);
+    CREATE INDEX IF NOT EXISTS idx_dismissals_domain ON dismissals(domain) WHERE domain IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_dismissals_pattern ON dismissals(pattern) WHERE pattern IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_dismissals_entity ON dismissals(entity_id) WHERE entity_id IS NOT NULL;
   `);
 }
 
@@ -280,6 +417,49 @@ export function searchByEmbedding(db: Database.Database, queryEmbedding: number[
     .slice(0, limit);
 
   return scored;
+}
+
+// ── Semantics → Facts migration ─────────────────────────────
+
+export function migrateSemanticsToFacts(db: Database.Database): { migrated: number; skipped: number } {
+  const existingFacts = (db.prepare('SELECT COUNT(*) as cnt FROM facts').get() as any).cnt;
+  if (existingFacts > 0) {
+    return { migrated: 0, skipped: existingFacts }; // already migrated
+  }
+
+  const semantics = db.prepare('SELECT * FROM semantics').all() as any[];
+  let migrated = 0;
+
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO facts (id, tier, fact_type, text, basis_count, basis_item_ids, confidence, entity_ids, project, valid_from, valid_until, superseded_by, embedding, created_at)
+    VALUES (?, 'pattern', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const s of semantics) {
+    const itemIds = s.item_ids || s.episode_ids || '[]';
+    const basisCount = (() => {
+      try { return JSON.parse(itemIds).length || 1; } catch { return 1; }
+    })();
+
+    insert.run(
+      s.id,
+      s.fact_type,
+      s.fact,
+      basisCount,
+      itemIds,
+      s.confidence || 1.0,
+      s.contacts || '[]',
+      s.project,
+      s.valid_from,
+      s.valid_until,
+      s.superseded_by,
+      s.embedding,
+      s.created_at || new Date().toISOString()
+    );
+    migrated++;
+  }
+
+  return { migrated, skipped: 0 };
 }
 
 export function getStats(db: Database.Database) {

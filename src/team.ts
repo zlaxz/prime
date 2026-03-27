@@ -143,54 +143,51 @@ export const TEMPLATES: Record<string, Omit<AgentConfig, 'name' | 'created_at' |
     prompt: `${BASE_INSTRUCTIONS.replace(/{NAME}/g, 'cos')}
 
 YOUR ROLE: Chief of Staff
-You are the user's executive function layer and team lead. You manage the other agents.
+You are the user's (Zach Stock) executive function layer. The WORLD MODEL above contains all people, projects, alerts, and dismissed entities.
+
+DO NOT call prime_alerts, prime_relationships, or prime_deal — the world model already has this data.
+ONLY use prime_search for: (a) checking directives, (b) looking up specific items by ID.
 
 EVERY RUN:
 
 1. READ DIRECTIVES — prime_search("agent:cos directive")
-   Process any approvals, dismissals, deferrals, or instructions from the user.
-   Acknowledge each one at the top of your report.
+   Process any approvals, dismissals, deferrals from the user. Acknowledge each.
 
-2. CHECK AGENT REPORTS — prime_search("agent-report")
-   Review what the follow-up agent, deal monitor, and commitment tracker found.
-   Synthesize their findings — don't duplicate.
+2. READ THE WORLD MODEL (injected above)
+   People section → who matters, their status, relationship type
+   Needs Attention section → dropped balls, overdue commitments, cold relationships
+   Dismissed section → NEVER mention these people/items
+   Projects section → what's active, what's stale
 
-3. CHECK ALERTS — prime_alerts
-   Get current dropped balls, overdue commitments, cold relationships.
-   Filter out anything the user already dismissed (check your state).
+3. PRODUCE BRIEFING — Three layers:
 
-4. CHECK RELATIONSHIPS — prime_relationships
-   Identify who's going cold and needs attention.
+   LAYER 1 (notification — 3 lines max for iMessage):
+   "[N] fires: [names]. Today: [events]. [N] commitments due."
 
-5. PRODUCE BRIEFING with these sections:
-
+   LAYER 2 (action card — numbered items):
    DIRECTIVES PROCESSED:
-   ✓ [what you did based on user's instructions]
+   ✓ [what you did]
 
-   FIRES (numbered, with clear action options):
-   1. [Person] — [situation] [APPROVE draft / DISMISS / DEFER to date]
-   2. [Person] — [situation] [MARK DONE / ESCALATE / DEFER]
+   FIRES (numbered, from world model Needs Attention):
+   1. [Person — relationship_type] — [situation, Xd] [APPROVE / DISMISS / DEFER]
+   2. [Person] — [situation] [MARK DONE / DEFER]
 
-   TODAY:
-   - Calendar events with context
-   - Meetings to prep for (offer to pull prep dossier)
+   COMMITMENTS DUE:
+   - [commitment text] [source:ID]
 
-   THIS WEEK:
-   - Approaching deadlines
-   - Commitments due
+   RELATIONSHIPS COOLING:
+   - [person, Xd since last contact]
 
-   TEAM UPDATES:
-   - What other agents found/did since last briefing
+   Every item must cite [source:item_id] from the world model.
 
-   RELATIONSHIPS:
-   - Who's going cold (with days since last contact)
+4. SAVE — prime_remember with tags ['agent:cos', 'agent-report'], source 'agent-report'
+   Include the FULL briefing text.
 
-6. SAVE STATE — prime_remember with tags ['agent:cos', 'state']
-   Track: active items, deferred items (with dates), dismissed items, pending drafts.
+5. NOTIFY — prime_notify with the 3-line Layer 1 summary.
 
-7. NOTIFY — Send HIGH notification with 3-line summary.
+PROVENANCE: Every claim must reference a [source:ID] from the world model. If you cannot cite it, do not state it. No hallucination. No invented facts.
 
-TONE: Direct, no fluff. You're a chief of staff, not a chatbot. "Forrest 16d, draft ready — approve or dismiss?" not "I noticed it's been a while since..."`,
+TONE: Direct, no fluff. "Forrest (employee) 16d, forms — call him or defer?" not "I noticed it's been a while..."`,
   },
 
   'follow-up': {
@@ -386,9 +383,19 @@ export async function runAgent(
   if (!agent) return { status: 'error', output: `Agent "${name}" not found` };
   if (!agent.enabled) return { status: 'error', output: `Agent "${name}" is disabled` };
 
-  const prompt = options.task
-    ? `${agent.prompt}\n\nSPECIAL TASK FOR THIS RUN:\n${options.task}`
-    : agent.prompt;
+  // Inject world model as context
+  let worldContext = '';
+  try {
+    const { getWorldModelForPrompt } = await import('./ai/world.js');
+    const { getDb: getDbForWorld } = await import('./db.js');
+    worldContext = getWorldModelForPrompt(getDbForWorld());
+  } catch {}
+
+  const prompt = [
+    worldContext ? `<world-model>\n${worldContext}\n</world-model>\n` : '',
+    agent.prompt,
+    options.task ? `\n\nSPECIAL TASK FOR THIS RUN:\n${options.task}` : '',
+  ].filter(Boolean).join('\n');
 
   // Check claude CLI
   try {

@@ -595,6 +595,90 @@ server.tool(
   }
 );
 
+server.tool(
+  "prime_entity",
+  "Get the full profile of a person, project, or organization — mentions, communication patterns, projects, commitments, connected entities. Use when the user asks about a specific person or when you need context about someone.",
+  { name: z.string().describe("Person name, email, project name, or organization") },
+  async ({ name }) => {
+    const db = getDb();
+    const { getEntityProfile } = await import('../entities.js');
+    const profile = getEntityProfile(db, name);
+    if (!profile) return { content: [{ type: "text" as const, text: `Entity "${name}" not found.` }] };
+
+    let text = `${profile.canonical_name} (${profile.type})\n`;
+    if (profile.email) text += `Email: ${profile.email}\n`;
+    if (profile.user_label) text += `Label: ${profile.user_label} (user-set)\n`;
+    else if (profile.relationship_type) text += `Relationship: ${profile.relationship_type} (${(profile.relationship_confidence * 100).toFixed(0)}%)\n`;
+    text += `Status: ${profile.status} (${profile.days_since}d ago)\n`;
+    text += `Mentions: ${profile.mention_count} (${profile.inbound} in, ${profile.outbound} out)\n`;
+    if (profile.projects.length) text += `Projects: ${profile.projects.join(', ')}\n`;
+    if (profile.commitments.length) {
+      text += `\nOpen commitments:\n`;
+      for (const c of profile.commitments) text += `  • ${c.text} [${c.state}]\n`;
+    }
+    if (profile.connected.length) {
+      text += `\nConnected to: ${profile.connected.map((c: any) => `${c.canonical_name}(${c.co_occurrence_count})`).join(', ')}\n`;
+    }
+    return { content: [{ type: "text" as const, text }] };
+  }
+);
+
+server.tool(
+  "prime_correct",
+  "Update the entity graph when the user corrects, labels, dismisses, or merges entities. Use when the user says things like 'Forrest is my employee', 'ignore Laura Crowley', 'merge Forrest S. Pullen into Forrest Pullen'.",
+  {
+    action: z.enum(["label", "dismiss", "merge", "note"]).describe("What to do"),
+    entity_name: z.string().describe("Entity name to update"),
+    label: z.string().optional().describe("For label action: employee, partner, client, vendor, advisor, noise"),
+    merge_with: z.string().optional().describe("For merge action: target entity name"),
+    note: z.string().optional().describe("For note action: free-text note"),
+    reason: z.string().optional().describe("For dismiss action: why"),
+  },
+  async ({ action, entity_name, label, merge_with, note, reason }) => {
+    const db = getDb();
+
+    if (action === 'label' && label) {
+      const { labelEntity } = await import('../entities.js');
+      const ok = labelEntity(db, entity_name, label);
+      return { content: [{ type: "text" as const, text: ok ? `✓ ${entity_name} labeled as ${label}` : `Entity "${entity_name}" not found` }] };
+    }
+
+    if (action === 'dismiss') {
+      const { dismissEntity } = await import('../entities.js');
+      const ok = dismissEntity(db, entity_name, reason);
+      return { content: [{ type: "text" as const, text: ok ? `✓ ${entity_name} dismissed permanently` : `Entity "${entity_name}" not found` }] };
+    }
+
+    if (action === 'merge' && merge_with) {
+      const { mergeEntities } = await import('../entities.js');
+      const ok = mergeEntities(db, entity_name, merge_with);
+      return { content: [{ type: "text" as const, text: ok ? `✓ Merged "${entity_name}" into "${merge_with}"` : `One or both entities not found` }] };
+    }
+
+    if (action === 'note' && note) {
+      const { getEntity } = await import('../entities.js');
+      const entity = getEntity(db, entity_name);
+      if (!entity) return { content: [{ type: "text" as const, text: `Entity "${entity_name}" not found` }] };
+      db.prepare('UPDATE entities SET user_notes = ?, updated_at = datetime(\'now\') WHERE id = ?').run(note, entity.id);
+      return { content: [{ type: "text" as const, text: `✓ Note saved for ${entity_name}` }] };
+    }
+
+    return { content: [{ type: "text" as const, text: `Invalid action or missing parameters` }] };
+  }
+);
+
+server.tool(
+  "prime_world",
+  "Get the current world model — a structured, cited view of all people, projects, alerts, dismissed entities, and cross-project connections. Use this FIRST before answering any question about the user's business. Every claim in the world model cites a source ID.",
+  {},
+  async () => {
+    const db = getDb();
+    const { getWorldModelForPrompt } = await import('../ai/world.js');
+    const md = getWorldModelForPrompt(db);
+    return { content: [{ type: "text" as const, text: md }] };
+  }
+);
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);

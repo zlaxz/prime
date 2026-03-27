@@ -9,7 +9,7 @@ import { extractIntelligence } from './ai/extract.js';
 import { askWithSources } from './ai/ask.js';
 import { startServer } from './server/index.js';
 import { v4 as uuid } from 'uuid';
-import { connectGmail, scanGmail } from './connectors/gmail.js';
+import { connectGmail, scanGmail, scanSentMail } from './connectors/gmail.js';
 import { learnBusinessContext } from './ai/learn.js';
 import { refineKnowledgeBase } from './ai/refine.js';
 import { buildHierarchy } from './ai/hierarchy.js';
@@ -565,8 +565,7 @@ program
 // ============================================================
 program
   .command('refine')
-  .alias('dream')
-  .description('Refine the knowledge base — dedup, classify, extract, consolidate, connect (alias: dream)')
+  .description('Refine the knowledge base — dedup, classify, extract, consolidate, connect')
   .option('-v, --verbose', 'Show detailed progress')
   .action(async (opts: any) => {
     const db = getDb();
@@ -612,6 +611,15 @@ program
       console.log('  Syncing Gmail...');
       const { threads, items } = await scanGmail(db, { days: 7, maxThreads: 50 });
       console.log(`  ✓ Gmail: ${threads} threads → ${items} new items`);
+
+      // Also scan sent mail to correct false awaiting_reply tags
+      console.log('  Scanning sent mail...');
+      try {
+        const sent = await scanSentMail(db, { days: 7, maxThreads: 100 });
+        console.log(`  ✓ Sent: ${sent.scanned} threads, ${sent.corrected} corrected`);
+      } catch (err: any) {
+        console.log(`  ⚠ Sent mail scan failed: ${err.message}`);
+      }
     }
 
     const calTokens = getConfig(db, 'calendar_tokens');
@@ -1916,6 +1924,453 @@ program
     console.log(`\n📊 ${row.title} (${age})\n`);
     console.log(fullReport);
     console.log('');
+  });
+
+// ============================================================
+// recall activate — one command to rule them all
+// ============================================================
+program
+  .command('activate')
+  .description('Full system activation — connectors, entity seeding, schedules. One command.')
+  .action(async () => {
+    const db = getDb();
+    const readline = await import('readline');
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const ask = (q: string): Promise<string> => new Promise(r => rl.question(q, r));
+
+    console.log('\n⚡ PRIME RECALL — Activating your AI brain\n');
+
+    // ── Step 1: Check prerequisites ──
+    console.log('  Step 1: Checking prerequisites...');
+
+    // Claude Code CLI
+    let hasClaude = false;
+    try {
+      const { stdout } = await execFileAsync('claude', ['--version'], { timeout: 5000 });
+      if (stdout.includes('Claude Code')) hasClaude = true;
+    } catch {}
+    console.log(`    ${hasClaude ? '✓' : '✗'} Claude Code CLI ${hasClaude ? '(LLM provider — free via Max)' : '(REQUIRED — install: npm i -g @anthropic-ai/claude-code)'}`);
+    if (!hasClaude) {
+      console.log('\n  ✗ Claude Code CLI is required. Install it and re-run recall activate.\n');
+      rl.close();
+      return;
+    }
+
+    // OpenAI API key (embeddings only)
+    let apiKey = getConfig(db, 'openai_api_key');
+    if (!apiKey) {
+      apiKey = (await ask('    OpenAI API key (embeddings only, ~$0.02/1M tokens): ')).trim();
+      if (apiKey.startsWith('sk-')) {
+        setConfig(db, 'openai_api_key', apiKey);
+        console.log('    ✓ API key saved');
+      } else {
+        console.log('    ⚠ Invalid key — embeddings won\'t work. You can set later: recall config openai_api_key sk-...');
+      }
+    } else {
+      console.log('    ✓ OpenAI API key (embeddings)');
+    }
+
+    // ── Step 2: Auto-detect connectors ──
+    console.log('\n  Step 2: Detecting connectors...');
+
+    // Gmail
+    const gmailTokens = getConfig(db, 'gmail_tokens');
+    if (gmailTokens) {
+      console.log('    ✓ Gmail connected');
+    } else {
+      console.log('    ○ Gmail not connected (run: recall connect gmail)');
+    }
+
+    // Claude.ai
+    const claudeKey = getConfig(db, 'claude_session_key');
+    if (claudeKey) {
+      console.log('    ✓ Claude.ai connected');
+    } else {
+      // Try auto-extract
+      try {
+        const { extractSessionKey } = await import('./connectors/claude.js');
+        const key = await extractSessionKey();
+        if (key) {
+          setConfig(db, 'claude_session_key', key);
+          console.log('    ✓ Claude.ai (auto-extracted from Desktop)');
+        } else {
+          console.log('    ○ Claude.ai not connected (run: recall connect claude)');
+        }
+      } catch {
+        console.log('    ○ Claude.ai not connected');
+      }
+    }
+
+    // Otter.ai
+    try {
+      const otterConnected = getConfig(db, 'otter_connected');
+      if (otterConnected) {
+        console.log('    ✓ Otter.ai connected');
+      } else {
+        // Try auto-connect
+        const { connectOtter: tryOtter } = await import('./connectors/otter.js');
+        const otterOk = await tryOtter(db);
+        if (otterOk) {
+          console.log('    ✓ Otter.ai (auto-connected)');
+        } else {
+          console.log('    ○ Otter.ai not available');
+        }
+      }
+    } catch {
+      console.log('    ○ Otter.ai not available');
+    }
+
+    // Calendar
+    const calTokens = getConfig(db, 'calendar_tokens');
+    if (calTokens) {
+      console.log('    ✓ Google Calendar connected');
+    } else {
+      console.log('    ○ Calendar not connected (run: recall connect calendar)');
+    }
+
+    // Cowork
+    try {
+      const { connectCowork: tryCowork } = await import('./connectors/cowork.js');
+      const coworkOk = await tryCowork(db);
+      if (coworkOk) {
+        console.log('    ✓ Cowork sessions detected');
+      }
+    } catch {
+      console.log('    ○ Cowork sessions not found');
+    }
+
+    // ── Step 3: Seeding interview ──
+    console.log('\n  Step 3: Seed your knowledge graph (3 quick questions)\n');
+
+    const employeesRaw = await ask('    Who works for you? (comma-separated, or Enter to skip): ');
+    const partnersRaw = await ask('    Key partners or clients? (comma-separated, or Enter to skip): ');
+    const projectsRaw = await ask('    Active projects? (comma-separated, or Enter to skip): ');
+
+    rl.close();
+
+    const employees = employeesRaw.split(',').map(s => s.trim()).filter(Boolean);
+    const partners = partnersRaw.split(',').map(s => s.trim()).filter(Boolean);
+    const projects = projectsRaw.split(',').map(s => s.trim()).filter(Boolean);
+
+    // Save seeds to config for later entity building
+    if (employees.length || partners.length || projects.length) {
+      setConfig(db, 'entity_seeds', {
+        employees,
+        partners,
+        projects,
+        seeded_at: new Date().toISOString(),
+      });
+      console.log(`\n    ✓ Seeded: ${employees.length} employees, ${partners.length} partners, ${projects.length} projects`);
+    }
+
+    // Also set business context from seeds
+    const contextParts: string[] = [];
+    if (employees.length) contextParts.push(`Employees: ${employees.join(', ')}`);
+    if (partners.length) contextParts.push(`Key partners/clients: ${partners.join(', ')}`);
+    if (projects.length) contextParts.push(`Active projects: ${projects.join(', ')}`);
+    if (contextParts.length) {
+      const existing = getConfig(db, 'business_context') || '';
+      const newContext = existing
+        ? `${existing}\n\n${contextParts.join('. ')}.`
+        : contextParts.join('. ') + '.';
+      setConfig(db, 'business_context', newContext);
+    }
+
+    // ── Step 4: Immediate setup (30s) ──
+    console.log('\n  Step 4: Setting up schedules...');
+
+    // Install sync launchd plist
+    const { existsSync, writeFileSync, mkdirSync } = await import('fs');
+    const { join } = await import('path');
+    const { homedir } = await import('os');
+    const { execSync } = await import('child_process');
+
+    const launchAgentsDir = join(homedir(), 'Library', 'LaunchAgents');
+    const logsDir = join(homedir(), '.prime', 'logs');
+    if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true });
+
+    // Sync plist (every 2 hours)
+    const syncPlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.prime-recall.sync</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/npx</string>
+        <string>tsx</string>
+        <string>${join(homedir(), 'GitHub', 'prime', 'src', 'index.ts')}</string>
+        <string>sync</string>
+    </array>
+    <key>WorkingDirectory</key><string>${join(homedir(), 'GitHub', 'prime')}</string>
+    <key>StartInterval</key><integer>7200</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key><string>${homedir()}</string>
+        <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StandardOutPath</key><string>${join(logsDir, 'sync.log')}</string>
+    <key>StandardErrorPath</key><string>${join(logsDir, 'sync-error.log')}</string>
+    <key>RunAtLoad</key><false/>
+</dict>
+</plist>`;
+
+    const syncPlistPath = join(launchAgentsDir, 'com.prime-recall.sync.plist');
+    try { execSync(`launchctl unload "${syncPlistPath}" 2>/dev/null`); } catch {}
+    writeFileSync(syncPlistPath, syncPlist);
+    try { execSync(`launchctl load "${syncPlistPath}"`); } catch {}
+    console.log('    ✓ Sync schedule installed (every 2 hours)');
+
+    // Setup Claude Desktop MCP
+    try {
+      const configPath = join(homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
+      if (existsSync(configPath)) {
+        const config = JSON.parse((await import('fs')).readFileSync(configPath, 'utf-8'));
+        if (!config.mcpServers) config.mcpServers = {};
+        const tsxPath = join(homedir(), 'GitHub', 'prime', 'node_modules', '.bin', 'tsx');
+        const mcpPath = join(homedir(), 'GitHub', 'prime', 'src', 'server', 'mcp.ts');
+        config.mcpServers['prime-recall'] = {
+          command: tsxPath,
+          args: [mcpPath],
+          env: { HOME: homedir(), PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin' },
+        };
+        writeFileSync(configPath, JSON.stringify(config, null, 2));
+        console.log('    ✓ Claude Desktop MCP configured');
+      }
+    } catch {
+      console.log('    ⚠ Could not configure Claude Desktop MCP');
+    }
+
+    // ── Step 5: Report ──
+    const stats = getStats(db);
+    console.log(`\n  ────────────────────────────────────`);
+    console.log(`  ✓ PRIME RECALL ACTIVATED`);
+    console.log(`  Knowledge base: ${stats.total_items} items`);
+    console.log(`  Sync: every 2 hours (launchd)`);
+    console.log(`  MCP: configured for Claude Desktop`);
+    console.log(`\n  Next steps:`);
+    if (!gmailTokens) console.log(`    recall connect gmail     — connect your email`);
+    if (!claudeKey) console.log(`    recall connect claude    — connect Claude.ai conversations`);
+    if (!calTokens) console.log(`    recall connect calendar  — connect Google Calendar`);
+    console.log(`    Say "catch me up" in Claude Desktop — it knows your business now`);
+    console.log('');
+  });
+
+// ============================================================
+// recall entities — list all entities
+// ============================================================
+program
+  .command('entities')
+  .description('List all entities in the knowledge graph')
+  .option('-t, --type <type>', 'Filter by type: person, project, organization')
+  .option('--dismissed', 'Show dismissed entities')
+  .option('-l, --limit <n>', 'Number to show', '30')
+  .action(async (opts: any) => {
+    const db = getDb();
+    const { listEntities } = await import('./entities.js');
+    const entities = listEntities(db, {
+      type: opts.type,
+      dismissed: opts.dismissed ? true : false,
+      limit: parseInt(opts.limit) || 30,
+    });
+
+    if (entities.length === 0) {
+      console.log('\n  No entities found. Run: recall activate\n');
+      return;
+    }
+
+    const statusIcons: Record<string, string> = { active: '🟢', warm: '🟡', cooling: '🟠', cold: '🔴', dormant: '⚫', unknown: '⚪' };
+
+    console.log(`\n⚡ ENTITIES (${entities.length})\n`);
+    for (const e of entities) {
+      const label = e.user_label ? ` [${e.user_label}]` : (e.relationship_type ? ` [${e.relationship_type}]` : '');
+      const email = e.email ? ` (${e.email})` : '';
+      const dismissed = e.user_dismissed ? ' ✗DISMISSED' : '';
+      console.log(`  ${e.canonical_name}${label}${email}${dismissed} — ${e.mention_count || 0} mentions (${e.type})`);
+    }
+    console.log('');
+  });
+
+// ============================================================
+// recall entity <name> — show entity profile
+// ============================================================
+program
+  .command('entity <name>')
+  .description('Show detailed entity profile')
+  .action(async (name: string) => {
+    const db = getDb();
+    const { getEntityProfile } = await import('./entities.js');
+    const profile = getEntityProfile(db, name);
+
+    if (!profile) {
+      console.log(`\n  Entity "${name}" not found.\n`);
+      return;
+    }
+
+    console.log(`\n⚡ ${profile.canonical_name} (${profile.type})\n`);
+    if (profile.email) console.log(`  Email: ${profile.email}`);
+    if (profile.domain) console.log(`  Domain: ${profile.domain}`);
+    if (profile.user_label) console.log(`  Label: ${profile.user_label} (user-set)`);
+    else if (profile.relationship_type) console.log(`  Relationship: ${profile.relationship_type} (${(profile.relationship_confidence * 100).toFixed(0)}% confidence)`);
+    if (profile.user_notes) console.log(`  Notes: ${profile.user_notes}`);
+    console.log(`  Status: ${profile.status} (${profile.days_since}d since last interaction)`);
+    console.log(`  Mentions: ${profile.mention_count} (${profile.inbound} inbound, ${profile.outbound} outbound)`);
+    if (profile.projects.length) console.log(`  Projects: ${profile.projects.join(', ')}`);
+    if (profile.aliases.length > 1) console.log(`  Aliases: ${profile.aliases.join(', ')}`);
+
+    if (profile.commitments.length) {
+      console.log(`\n  Commitments:`);
+      for (const c of profile.commitments) {
+        console.log(`    • ${c.text} [${c.state}]${c.due_date ? ` due: ${c.due_date}` : ''}`);
+      }
+    }
+
+    if (profile.connected.length) {
+      console.log(`\n  Connected to:`);
+      for (const c of profile.connected) {
+        console.log(`    ${c.canonical_name} (${c.co_occurrence_count} shared items)`);
+      }
+    }
+
+    if (profile.recent_items.length) {
+      console.log(`\n  Recent items:`);
+      for (const item of profile.recent_items) {
+        console.log(`    [${item.source}] ${item.title} (${item.source_date?.slice(0, 10)})`);
+      }
+    }
+    console.log('');
+  });
+
+// ============================================================
+// recall label <name> <label> — label an entity
+// ============================================================
+program
+  .command('label <name> <label>')
+  .description('Label an entity (employee, partner, client, vendor, advisor, noise)')
+  .action(async (name: string, label: string) => {
+    const db = getDb();
+    const { labelEntity } = await import('./entities.js');
+    if (labelEntity(db, name, label)) {
+      console.log(`\n  ✓ ${name} labeled as: ${label}\n`);
+    } else {
+      console.log(`\n  Entity "${name}" not found.\n`);
+    }
+  });
+
+// ============================================================
+// recall dismiss <name> — dismiss an entity
+// ============================================================
+program
+  .command('dismiss <name>')
+  .description('Dismiss an entity — never surface in alerts again')
+  .option('--domain', 'Dismiss by domain instead of name')
+  .action(async (name: string, opts: any) => {
+    const db = getDb();
+    if (opts.domain) {
+      const { dismissDomain } = await import('./entities.js');
+      const count = dismissDomain(db, name);
+      console.log(`\n  ✓ Dismissed domain ${name} (${count} entities affected)\n`);
+    } else {
+      const { dismissEntity } = await import('./entities.js');
+      if (dismissEntity(db, name)) {
+        console.log(`\n  ✓ ${name} dismissed. They will never appear in alerts again.\n`);
+      } else {
+        console.log(`\n  Entity "${name}" not found.\n`);
+      }
+    }
+  });
+
+// ============================================================
+// recall merge <from> <to> — merge duplicate entities
+// ============================================================
+program
+  .command('merge <from> <to>')
+  .description('Merge two entities (e.g., "Forrest S. Pullen" into "Forrest Pullen")')
+  .action(async (from: string, to: string) => {
+    const db = getDb();
+    const { mergeEntities } = await import('./entities.js');
+    if (mergeEntities(db, from, to)) {
+      console.log(`\n  ✓ Merged "${from}" into "${to}"\n`);
+    } else {
+      console.log(`\n  One or both entities not found.\n`);
+    }
+  });
+
+// ============================================================
+// recall build-entities — rebuild entity graph
+// ============================================================
+program
+  .command('build-entities')
+  .description('Build or rebuild the entity graph from knowledge items')
+  .option('--incremental', 'Only process new items since last build')
+  .action(async (opts: any) => {
+    const db = getDb();
+    const { buildEntityGraph } = await import('./entities.js');
+    console.log(`\n⚡ Building entity graph${opts.incremental ? ' (incremental)' : ''}...\n`);
+    const stats = buildEntityGraph(db, { incremental: opts.incremental });
+    console.log(`\n  ✓ Entities: ${stats.entities} | Mentions: ${stats.mentions} | Edges: ${stats.edges} | Merged: ${stats.merged}\n`);
+  });
+
+// ============================================================
+// recall world — show the world model
+// ============================================================
+program
+  .command('world')
+  .description('Show the world model — your business at a glance')
+  .option('--json', 'Output as JSON')
+  .option('--regen', 'Force regeneration')
+  .option('--validate', 'Validate all citations')
+  .action(async (opts: any) => {
+    const db = getDb();
+    const { generateWorldModel, worldModelToMarkdown, saveWorldModel, getWorldModelForPrompt } = await import('./ai/world.js');
+
+    if (opts.regen || opts.validate) {
+      console.log('  Generating world model...');
+      const model = generateWorldModel(db);
+      saveWorldModel(model);
+
+      if (opts.validate) {
+        // Validate citations
+        let valid = 0;
+        let broken = 0;
+        for (const p of model.people) {
+          for (const cite of p.citations) {
+            const exists = db.prepare('SELECT id FROM knowledge WHERE id = ?').get(cite);
+            if (exists) valid++;
+            else { broken++; console.log(`  ✗ Broken citation: ${cite} (${p.name})`); }
+          }
+        }
+        for (const a of model.alerts) {
+          if (a.item_id) {
+            const exists = db.prepare('SELECT id FROM knowledge WHERE id = ?').get(a.item_id);
+            if (exists) valid++;
+            else { broken++; console.log(`  ✗ Broken citation: ${a.item_id}`); }
+          }
+        }
+        console.log(`\n  Validation: ${valid} valid, ${broken} broken citations\n`);
+      }
+
+      if (opts.json) {
+        console.log(JSON.stringify(model, null, 2));
+      } else {
+        console.log(worldModelToMarkdown(model));
+      }
+    } else {
+      const md = getWorldModelForPrompt(db);
+      console.log(md);
+    }
+  });
+
+// ============================================================
+// recall dream — run the dream state pipeline
+// ============================================================
+program
+  .command('dream')
+  .description('Run the dream state pipeline — consolidate, classify, audit, improve')
+  .option('--quick', 'Quick mode: consolidate + commitments + world rebuild only (~30s)')
+  .action(async (opts: any) => {
+    const { runDreamPipeline } = await import('./dream.js');
+    await runDreamPipeline({ quick: opts.quick });
   });
 
 program.parse();

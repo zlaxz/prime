@@ -9,6 +9,7 @@ import { extractIntelligence } from '../ai/extract.js';
 
 const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/calendar.readonly',
 ];
 
 // Google OAuth — set via environment or prime init
@@ -281,4 +282,148 @@ export async function scanGmail(
   ).run(items);
 
   return { threads: threads.length, items };
+}
+
+// ============================================================
+// Sent Mail Scanner — Phase 1 of v1.0 Brain Architecture
+// Scans sent folder to:
+// 1. Correct false "awaiting_reply" tags on existing items
+// 2. Capture Zach-initiated threads not in the knowledge base
+// ============================================================
+
+export async function scanSentMail(
+  db: Database.Database,
+  options: { days?: number; maxThreads?: number } = {}
+): Promise<{ scanned: number; corrected: number; newItems: number }> {
+  const days = options.days || 90;
+  const maxThreads = options.maxThreads || 300;
+
+  const tokens = getConfig(db, 'gmail_tokens');
+  if (!tokens) throw new Error('Gmail not connected. Run: recall connect gmail');
+
+  const clientId = CLIENT_ID || getConfig(db, 'google_client_id') || '';
+  const clientSecret = CLIENT_SECRET || getConfig(db, 'google_client_secret') || '';
+  if (!clientId || !clientSecret) throw new Error('Google OAuth credentials missing.');
+
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, REDIRECT_URI);
+  oauth2Client.setCredentials(tokens);
+
+  // Refresh token
+  oauth2Client.on('tokens', (newTokens) => {
+    const current = getConfig(db, 'gmail_tokens');
+    setConfig(db, 'gmail_tokens', { ...current, ...newTokens });
+  });
+  try {
+    const { credentials } = await oauth2Client.refreshAccessToken();
+    oauth2Client.setCredentials(credentials);
+    setConfig(db, 'gmail_tokens', credentials);
+  } catch (err: any) {
+    throw new Error(`Gmail token refresh failed: ${err.message}`);
+  }
+
+  const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+  const userEmail = getConfig(db, 'gmail_email') || '';
+
+  const afterDate = new Date(Date.now() - days * 86400000);
+  const afterEpoch = Math.floor(afterDate.getTime() / 1000);
+
+  // Fetch sent threads
+  console.log('  Fetching sent mail threads...');
+  const sentQuery = `from:me after:${afterEpoch}`;
+  const sentThreads: { id: string }[] = [];
+  let pageToken: string | undefined;
+
+  while (sentThreads.length < maxThreads) {
+    const response = await gmail.users.threads.list({
+      userId: 'me',
+      maxResults: Math.min(100, maxThreads - sentThreads.length),
+      q: sentQuery,
+      pageToken,
+    });
+    const batch = response.data.threads || [];
+    for (const t of batch) {
+      if (t.id) sentThreads.push({ id: t.id });
+    }
+    pageToken = response.data.nextPageToken || undefined;
+    if (!pageToken || batch.length === 0) break;
+  }
+
+  console.log(`  Found ${sentThreads.length} sent threads in last ${days} days`);
+
+  const stats = { scanned: 0, corrected: 0, newItems: 0 };
+  const getHeader = (msg: any, name: string) =>
+    msg.payload?.headers?.find((h: any) => h.name === name)?.value || '';
+
+  // Process each sent thread
+  for (let i = 0; i < sentThreads.length; i += 10) {
+    const batch = sentThreads.slice(i, i + 10);
+    await Promise.all(batch.map(async (threadMeta) => {
+      try {
+        stats.scanned++;
+
+        // Check if this thread already exists in knowledge base
+        const sourceRef = `thread:${threadMeta.id}`;
+        const existing = db.prepare('SELECT id, metadata, tags FROM knowledge WHERE source_ref = ?').get(sourceRef) as any;
+
+        if (existing) {
+          // Thread exists — check if we need to correct it
+          const meta = typeof existing.metadata === 'string' ? JSON.parse(existing.metadata) : (existing.metadata || {});
+          const tags = typeof existing.tags === 'string' ? JSON.parse(existing.tags) : (existing.tags || []);
+
+          // Fetch thread to check if user sent the LAST message
+          const thread = await gmail.users.threads.get({
+            userId: 'me',
+            id: threadMeta.id!,
+            format: 'metadata',
+            metadataHeaders: ['From', 'Date'],
+          });
+
+          const messages = thread.data.messages || [];
+          if (messages.length === 0) return;
+
+          const lastMsg = messages[messages.length - 1];
+          const lastFrom = getHeader(lastMsg, 'From');
+          const lastDate = getHeader(lastMsg, 'Date');
+          const userSentLast = lastFrom.toLowerCase().includes(userEmail.toLowerCase());
+
+          if (userSentLast && (tags.includes('awaiting_reply') || meta.waiting_on_user)) {
+            // CORRECTION: User already replied — remove awaiting_reply
+            const newTags = tags.filter((t: string) => t !== 'awaiting_reply');
+            const newMeta = {
+              ...meta,
+              waiting_on_user: false,
+              user_replied: true,
+              replied_at: lastDate ? new Date(lastDate).toISOString() : new Date().toISOString(),
+              last_from: lastFrom,
+              days_since_last: Math.floor((Date.now() - new Date(lastDate).getTime()) / 86400000),
+            };
+
+            db.prepare(
+              'UPDATE knowledge SET tags = ?, metadata = ?, updated_at = datetime(\'now\') WHERE id = ?'
+            ).run(JSON.stringify(newTags), JSON.stringify(newMeta), existing.id);
+
+            stats.corrected++;
+          }
+        }
+        // Note: We intentionally do NOT create new items for sent-only threads in this phase.
+        // That would require LLM extraction (expensive). Sent-only threads will be captured
+        // in the dream pipeline (Phase 5) or during full entity building (Phase 2).
+      } catch {
+        // Skip failed threads
+      }
+    }));
+
+    if ((i + 10) % 50 === 0 || i + 10 >= sentThreads.length) {
+      process.stdout.write(`\r  Processed: ${Math.min(i + 10, sentThreads.length)}/${sentThreads.length} (${stats.corrected} corrected)`);
+    }
+  }
+  console.log('');
+
+  // Update sync state
+  db.prepare(
+    `INSERT OR REPLACE INTO sync_state (source, last_sync_at, items_synced, status, updated_at)
+     VALUES ('gmail-sent', datetime('now'), ?, 'idle', datetime('now'))`
+  ).run(stats.corrected);
+
+  return stats;
 }
