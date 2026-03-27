@@ -2499,4 +2499,45 @@ program
     console.log(`  ✓ Migrated: ${result.migrated} | Skipped: ${result.skipped}\n`);
   });
 
+// ============================================================
+// recall accuracy — show self-audit accuracy trend
+// ============================================================
+program
+  .command('accuracy')
+  .description('Show self-audit accuracy trend over time — is the system getting smarter?')
+  .action(async () => {
+    const db = getDb();
+    const historyRaw = db.prepare("SELECT value FROM graph_state WHERE key = 'accuracy_history'").get() as any;
+
+    if (!historyRaw) {
+      console.log('\n  No accuracy data yet. Run: recall dream  (full mode includes self-audit)\n');
+      return;
+    }
+
+    const scores = JSON.parse(historyRaw.value);
+    if (scores.length === 0) {
+      console.log('\n  No accuracy data yet.\n');
+      return;
+    }
+
+    console.log('\n⚡ ACCURACY TREND\n');
+
+    for (const s of scores) {
+      const pct = (s.accuracy * 100).toFixed(0);
+      const bar = '█'.repeat(Math.round(s.accuracy * 20)) + '░'.repeat(20 - Math.round(s.accuracy * 20));
+      const issues = s.issues ? ` | ${s.issues} issues` : '';
+      console.log(`  ${s.date}  ${bar}  ${pct}%${issues}`);
+    }
+
+    if (scores.length >= 2) {
+      const first = scores[0].accuracy;
+      const last = scores[scores.length - 1].accuracy;
+      const delta = ((last - first) * 100).toFixed(0);
+      const direction = last > first ? '📈 improving' : last < first ? '📉 declining' : '➡️ stable';
+      console.log(`\n  Trend: ${direction} (${delta > '0' ? '+' : ''}${delta}% since ${scores[0].date})`);
+    }
+
+    console.log('');
+  });
+
 program.parse();

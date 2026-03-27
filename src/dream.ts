@@ -95,6 +95,35 @@ async function task01Consolidate(db: Database.Database): Promise<TaskResult> {
     // Run incremental entity build (no LLM needed)
     const entityStats = buildEntityGraph(db, { incremental: true });
 
+    // Process directives for implicit learning signals
+    const { recordSignal } = await import('./entities.js');
+    const directives = newItems.filter((item: any) => {
+      const tags = typeof item.tags === 'string' ? JSON.parse(item.tags) : (item.tags || []);
+      return tags.includes('directive') || item.source === 'directive';
+    });
+
+    let signalsRecorded = 0;
+    for (const directive of directives) {
+      const meta = typeof directive.metadata === 'string' ? JSON.parse(directive.metadata) : (directive.metadata || {});
+      const decisions = typeof directive.decisions === 'string' ? JSON.parse(directive.decisions) : (directive.decisions || []);
+
+      for (const decision of decisions) {
+        const lower = decision.toLowerCase();
+        // Extract entity name from the decision text
+        const contacts = typeof directive.contacts === 'string' ? JSON.parse(directive.contacts) : (directive.contacts || []);
+
+        for (const contact of contacts) {
+          if (lower.includes('dismiss') || lower.includes('ignore') || lower.includes('skip')) {
+            recordSignal(db, contact, 'alert_ignored');
+            signalsRecorded++;
+          } else if (lower.includes('approv') || lower.includes('send') || lower.includes('call') || lower.includes('respond')) {
+            recordSignal(db, contact, 'alert_acted');
+            signalsRecorded++;
+          }
+        }
+      }
+    }
+
     return {
       task: '01-consolidate',
       status: 'success',
@@ -262,6 +291,15 @@ Return JSON:
     const parsed = tryParseJSON(response);
 
     if (parsed && parsed.overall_accuracy !== undefined) {
+      // Save accuracy score for tracking over time
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const existingScores = (db.prepare("SELECT value FROM graph_state WHERE key = 'accuracy_history'").get() as any)?.value || '[]';
+      const scores = JSON.parse(existingScores);
+      scores.push({ date: dateStr, accuracy: parsed.overall_accuracy, hallucination_rate: parsed.hallucinated_claims || 0, issues: parsed.issues?.length || 0 });
+      // Keep last 90 days
+      const recent = scores.filter((s: any) => new Date(s.date) > new Date(Date.now() - 90 * 86400000));
+      db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('accuracy_history', ?, datetime('now'))").run(JSON.stringify(recent));
+
       return { task: '05-self-audit', status: 'success', duration_seconds: (Date.now() - start) / 1000, output: parsed };
     }
 
