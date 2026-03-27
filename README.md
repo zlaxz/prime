@@ -270,16 +270,64 @@ POST /api/webhooks/otter      — Otter.ai webhook receiver
 
 Your data never leaves your machine except for embedding generation.
 
+## Brain Architecture (v1.0)
+
+Prime Recall goes beyond search — it understands your business through a three-layer architecture:
+
+### Layer 1: Knowledge Base
+Raw data from all sources — emails, conversations, meetings, files. Permanent, searchable, source-attributed. Never compressed, never rewritten.
+
+### Layer 2: Entity Graph
+First-class entities (people, projects, organizations) with typed relationships. Every edge is observed from co-occurrence patterns — never inferred. Email-based dedup, alias normalization, user labels override everything.
+
+```
+recall entities              — list all entities with relationship types
+recall entity "Sarah Chen"   — full profile: mentions, projects, commitments, connections
+recall label "Sarah" partner — classify a relationship
+recall dismiss "Cold Caller" — permanently filter from alerts
+recall merge "S. Chen" "Sarah Chen" — deduplicate
+```
+
+### Layer 3: World Model
+A structured document generated from pure SQL graph queries in under 300ms. Every claim cites source IDs. Regenerated automatically when stale.
+
+```
+recall world              — view the world model
+recall world --validate   — verify all citations
+recall world --regen      — force regeneration
+```
+
+### Dream State Pipeline
+Nightly autonomous processing that improves the system while you sleep:
+
+```
+recall dream          — run full pipeline (consolidate, classify, commit-check, world-rebuild, self-audit)
+recall dream --quick  — quick mode (30 seconds)
+```
+
+The self-audit task grades previous agent reports for accuracy and proposes prompt improvements. The system literally gets smarter every night.
+
+### Provenance-First Extraction
+Every extracted fact requires an exact quote from the source material. No quote = no fact. Hallucination is structurally impossible.
+
+### Entity-Aware Alerts
+Alerts filter through the entity graph: employees don't trigger "waiting on reply," dismissed contacts never surface, domain-level filtering removes entire categories of noise.
+
 ## Roadmap
 
+- [x] Entity graph with email-based dedup
+- [x] World model (pure SQL, <300ms)
+- [x] Dream state pipeline (self-audit, entity classification)
+- [x] Provenance-first extraction (V2 with quotes)
+- [x] Entity-aware alert filtering (74% noise reduction)
+- [x] Implicit learning (entity signals)
+- [x] Ollama support for local embeddings
 - [ ] Background sync daemon (Mac Mini / VPS)
-- [ ] Supabase cloud option (multi-device, mobile access)
-- [ ] Local embeddings via Ollama (zero API cost)
-- [ ] Web dashboard UI
-- [ ] Slack, Notion, HubSpot connectors
+- [ ] Calendar integration
+- [ ] Slack, Notion connectors
 - [ ] Knowledge graph visualization
-- [ ] Competitive intelligence monitoring (web search on schedule)
-- [ ] Voice capture ("Hey Prime, I just talked to Sarah...")
+- [ ] Competitive intelligence monitoring
+- [ ] Voice capture
 - [ ] Multi-user / team knowledge sharing
 
 ## Contributing

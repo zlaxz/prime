@@ -463,6 +463,46 @@ export function getEntityProfile(db: Database.Database, nameOrEmail: string): an
   };
 }
 
+// ── Implicit Learning ────────────────────────────────────────
+
+export function recordSignal(db: Database.Database, entityName: string, signalType: string): void {
+  const entity = getEntity(db, entityName);
+  if (!entity) return;
+
+  const existing = db.prepare(
+    'SELECT id, count FROM entity_signals WHERE entity_id = ? AND signal_type = ?'
+  ).get(entity.id, signalType) as any;
+
+  if (existing) {
+    db.prepare('UPDATE entity_signals SET count = count + 1, last_seen = datetime(\'now\') WHERE id = ?')
+      .run(existing.id);
+  } else {
+    db.prepare('INSERT INTO entity_signals (id, entity_id, signal_type, count, last_seen) VALUES (?, ?, ?, 1, datetime(\'now\'))')
+      .run(uuid(), entity.id, signalType);
+  }
+
+  // Auto-actions based on signal accumulation
+  if (signalType === 'alert_ignored' && (existing?.count || 0) + 1 >= 3) {
+    // Auto-demote after 3 ignores
+    db.prepare('UPDATE entities SET relationship_type = \'noise\', relationship_confidence = 0.6, updated_at = datetime(\'now\') WHERE id = ? AND user_label IS NULL')
+      .run(entity.id);
+  }
+
+  if (signalType === 'alert_acted' && (existing?.count || 0) + 1 >= 5) {
+    // Auto-elevate after 5 actions
+    if (!entity.relationship_type || entity.relationship_type === 'unknown') {
+      db.prepare('UPDATE entities SET relationship_type = \'partner\', relationship_confidence = 0.7, updated_at = datetime(\'now\') WHERE id = ? AND user_label IS NULL')
+        .run(entity.id);
+    }
+  }
+}
+
+export function getSignals(db: Database.Database, entityName: string): any[] {
+  const entity = getEntity(db, entityName);
+  if (!entity) return [];
+  return db.prepare('SELECT signal_type, count, last_seen FROM entity_signals WHERE entity_id = ?').all(entity.id) as any[];
+}
+
 // ── Helpers ──────────────────────────────────────────────────
 
 function parseJsonArray(val: any): string[] {
