@@ -97,28 +97,43 @@ server.tool(
 
 server.tool(
   "prime_remember",
-  "Save knowledge — a decision, commitment, fact, or insight. Automatically extracts contacts and tags.",
+  "Save knowledge — a decision, commitment, fact, insight, or agent report. For agent reports, include the FULL report text in the content field. Automatically extracts contacts and tags.",
   {
-    content: z.string().describe("What to remember"),
+    content: z.string().describe("What to remember — include the FULL text, not a summary"),
+    title: z.string().optional().describe("Title for this item (auto-generated if not provided)"),
+    source: z.string().optional().describe("Source type: 'mcp', 'agent-report', 'directive', 'manual'"),
     project: z.string().optional().describe("Project to associate with"),
     importance: z.enum(["low", "normal", "high", "critical"]).optional().describe("Importance level"),
+    tags: z.array(z.string()).optional().describe("Tags for this item (e.g., ['agent:cos', 'agent-report'])"),
+    agent: z.string().optional().describe("Agent name if this is an agent report"),
   },
-  async ({ content, project, importance }) => {
+  async ({ content, title, source, project, importance, tags, agent }) => {
     const db = getDb();
     const apiKey = getConfig(db, 'openai_api_key');
     if (!apiKey) return { content: [{ type: "text" as const, text: "No API key. Run: recall init" }] };
     const extracted = await extractIntelligence(content, apiKey);
-    const embText = `${extracted.title}\n${extracted.summary}\n${content}`;
+    const embText = `${title || extracted.title}\n${content.slice(0, 2000)}`;
     const embedding = await generateEmbedding(embText, apiKey);
+
+    const isAgentReport = source === 'agent-report' || (tags && tags.some(t => t.includes('agent-report')));
+
     const item: KnowledgeItem = {
-      id: uuid(), title: extracted.title, summary: extracted.summary,
-      source: 'mcp', source_ref: `mcp:${Date.now()}`,
+      id: uuid(),
+      title: title || extracted.title,
+      summary: isAgentReport ? content.slice(0, 2000) : extracted.summary,
+      source: source || 'mcp',
+      source_ref: `${source || 'mcp'}:${Date.now()}`,
       source_date: new Date().toISOString(),
       contacts: extracted.contacts, organizations: extracted.organizations,
       decisions: extracted.decisions, commitments: extracted.commitments,
-      action_items: extracted.action_items, tags: extracted.tags,
+      action_items: extracted.action_items,
+      tags: [...(extracted.tags || []), ...(tags || [])],
       project: project || extracted.project,
       importance: importance || extracted.importance, embedding,
+      metadata: {
+        ...(agent ? { agent, role: agent } : {}),
+        ...(isAgentReport ? { full_report: content } : {}),
+      },
     };
     insertKnowledge(db, item);
     return { content: [{ type: "text" as const, text: `✓ Remembered: ${item.title}` }] };
