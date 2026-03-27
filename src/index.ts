@@ -2587,4 +2587,22 @@ program
     console.log('');
   });
 
+// ============================================================
+// recall brief — generate interactive briefing document
+// ============================================================
+program
+  .command('brief')
+  .description('Generate interactive briefing document and open in browser')
+  .action(async () => {
+    const db = getDb();
+    const { generateBriefingDoc } = await import('./briefing-doc.js');
+    console.log('  Generating briefing document...');
+    const filePath = generateBriefingDoc(db);
+    console.log(`  ✓ Saved to: ${filePath}`);
+
+    const open = (await import('open')).default;
+    await open(filePath);
+    console.log('  ✓ Opened in browser\n');
+  });
+
 program.parse();
