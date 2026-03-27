@@ -122,17 +122,35 @@ export function getAlerts(db: Database.Database): AlertItem[] {
     // Check who sent LAST — if they're an employee or dismissed, skip
     if (meta.last_from) {
       const lastFromLower = (meta.last_from as string).toLowerCase();
-      // Check if last sender is an employee
+
+      // Extract email from last_from header
+      const emailMatch = lastFromLower.match(/<([^>]+)>/) || lastFromLower.match(/([^\s]+@[^\s]+)/);
+      const lastEmail = emailMatch ? emailMatch[1] : null;
+
+      // Check employee by email (most reliable)
+      if (lastEmail) {
+        try {
+          const entityByEmail = db.prepare(
+            "SELECT user_label, relationship_type FROM entities WHERE email = ?"
+          ).get(lastEmail) as any;
+          if (entityByEmail && (entityByEmail.user_label === 'employee' || entityByEmail.relationship_type === 'employee')) continue;
+          if (entityByEmail && entityByEmail.user_label === 'noise') continue;
+        } catch {}
+      }
+
+      // Check employee by name (fallback)
       const lastSenderIsEmployee = Array.from(employeeNames).some(name => lastFromLower.includes(name));
       if (lastSenderIsEmployee) continue;
 
-      // Check if last sender is dismissed
+      // Check dismissed by name
       const lastSenderIsDismissed = Array.from(dismissedNames).some(name => lastFromLower.includes(name));
       if (lastSenderIsDismissed) continue;
 
-      // Check domain dismissal
-      const emailMatch = lastFromLower.match(/@([^\s>]+)/);
-      if (emailMatch && dismissedDomains.has(emailMatch[1])) continue;
+      // Check dismissed domain
+      if (lastEmail) {
+        const domainPart = lastEmail.split('@')[1];
+        if (domainPart && dismissedDomains.has(domainPart)) continue;
+      }
     }
 
     // Also check if ALL contacts are filtered (for non-Gmail sources without last_from)

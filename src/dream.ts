@@ -66,9 +66,12 @@ function tryParseJSON(text: string): any {
   // Strip markdown code fences
   const cleaned = text.replace(/^```(?:json)?\s*\n?/m, '').replace(/\n?```\s*$/m, '').trim();
   try { return JSON.parse(cleaned); } catch {}
+  // Try finding JSON array in the text
+  const arrayMatch = text.match(/\[[\s\S]*\]/);
+  if (arrayMatch) { try { return JSON.parse(arrayMatch[0]); } catch {} }
   // Try finding JSON object in the text
-  const match = text.match(/\{[\s\S]*\}/);
-  if (match) { try { return JSON.parse(match[0]); } catch {} }
+  const objMatch = text.match(/\{[\s\S]*\}/);
+  if (objMatch) { try { return JSON.parse(objMatch[0]); } catch {} }
   return null;
 }
 
@@ -130,21 +133,26 @@ async function task02EntityClassify(db: Database.Database): Promise<TaskResult> 
       SELECT canonical_name, user_label FROM entities WHERE user_label IS NOT NULL
     `).all() as any[];
 
-    const prompt = `You are classifying business contacts by relationship type. Here are examples of known labels:
-${labeled.map((l: any) => `- ${l.canonical_name}: ${l.user_label}`).join('\n')}
+    const prompt = `Classify business contacts by relationship type. Return ONLY a JSON array — no explanation, no markdown, no text before or after.
 
-Classify each person based on their communication pattern. Return JSON array:
-[{"name": "...", "type": "employee|partner|client|vendor|advisor|broker|noise|unknown", "confidence": 0.0-1.0, "reasoning": "..."}]
+Known labels (DO NOT contradict):
+${labeled.map((l: any) => `${l.canonical_name} = ${l.user_label}`).join(', ')}
 
 People to classify:
-${toClassify.map((e: any) => `- ${e.canonical_name}${e.email ? ` (${e.email})` : ''}: ${e.mentions} mentions, ${e.inbound} inbound, ${e.outbound} outbound${e.domain ? `, domain: ${e.domain}` : ''}`).join('\n')}
+${toClassify.map((e: any) => `${e.canonical_name}${e.email ? ` <${e.email}>` : ''} | ${e.mentions} mentions | ${e.inbound} in ${e.outbound} out${e.domain ? ` | ${e.domain}` : ''}`).join('\n')}
 
-Rules:
-- High inbound + work topics + single org domain = likely employee
-- Bidirectional + deal topics = likely partner
-- Only inbound + cold domain = likely noise
-- If unsure, use "unknown" with confidence < 0.5
-- NEVER contradict user-labeled entities above`;
+Classification guide:
+- employee: high inbound, work topics, same org domain as user
+- partner: bidirectional, deal/business topics, external org
+- client: user provides services, invoices sent
+- vendor: provides services to user, invoices received
+- advisor: occasional, strategic, user seeks advice
+- broker: intermediary, connects parties
+- noise: single interaction, cold outreach, no response
+- unknown: insufficient data (use confidence < 0.5)
+
+Return ONLY this JSON (no other text):
+[{"name":"...","type":"...","confidence":0.8,"reasoning":"..."}]`;
 
     const response = await callClaude(prompt, 120000);
     const parsed = tryParseJSON(response);
