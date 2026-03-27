@@ -2400,4 +2400,103 @@ program
     await runDreamPipeline({ quick: opts.quick });
   });
 
+// ============================================================
+// recall artifacts — list all artifacts
+// ============================================================
+program
+  .command('artifacts')
+  .description('List all artifacts (code, documents, designs) across all Claude conversations')
+  .option('-t, --type <type>', 'Filter by type: code, document, design, analysis')
+  .option('-p, --project <project>', 'Filter by project')
+  .option('-l, --limit <n>', 'Number to show', '20')
+  .action(async (opts: any) => {
+    const db = getDb();
+    const { listArtifacts } = await import('./artifacts.js');
+    const artifacts = listArtifacts(db, { type: opts.type, project: opts.project, limit: parseInt(opts.limit) || 20 });
+
+    if (artifacts.length === 0) {
+      console.log('\n  No artifacts found. Run: recall sync  to index Claude conversations.\n');
+      return;
+    }
+
+    console.log(`\n⚡ ARTIFACTS (${artifacts.length})\n`);
+    for (const a of artifacts) {
+      const typeIcon: Record<string, string> = { code: '💻', document: '📄', design: '🎨', analysis: '📊', spreadsheet: '📋' };
+      const icon = typeIcon[a.type] || '📎';
+      console.log(`  ${icon} ${a.title} (v${a.version}, ${a.type})`);
+      console.log(`     ${a.content_length} chars | ${a.project || 'no project'} | ${a.conversation_name || 'unknown conversation'}`);
+      console.log('');
+    }
+  });
+
+// ============================================================
+// recall artifact <query> — show a specific artifact
+// ============================================================
+program
+  .command('artifact <query>')
+  .description('Show an artifact — latest version with content preview and version history')
+  .option('--full', 'Show full content (not just preview)')
+  .option('--versions', 'Show all versions')
+  .action(async (query: string, opts: any) => {
+    const db = getDb();
+    const { getArtifact, getArtifactVersions } = await import('./artifacts.js');
+
+    const artifact = getArtifact(db, query);
+    if (!artifact) {
+      // Try search
+      const { searchArtifacts } = await import('./artifacts.js');
+      const results = searchArtifacts(db, query, 5);
+      if (results.length > 0) {
+        console.log(`\n  Artifact "${query}" not found. Did you mean:\n`);
+        for (const r of results) {
+          console.log(`    ${r.title} (v${r.version}, ${r.type})`);
+        }
+        console.log('');
+      } else {
+        console.log(`\n  Artifact "${query}" not found.\n`);
+      }
+      return;
+    }
+
+    console.log(`\n⚡ ${artifact.title} (v${artifact.version}, ${artifact.type})\n`);
+    console.log(`  Identifier: ${artifact.identifier}`);
+    console.log(`  Content: ${artifact.content_length} chars`);
+    if (artifact.project) console.log(`  Project: ${artifact.project}`);
+    if (artifact.conversation_name) console.log(`  Conversation: ${artifact.conversation_name}`);
+    if (artifact.conversation_uuid) console.log(`  Open: recall open "${artifact.conversation_name || artifact.title}"`);
+
+    if (opts.full) {
+      console.log(`\n  ── Content ──\n`);
+      console.log(artifact.content);
+    } else {
+      console.log(`\n  ── Preview (first 500 chars) ──\n`);
+      console.log(`  ${artifact.content.slice(0, 500)}${artifact.content.length > 500 ? '...' : ''}`);
+    }
+
+    if (opts.versions) {
+      const versions = getArtifactVersions(db, artifact.identifier);
+      console.log(`\n  ── Versions (${versions.length}) ──\n`);
+      for (const v of versions) {
+        const latest = v.is_latest ? ' ← latest' : '';
+        console.log(`    v${v.version}${latest} | ${v.content_length} chars | ${v.created_at}`);
+      }
+    }
+
+    console.log('');
+  });
+
+// ============================================================
+// recall migrate-artifacts — migrate from knowledge table
+// ============================================================
+program
+  .command('migrate-artifacts')
+  .description('Migrate artifacts from knowledge table to dedicated artifacts table')
+  .action(async () => {
+    const db = getDb();
+    const { migrateArtifactsFromKnowledge } = await import('./artifacts.js');
+    console.log('\n  Migrating artifacts...');
+    const result = await migrateArtifactsFromKnowledge(db);
+    console.log(`  ✓ Migrated: ${result.migrated} | Skipped: ${result.skipped}\n`);
+  });
+
 program.parse();

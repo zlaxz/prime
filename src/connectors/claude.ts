@@ -713,6 +713,21 @@ export async function scanClaude(
 
       insertKnowledge(db, artifactItem);
       stats.items++;
+
+      // Also store in dedicated artifacts table with FULL content
+      try {
+        const { storeArtifact } = await import('../artifacts.js');
+        storeArtifact(db, {
+          identifier: artifact.identifier,
+          title: artifact.title,
+          type: artifact.type,
+          content: artifact.content,  // FULL content, not truncated
+          conversation_uuid: convo.uuid,
+          conversation_name: convo.name,
+          project: projectName || extracted.project || undefined,
+          tags: ['claude-artifact', `artifact-type:${artifact.type}`],
+        });
+      } catch {}
     }
   }
 

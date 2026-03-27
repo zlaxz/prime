@@ -679,6 +679,46 @@ server.tool(
   }
 );
 
+server.tool(
+  "prime_artifact",
+  "Find and retrieve artifacts (code, documents, designs) created in Claude conversations. Returns the LATEST VERSION with full content. Use when the user asks about a document, code, design, or anything they created in Claude.",
+  {
+    query: z.string().describe("Artifact title, identifier, or search term"),
+    full_content: z.boolean().optional().default(true).describe("Return full content (default true)"),
+  },
+  async ({ query, full_content }) => {
+    const db = getDb();
+    const { getArtifact, searchArtifacts } = await import('../artifacts.js');
+
+    const artifact = getArtifact(db, query);
+    if (artifact) {
+      let text = `Artifact: ${artifact.title} (v${artifact.version}, ${artifact.type})\n`;
+      text += `Project: ${artifact.project || 'none'}\n`;
+      text += `Conversation: ${artifact.conversation_name || 'unknown'}\n`;
+      text += `Size: ${artifact.content_length} chars\n`;
+      if (artifact.conversation_uuid) {
+        text += `Open in browser: https://claude.ai/chat/${artifact.conversation_uuid}\n`;
+      }
+      if (full_content) {
+        text += `\n--- Content ---\n${artifact.content}`;
+      } else {
+        text += `\n--- Preview ---\n${artifact.content.slice(0, 1000)}`;
+      }
+      return { content: [{ type: "text" as const, text }] };
+    }
+
+    // Fallback: search
+    const results = searchArtifacts(db, query, 5);
+    if (results.length > 0) {
+      const text = `No exact match for "${query}". Found ${results.length} similar artifacts:\n\n` +
+        results.map((r: any) => `- ${r.title} (v${r.version}, ${r.type}) | ${r.content_length} chars | ${r.project || 'no project'}`).join('\n');
+      return { content: [{ type: "text" as const, text }] };
+    }
+
+    return { content: [{ type: "text" as const, text: `No artifacts found matching "${query}"` }] };
+  }
+);
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);

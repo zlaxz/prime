@@ -278,6 +278,35 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_facts_type ON facts(fact_type, tier) WHERE valid_until IS NULL;
     CREATE INDEX IF NOT EXISTS idx_facts_source ON facts(source_item_id) WHERE source_item_id IS NOT NULL;
 
+    -- ============================================================
+    -- ARTIFACTS TABLE — versioned, full-content, cross-project
+    -- ============================================================
+
+    CREATE TABLE IF NOT EXISTS artifacts (
+      id TEXT PRIMARY KEY,
+      identifier TEXT NOT NULL,          -- artifact identifier (stable across versions)
+      title TEXT NOT NULL,
+      type TEXT NOT NULL,                -- 'code', 'document', 'analysis', 'design', 'spreadsheet'
+      version INTEGER DEFAULT 1,
+      is_latest INTEGER DEFAULT 1,       -- only 1 per identifier
+      content TEXT NOT NULL,             -- FULL content (not truncated)
+      content_length INTEGER,
+      conversation_uuid TEXT,            -- source conversation
+      conversation_name TEXT,
+      project TEXT,
+      knowledge_item_id TEXT,            -- link to knowledge table
+      embedding BLOB,                    -- for semantic search on content
+      tags TEXT DEFAULT '[]',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_artifacts_identifier ON artifacts(identifier);
+    CREATE INDEX IF NOT EXISTS idx_artifacts_title ON artifacts(title);
+    CREATE INDEX IF NOT EXISTS idx_artifacts_latest ON artifacts(identifier, is_latest) WHERE is_latest = 1;
+    CREATE INDEX IF NOT EXISTS idx_artifacts_project ON artifacts(project);
+    CREATE INDEX IF NOT EXISTS idx_artifacts_type ON artifacts(type);
+
     -- Entity indexes
     CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_email ON entities(email) WHERE email IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
