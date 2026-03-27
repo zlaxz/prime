@@ -23,6 +23,7 @@ import { connectCalendar, scanCalendar } from './connectors/calendar.js';
 import { indexDirectory } from './connectors/files.js';
 import { importClaudeConversations, connectClaude, scanClaude } from './connectors/claude.js';
 import { connectOtter, scanOtter } from './connectors/otter.js';
+import { connectFireflies, scanFireflies } from './connectors/fireflies.js';
 import { connectCowork, scanCowork } from './connectors/cowork.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
