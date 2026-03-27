@@ -120,13 +120,12 @@ export async function scanFireflies(
   // Fetch meetings list
   console.log(`  Fetching meetings from ${fromDate} to ${toDate}...`);
   const data = await firefliesQuery(apiKey, `
-    query($fromDate: String!, $toDate: String!) {
-      transcripts(fromDate: $fromDate, toDate: $toDate) {
+    query {
+      transcripts {
         id
         title
         date
         duration
-        organizers
         participants
         summary {
           action_items
@@ -136,15 +135,20 @@ export async function scanFireflies(
         }
         speakers {
           name
-          email
-          duration
-          word_count
         }
       }
     }
-  `, { fromDate, toDate });
+  `);
 
-  const meetings = (data.transcripts || []).slice(0, maxMeetings);
+  const cutoff = Date.now() - days * 86400000;
+  const meetings = (data.transcripts || [])
+    .filter((m: any) => {
+      if (!m.date) return false;
+      // date is Unix timestamp in ms
+      const ts = typeof m.date === 'number' ? m.date : new Date(m.date).getTime();
+      return ts >= cutoff;
+    })
+    .slice(0, maxMeetings);
   console.log(`  Found ${meetings.length} meetings`);
 
   // Filter already indexed
@@ -182,11 +186,11 @@ export async function scanFireflies(
           `Meeting: ${meeting.title}`,
           `Date: ${meeting.date}`,
           `Duration: ${durationMin} minutes`,
-          speakers.length ? `Speakers: ${speakers.map((s: any) => `${s.name}${s.email ? ` (${s.email})` : ''}`).join(', ')}` : '',
+          speakers.length ? `Speakers: ${speakers.map((s: any) => s.name).join(', ')}` : '',
           participants.length ? `Participants: ${participants.join(', ')}` : '',
           summary.overview ? `\nSummary: ${summary.overview}` : '',
-          summary.shorthand_bullet?.length ? `\nKey Points:\n${summary.shorthand_bullet.join('\n')}` : '',
-          summary.action_items?.length ? `\nAction Items:\n${summary.action_items.join('\n')}` : '',
+          summary.shorthand_bullet ? `\nKey Points:\n${Array.isArray(summary.shorthand_bullet) ? summary.shorthand_bullet.join('\n') : summary.shorthand_bullet}` : '',
+          summary.action_items ? `\nAction Items:\n${Array.isArray(summary.action_items) ? summary.action_items.join('\n') : summary.action_items}` : '',
         ].filter(Boolean).join('\n');
 
         // Extract intelligence
@@ -206,7 +210,7 @@ export async function scanFireflies(
           summary: summary.overview || extracted.summary,
           source: 'fireflies',
           source_ref: `fireflies:${meeting.id}`,
-          source_date: meeting.date ? new Date(meeting.date).toISOString() : new Date().toISOString(),
+          source_date: meeting.date ? new Date(typeof meeting.date === 'number' ? meeting.date : Date.parse(meeting.date)).toISOString() : new Date().toISOString(),
           contacts: allContacts,
           organizations: extracted.organizations,
           decisions: extracted.decisions,
@@ -221,7 +225,7 @@ export async function scanFireflies(
             duration_minutes: durationMin,
             speaker_count: speakers.length,
             participant_count: participants.length,
-            speakers: speakers.map((s: any) => ({ name: s.name, email: s.email, duration: s.duration, words: s.word_count })),
+            speakers: speakers.map((s: any) => ({ name: s.name })),
             action_items: summary.action_items,
             keywords: summary.keywords,
             audio_url: meeting.audio_url,
@@ -233,7 +237,8 @@ export async function scanFireflies(
         insertKnowledge(db, item);
         stats.items++;
         stats.meetings++;
-      } catch {
+      } catch (err: any) {
+        console.error(`\n    ✗ Failed: ${meeting.title}: ${err.message?.slice(0, 100)}`);
         stats.skipped++;
       }
     }));
