@@ -763,12 +763,13 @@ program
     });
   });
 
+// OLD re-extract removed — replaced by new version at bottom of file that uses source retrieval APIs
 // ============================================================
-// recall re-extract
+// recall hierarchy (placeholder to maintain line numbering)
 // ============================================================
 program
-  .command('re-extract')
-  .description('Re-process all knowledge items through Claude Code extraction')
+  .command('re-extract-legacy-DISABLED')
+  .description('DISABLED — old version that re-extracted from summaries. Use re-extract instead.')
   .option('-n, --dry-run', 'Show what would change without writing')
   .option('-l, --limit <n>', 'Process only first N items')
   .action(async (opts: any) => {
