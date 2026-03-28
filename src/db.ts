@@ -6,6 +6,10 @@ import { homedir } from 'os';
 const PRIME_DIR = join(homedir(), '.prime');
 const DB_PATH = join(PRIME_DIR, 'prime.db');
 
+// Belief System: Source classification
+// Derived sources are the system's OWN output — never feed entity graph, search, or world model
+export const DERIVED_SOURCES = ['agent-report', 'agent-notification', 'briefing', 'directive'] as const;
+
 let _db: Database.Database | null = null;
 
 export function ensurePrimeDir(): string {
@@ -375,6 +379,28 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_dismissals_domain ON dismissals(domain) WHERE domain IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_dismissals_pattern ON dismissals(pattern) WHERE pattern IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_dismissals_entity ON dismissals(entity_id) WHERE entity_id IS NOT NULL;
+
+    -- ============================================================
+    -- Provenance Views — Belief System Architecture
+    -- knowledge_primary: ONLY primary observations (real emails, meetings, conversations)
+    -- knowledge_derived: ONLY system outputs (agent reports, briefings, directives)
+    --
+    -- Entity graph, world model, alerts, and search use knowledge_primary.
+    -- Agent activity tracking and self-audit use knowledge_derived.
+    -- Raw knowledge table used ONLY for exports and admin queries.
+    --
+    -- Uses NOT IN so new source types default to PRIMARY (safe default).
+    -- ============================================================
+    CREATE VIEW IF NOT EXISTS knowledge_primary AS
+      SELECT * FROM knowledge
+      WHERE source NOT IN ('agent-report', 'agent-notification', 'briefing', 'directive');
+
+    CREATE VIEW IF NOT EXISTS knowledge_derived AS
+      SELECT * FROM knowledge
+      WHERE source IN ('agent-report', 'agent-notification', 'briefing', 'directive');
+
+    -- Index on source for efficient view filtering
+    CREATE INDEX IF NOT EXISTS idx_knowledge_source ON knowledge(source);
   `);
 }
 
@@ -433,7 +459,7 @@ export function insertKnowledge(db: Database.Database, item: KnowledgeItem) {
 export function searchByText(db: Database.Database, query: string, limit = 20): any[] {
   const pattern = `%${query}%`;
   const rows = db.prepare(
-    `SELECT * FROM knowledge
+    `SELECT * FROM knowledge_primary
     WHERE title LIKE ? OR summary LIKE ? OR contacts LIKE ? OR organizations LIKE ? OR tags LIKE ?
     ORDER BY
       CASE importance
@@ -467,7 +493,7 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 export function searchByEmbedding(db: Database.Database, queryEmbedding: number[], limit = 10, threshold = 0.7): any[] {
-  const items = db.prepare('SELECT * FROM knowledge WHERE embedding IS NOT NULL').all() as any[];
+  const items = db.prepare('SELECT * FROM knowledge_primary WHERE embedding IS NOT NULL').all() as any[];
   if (!items.length) return [];
 
   const scored = items

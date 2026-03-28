@@ -118,9 +118,9 @@ function buildPersonContexts(db: Database.Database, filters: EntityFilters): Map
   const sevenDaysAgo = new Date(now - 7 * 86400000).toISOString();
   const fourteenDaysAgo = new Date(now - 14 * 86400000).toISOString();
 
-  // Get all awaiting_reply items
+  // Get all awaiting_reply items — PRIMARY SOURCES ONLY (belief system: no agent reports)
   const awaitingItems = queryRows(db, `
-    SELECT * FROM knowledge
+    SELECT * FROM knowledge_primary
     WHERE tags LIKE '%awaiting_reply%'
     ORDER BY source_date DESC
   `, []);
@@ -234,7 +234,7 @@ function buildPersonContexts(db: Database.Database, filters: EntityFilters): Map
 
           // Check for calendar events with this person (resolution evidence)
           hasCalendar = !!(db.prepare(`
-            SELECT 1 FROM knowledge k
+            SELECT 1 FROM knowledge_primary k
             JOIN entity_mentions em ON k.id = em.knowledge_item_id
             WHERE em.entity_id = ? AND k.source = 'calendar'
               AND k.source_date >= ?
@@ -243,7 +243,7 @@ function buildPersonContexts(db: Database.Database, filters: EntityFilters): Map
 
           // Check for newer email threads (not awaiting) with this person
           hasNewerThread = !!(db.prepare(`
-            SELECT 1 FROM knowledge k
+            SELECT 1 FROM knowledge_primary k
             JOIN entity_mentions em ON k.id = em.knowledge_item_id
             WHERE em.entity_id = ? AND k.source IN ('gmail', 'gmail-sent')
               AND k.tags NOT LIKE '%awaiting_reply%'
@@ -611,7 +611,7 @@ export async function generateCatchup(
   const businessContext = getConfig(db, 'business_context') || '';
 
   const cutoff = new Date(Date.now() - days * 86400000).toISOString();
-  const items = queryRows(db, `SELECT * FROM knowledge WHERE source_date >= ? ORDER BY source_date DESC`, [cutoff]);
+  const items = queryRows(db, `SELECT * FROM knowledge_primary WHERE source_date >= ? ORDER BY source_date DESC`, [cutoff]);
 
   if (items.length === 0) return `Nothing new in the last ${days} days.`;
 
@@ -718,7 +718,7 @@ export interface ContactHealth {
 }
 
 export function getRelationshipHealth(db: Database.Database): ContactHealth[] {
-  const allItems = queryRows(db, `SELECT * FROM knowledge ORDER BY source_date DESC`, []);
+  const allItems = queryRows(db, `SELECT * FROM knowledge_primary ORDER BY source_date DESC`, []);
 
   const contactMap = new Map<string, {
     mentions: number;
@@ -790,7 +790,7 @@ export async function generateDealBrief(
   // Find all items for this project (text search + project field)
   const textResults = searchByText(db, projectQuery, 50);
   const projectItems = queryRows(db,
-    `SELECT * FROM knowledge WHERE project LIKE ? ORDER BY source_date DESC`,
+    `SELECT * FROM knowledge_primary WHERE project LIKE ? ORDER BY source_date DESC`,
     [`%${projectQuery}%`]
   );
 

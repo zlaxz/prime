@@ -196,9 +196,9 @@ export function buildEntityGraph(
   if (options.incremental) {
     const lastBuild = db.prepare("SELECT value FROM graph_state WHERE key = 'last_entity_build'").get() as any;
     const since = lastBuild?.value || '2000-01-01';
-    items = db.prepare('SELECT * FROM knowledge WHERE source_date > ? ORDER BY source_date ASC').all(since) as any[];
+    items = db.prepare('SELECT * FROM knowledge_primary WHERE source_date > ? ORDER BY source_date ASC').all(since) as any[];
   } else {
-    items = db.prepare('SELECT * FROM knowledge ORDER BY source_date ASC').all() as any[];
+    items = db.prepare('SELECT * FROM knowledge_primary ORDER BY source_date ASC').all() as any[];
   }
 
   console.log(`  Processing ${items.length} items for entities...`);

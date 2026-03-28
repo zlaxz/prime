@@ -101,7 +101,7 @@ server.tool(
   {
     content: z.string().describe("What to remember — include the FULL text, not a summary"),
     title: z.string().optional().describe("Title for this item (auto-generated if not provided)"),
-    source: z.string().optional().describe("Source type: 'mcp', 'agent-report', 'directive', 'manual'"),
+    source: z.enum(['mcp', 'agent-report', 'agent-notification', 'directive', 'manual']).optional().describe("Source type. Default: 'mcp'. Agent reports use 'agent-report'."),
     project: z.string().optional().describe("Project to associate with"),
     importance: z.enum(["low", "normal", "high", "critical"]).optional().describe("Importance level"),
     tags: z.array(z.string()).optional().describe("Tags for this item (e.g., ['agent:cos', 'agent-report'])"),
