@@ -636,7 +636,7 @@ async function task08CommitmentVerification(db: Database.Database): Promise<Task
   try {
     const commitments = db.prepare(`
       SELECT c.id, c.text, c.state, c.due_date, c.owner, c.assigned_to, c.project,
-        c.source_item_id
+        c.detected_from
       FROM commitments c
       WHERE c.state IN ('active', 'overdue', 'detected')
       ORDER BY c.due_date ASC LIMIT 30
@@ -649,8 +649,8 @@ async function task08CommitmentVerification(db: Database.Database): Promise<Task
     // For each commitment, get the source context + any recent activity
     const commitmentContexts = commitments.map((c: any) => {
       let sourceContext = '';
-      if (c.source_item_id) {
-        const item = db.prepare('SELECT title, summary, source, source_date FROM knowledge WHERE id = ?').get(c.source_item_id) as any;
+      if (c.detected_from) {
+        const item = db.prepare('SELECT title, summary, source, source_date FROM knowledge WHERE id = ?').get(c.detected_from) as any;
         if (item) sourceContext = `Source: ${item.source_date?.slice(0, 10)} | ${item.source} | ${item.title}\n  ${item.summary?.slice(0, 200)}`;
       }
 

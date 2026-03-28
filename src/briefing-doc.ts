@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { generateWorldModel } from './ai/world.js';
@@ -16,9 +16,108 @@ const BRIEFING_DIR = join(homedir(), '.prime', 'briefings');
 export function generateBriefingDoc(db: Database.Database): string {
   if (!existsSync(BRIEFING_DIR)) mkdirSync(BRIEFING_DIR, { recursive: true });
 
-  const model = generateWorldModel(db);
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   const timeStr = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+  // Try to use the LLM-generated world narrative (from dream pipeline)
+  const narrativePath = join(homedir(), '.prime', 'world-narrative.md');
+  if (existsSync(narrativePath)) {
+    const narrative = readFileSync(narrativePath, 'utf-8');
+    // Check if it's fresh (less than 24 hours old)
+    const narrativeStat = statSync(narrativePath);
+    const ageHours = (Date.now() - narrativeStat.mtimeMs) / 3600000;
+    if (ageHours < 24 && narrative.length > 200) {
+      return generateNarrativeBriefing(narrative, dateStr, timeStr, db);
+    }
+  }
+
+  // Fallback: generate from structured world model
+  return generateStructuredBriefing(db, dateStr, timeStr);
+}
+
+function generateNarrativeBriefing(narrative: string, dateStr: string, timeStr: string, db: Database.Database): string {
+  // Convert markdown to basic HTML
+  let bodyHtml = narrative
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/`(.+?)`/g, '<code>$1</code>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/^(\d+)\. (.+)$/gm, '<li><strong>$1.</strong> $2</li>')
+    .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
+    .replace(/^---$/gm, '<hr>')
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>');
+
+  // Wrap paragraphs
+  bodyHtml = '<p>' + bodyHtml + '</p>';
+  bodyHtml = bodyHtml.replace(/<p><h/g, '<h').replace(/<\/h(\d)><\/p>/g, '</h$1>');
+  bodyHtml = bodyHtml.replace(/<p><hr><\/p>/g, '<hr>');
+  bodyHtml = bodyHtml.replace(/<p><ul>/g, '<ul>').replace(/<\/ul><\/p>/g, '</ul>');
+
+  const model = generateWorldModel(db);
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <title>Prime Intelligence — ${dateStr}</title>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="300">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, system-ui, sans-serif; background: #0a0a1a; color: #d4d4d4; padding: 32px; max-width: 800px; margin: 0 auto; line-height: 1.7; }
+    h1 { font-size: 24px; color: #fff; margin: 24px 0 8px; }
+    h1:first-of-type { margin-top: 0; }
+    h2 { font-size: 16px; color: #60a5fa; text-transform: uppercase; letter-spacing: 1.5px; margin: 32px 0 16px; padding-bottom: 8px; border-bottom: 1px solid #1e3a5f; }
+    h3 { font-size: 15px; color: #e0e0e0; margin: 16px 0 8px; }
+    p { margin: 8px 0; font-size: 14px; }
+    strong { color: #fff; }
+    em { color: #fbbf24; font-style: italic; }
+    code { background: #1a1a2a; padding: 2px 6px; border-radius: 3px; font-size: 13px; color: #60a5fa; }
+    ul { list-style: none; margin: 8px 0; padding: 0; }
+    li { padding: 6px 0 6px 16px; position: relative; font-size: 14px; }
+    li::before { content: ''; position: absolute; left: 0; top: 14px; width: 6px; height: 6px; border-radius: 50%; background: #3b82f6; }
+    hr { border: none; border-top: 1px solid #222; margin: 24px 0; }
+    .header { margin-bottom: 24px; }
+    .subtitle { color: #666; font-size: 12px; }
+    .stats { display: flex; gap: 12px; margin: 16px 0; }
+    .stat { background: #111; border: 1px solid #1e293b; border-radius: 6px; padding: 10px 14px; text-align: center; flex: 1; }
+    .stat .num { font-size: 22px; font-weight: bold; color: #fff; }
+    .stat .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+    .response-box { background: #0f172a; border: 1px solid #1e3a5f; border-radius: 8px; padding: 16px; margin-top: 32px; }
+    .response-box h3 { color: #60a5fa; margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
+    .response-box p { font-size: 13px; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <p class="subtitle">PRIME INTELLIGENCE · ${dateStr} at ${timeStr} · ${model.stats.items} items · ${model.stats.entities} entities</p>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="num">${model.alerts.length}</div><div class="label">Alerts</div></div>
+    <div class="stat"><div class="num">${model.people.length}</div><div class="label">People</div></div>
+    <div class="stat"><div class="num">${model.projects.length}</div><div class="label">Projects</div></div>
+  </div>
+
+  ${bodyHtml}
+
+  <div class="response-box">
+    <h3>Respond in Cowork</h3>
+    <p>Open Claude Desktop and tell your COS what to do: <code>chase Charlie's form</code> · <code>send subjectivities</code> · <code>defer Costas to Monday</code></p>
+  </div>
+</body>
+</html>`;
+
+  const filePath = join(BRIEFING_DIR, 'latest.html');
+  writeFileSync(filePath, html);
+  return filePath;
+}
+
+function generateStructuredBriefing(db: Database.Database, dateStr: string, timeStr: string): string {
+  const model = generateWorldModel(db);
 
   // Build alerts with links
   const alertRows = model.alerts.slice(0, 25).map((a, i) => {
