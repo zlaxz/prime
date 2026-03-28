@@ -86,6 +86,14 @@ function generateNarrativeBriefing(narrative: string, dateStr: string, timeStr: 
     .stat { background: #111; border: 1px solid #1e293b; border-radius: 6px; padding: 10px 14px; text-align: center; flex: 1; }
     .stat .num { font-size: 22px; font-weight: bold; color: #fff; }
     .stat .label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; }
+    .actions-section { margin-top: 32px; }
+    .actions-subtitle { color: #666; font-size: 12px; margin-bottom: 12px; }
+    .action-card { background: #0f172a; border: 1px solid #1e3a5f; border-radius: 8px; padding: 14px; margin-bottom: 10px; }
+    .action-header { font-size: 14px; color: #fff; margin-bottom: 4px; }
+    .action-meta { font-size: 11px; color: #60a5fa; margin-bottom: 6px; }
+    .action-reason { font-size: 13px; color: #94a3b8; margin-bottom: 8px; }
+    .action-approve { font-size: 12px; color: #4ade80; }
+    .action-approve code { background: #1a2e1a; color: #4ade80; padding: 2px 6px; border-radius: 3px; }
     .response-box { background: #0f172a; border: 1px solid #1e3a5f; border-radius: 8px; padding: 16px; margin-top: 32px; }
     .response-box h3 { color: #60a5fa; margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
     .response-box p { font-size: 13px; color: #94a3b8; }
@@ -104,9 +112,33 @@ function generateNarrativeBriefing(narrative: string, dateStr: string, timeStr: 
 
   ${bodyHtml}
 
+  ${(() => {
+    // Render staged actions if any exist
+    try {
+      const actions = db.prepare(
+        "SELECT id, type, summary, reasoning, project FROM staged_actions WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY id ASC"
+      ).all() as any[];
+      if (actions.length === 0) return '';
+      const actionCards = actions.map((a: any) => {
+        const icon = a.type === 'email' ? '✉' : a.type === 'calendar' ? '📅' : '📌';
+        return `<div class="action-card">
+          <div class="action-header">${icon} <strong>${a.summary}</strong></div>
+          <div class="action-meta">${a.project || ''} · ${a.type}</div>
+          <div class="action-reason">${a.reasoning || ''}</div>
+          <div class="action-approve">In Cowork: <code>approve action ${a.id}</code></div>
+        </div>`;
+      }).join('');
+      return `<div class="actions-section">
+        <h2>Prepared Actions</h2>
+        <p class="actions-subtitle">${actions.length} actions ready — approve in Cowork</p>
+        ${actionCards}
+      </div>`;
+    } catch { return ''; }
+  })()}
+
   <div class="response-box">
     <h3>Respond in Cowork</h3>
-    <p>Open Claude Desktop and tell your COS what to do: <code>chase Charlie's form</code> · <code>send subjectivities</code> · <code>defer Costas to Monday</code></p>
+    <p>Open Claude Desktop: <code>what are my pending actions?</code> · <code>approve action 1</code> · <code>reject action 3</code></p>
   </div>
 </body>
 </html>`;

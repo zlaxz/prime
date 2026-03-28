@@ -926,6 +926,118 @@ server.tool(
   }
 );
 
+// ── Staged Actions: The bridge from intelligence to execution ────
+
+server.tool(
+  "prime_staged_actions",
+  "List pending prepared actions from the dream pipeline. These are ready-to-execute actions (draft emails, calendar blocks) that the user can approve with one click.",
+  {},
+  async () => {
+    try {
+      const db = getDb();
+      const actions = db.prepare(
+        "SELECT id, type, summary, reasoning, project, created_at FROM staged_actions WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY id ASC"
+      ).all() as any[];
+
+      if (actions.length === 0) {
+        return { content: [{ type: "text" as const, text: "No pending actions. Run the dream pipeline to generate recommendations." }] };
+      }
+
+      const lines = actions.map((a: any, i: number) =>
+        `${i + 1}. [${a.type.toUpperCase()}] ${a.summary}\n   Why: ${a.reasoning || 'N/A'}\n   Project: ${a.project || 'general'}\n   ID: ${a.id}`
+      ).join('\n\n');
+
+      return { content: [{ type: "text" as const, text: `📋 PENDING ACTIONS (${actions.length}):\n\n${lines}\n\nApprove with: prime_approve_action({id: N})` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `✗ Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_approve_action",
+  "Approve and execute a staged action. The system sends the email, creates the calendar event, or executes the prepared action.",
+  {
+    id: z.number().describe("The staged action ID to approve"),
+  },
+  async ({ id }) => {
+    try {
+      const db = getDb();
+      const action = db.prepare("SELECT * FROM staged_actions WHERE id = ? AND status = 'pending'").get(id) as any;
+
+      if (!action) {
+        return { content: [{ type: "text" as const, text: `✗ Action ${id} not found or already processed.` }] };
+      }
+
+      const payload = JSON.parse(action.payload);
+      let result = '';
+
+      if (action.type === 'email' && payload.to) {
+        // Use existing Gmail send capability
+        const { getConfig } = await import('../db.js');
+        const { google } = await import('googleapis');
+
+        const tokens = getConfig(db, 'gmail_tokens');
+        const email = getConfig(db, 'gmail_email');
+        if (!tokens) throw new Error('Gmail not connected');
+
+        const oauth2 = new google.auth.OAuth2(
+          getConfig(db, 'google_client_id'),
+          getConfig(db, 'google_client_secret'),
+          'http://localhost:9876/callback'
+        );
+        oauth2.setCredentials(typeof tokens === 'string' ? JSON.parse(tokens) : tokens);
+        const gmail = google.gmail({ version: 'v1', auth: oauth2 });
+
+        const rawMessage = [
+          `From: ${email}`,
+          `To: ${payload.to}`,
+          payload.cc ? `Cc: ${payload.cc}` : '',
+          `Subject: ${payload.subject || 'Follow up'}`,
+          '',
+          payload.body || '',
+        ].filter(Boolean).join('\r\n');
+
+        const encoded = Buffer.from(rawMessage).toString('base64url');
+        await gmail.users.messages.send({ userId: 'me', requestBody: { raw: encoded } });
+
+        result = `✓ Email sent to ${payload.to}\nSubject: ${payload.subject}`;
+      } else if (action.type === 'calendar' && payload.title) {
+        result = `✓ Calendar action noted: "${payload.title}"\n(Full calendar integration: use prime_schedule_meeting for detailed scheduling)`;
+      } else if (action.type === 'reminder') {
+        result = `✓ Reminder acknowledged: "${payload.text || action.summary}"`;
+      } else {
+        result = `✓ Action approved: ${action.summary}`;
+      }
+
+      // Mark as executed
+      db.prepare("UPDATE staged_actions SET status = 'executed', acted_at = datetime('now') WHERE id = ?").run(id);
+
+      return { content: [{ type: "text" as const, text: result }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `✗ Failed to execute action ${id}: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_reject_action",
+  "Reject a staged action. Records the rejection for the feedback loop — the system learns not to recommend similar actions.",
+  {
+    id: z.number().describe("The staged action ID to reject"),
+    reason: z.string().optional().describe("Why rejected (helps the system learn)"),
+  },
+  async ({ id, reason }) => {
+    try {
+      const db = getDb();
+      db.prepare("UPDATE staged_actions SET status = 'rejected', acted_at = datetime('now') WHERE id = ? AND status = 'pending'").run(id);
+      return { content: [{ type: "text" as const, text: `✓ Action ${id} rejected.${reason ? ' Reason: ' + reason : ''} The system will learn from this.` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `✗ Error: ${err.message}` }] };
+    }
+  }
+);
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);

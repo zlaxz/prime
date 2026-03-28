@@ -399,6 +399,26 @@ function initSchema(db: Database.Database) {
       SELECT * FROM knowledge
       WHERE source IN ('agent-report', 'agent-notification', 'briefing', 'directive');
 
+    -- ============================================================
+    -- Staged Actions — prepared by dream pipeline, approved by user
+    -- The bridge from intelligence to execution
+    -- ============================================================
+    CREATE TABLE IF NOT EXISTS staged_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL,              -- 'email', 'calendar', 'reminder'
+      summary TEXT NOT NULL,           -- human-readable one-liner
+      payload TEXT NOT NULL,           -- JSON: {to, subject, body} or {title, start_time}
+      reasoning TEXT,                  -- why the system recommends this
+      project TEXT,
+      source_task TEXT DEFAULT 'dream-09',
+      status TEXT DEFAULT 'pending',   -- 'pending', 'approved', 'rejected', 'expired', 'executed'
+      created_at TEXT DEFAULT (datetime('now')),
+      expires_at TEXT,                 -- 72h hard expiry + expire-on-new-run
+      acted_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_staged_actions_status ON staged_actions(status);
+
     -- Index on source for efficient view filtering
     CREATE INDEX IF NOT EXISTS idx_knowledge_source ON knowledge(source);
   `);

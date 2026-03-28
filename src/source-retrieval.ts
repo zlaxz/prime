@@ -79,7 +79,7 @@ export async function retrieveGmailThread(db: Database.Database, threadId: strin
         }
       }
 
-      parts.push(`--- ${from} (${date}) ---\nSubject: ${subject}\n${body.slice(0, 2000)}`);
+      parts.push(`--- ${from} (${date}) ---\nSubject: ${subject}\n${body.slice(0, 8000)}`);
     }
 
     return parts.join('\n\n');
@@ -146,7 +146,7 @@ export async function retrieveFirefliesTranscript(db: Database.Database, meeting
       for (const item of items) parts.push(`- ${item}`);
     }
 
-    return parts.join('\n').slice(0, 12000); // Cap at 12K chars
+    return parts.join('\n').slice(0, 50000); // Opus 4.6 1M context — generous cap
   } catch (err: any) {
     console.log(`  Warning: Could not retrieve Fireflies transcript ${meetingId}: ${err.message?.slice(0, 100)}`);
     return null;

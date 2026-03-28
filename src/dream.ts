@@ -36,7 +36,7 @@ function ensureDirs() {
 
 // ── claude -p invocation ────────────────────────────────────
 
-async function callClaude(prompt: string, timeoutMs: number = 300000): Promise<string> {
+async function callClaudeOnce(prompt: string, timeoutMs: number = 300000): Promise<string> {
   return new Promise((resolve, reject) => {
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY; // Force Max subscription OAuth
@@ -61,6 +61,17 @@ async function callClaude(prompt: string, timeoutMs: number = 300000): Promise<s
     proc.stdin.write(prompt);
     proc.stdin.end();
   });
+}
+
+async function callClaude(prompt: string, timeoutMs: number = 300000): Promise<string> {
+  try {
+    return await callClaudeOnce(prompt, timeoutMs);
+  } catch (err: any) {
+    // One retry with 30s backoff
+    console.log(`    Retry after error: ${err.message?.slice(0, 80)}`);
+    await new Promise(r => setTimeout(r, 30000));
+    return await callClaudeOnce(prompt, timeoutMs);
+  }
 }
 
 function tryParseJSON(text: string): any {
@@ -662,10 +673,10 @@ async function task07ProjectUnderstanding(db: Database.Database): Promise<TaskRe
         GROUP BY e.id ORDER BY cnt DESC LIMIT 5
       `).all(proj.project) as any[];
 
-      // Recent items
+      // Recent items — include source_ref and metadata for deep retrieval
       const items = db.prepare(`
-        SELECT title, source, source_date, summary FROM knowledge_primary
-        WHERE project = ? ORDER BY source_date DESC LIMIT 10
+        SELECT title, source, source_date, source_ref, summary, metadata FROM knowledge_primary
+        WHERE project = ? ORDER BY source_date DESC LIMIT 15
       `).all(proj.project) as any[];
 
       // Open commitments
@@ -683,9 +694,28 @@ Key people: ${people.map((p: any) => `${p.canonical_name} [${p.user_label || p.r
 Open commitments: ${commitments.length}
 ${commitments.map((c: any) => `  - ${c.text} [${c.state}]${c.due_date ? ' due: ' + c.due_date : ''}`).join('\n') || '  (none)'}
 Recent activity:
-${items.slice(0, 8).map((i: any) => `  ${i.source_date?.slice(0, 10) || '?'} | ${i.source} | ${i.title}`).join('\n')}
+${items.slice(0, 10).map((i: any) => `  ${i.source_date?.slice(0, 10) || '?'} | ${i.source} | ${i.title}\n    ${(i.summary || '').slice(0, 200)}`).join('\n')}
 `;
     }).join('\n---\n');
+
+    // SOURCE RETRIEVAL: Get actual content for the top 3 most active projects
+    let deepProjectContext = '';
+    try {
+      const topProjects = projects.slice(0, 3);
+      for (const proj of topProjects) {
+        const projItems = db.prepare(`
+          SELECT title, source, source_ref, source_date, metadata FROM knowledge_primary
+          WHERE project = ? ORDER BY source_date DESC LIMIT 5
+        `).all(proj.project) as any[];
+
+        const deepContent = await retrieveDeepContext(db, projItems, 2);
+        if (deepContent) {
+          deepProjectContext += `\n\n=== FULL SOURCE MATERIAL: ${proj.project} ===${deepContent}`;
+        }
+      }
+    } catch (err: any) {
+      console.log(`    Source retrieval warning: ${err.message?.slice(0, 100)}`);
+    }
 
     const prompt = `You are the AI Chief of Staff for Zach Stock, founder of Recapture Insurance (MGA). Analyze each project and provide a strategic assessment.
 
@@ -698,6 +728,9 @@ For each project, determine:
 
 PROJECTS:
 ${projectContexts}
+${deepProjectContext ? '\n--- ORIGINAL SOURCE MATERIAL (actual emails and meeting transcripts, not summaries) ---' + deepProjectContext : ''}
+
+Think strategically. Don't just report status — identify the 2nd and 3rd order implications. What should Zach be setting up NOW that nobody is raising? What connections across projects exist?
 
 Return ONLY this JSON array:
 [{
@@ -1108,6 +1141,24 @@ Return ONLY one word: FULFILLED or OVERDUE`;
 async function task09WorldNarrative(db: Database.Database): Promise<TaskResult> {
   const start = Date.now();
   try {
+    // Expire previous staged actions (replaced by this run's fresh recommendations)
+    db.prepare("UPDATE staged_actions SET status = 'expired', acted_at = datetime('now') WHERE status = 'pending'").run();
+
+    // Load yesterday's staged action outcomes for feedback loop
+    const yesterdayOutcomes = db.prepare(`
+      SELECT summary, status, type FROM staged_actions
+      WHERE acted_at >= datetime('now', '-2 days') AND status != 'pending'
+      ORDER BY acted_at DESC LIMIT 10
+    `).all() as any[];
+
+    const feedbackBlock = yesterdayOutcomes.length > 0
+      ? 'YESTERDAY\'S ACTION OUTCOMES (learn from what user approved vs rejected):\n' +
+        yesterdayOutcomes.map((a: any) =>
+          `- "${a.summary}" → ${a.status.toUpperCase()}`
+        ).join('\n') +
+        '\nOnly include explicitly REJECTED actions as negative signal. EXPIRED = no signal.'
+      : '';
+
     // Gather all intelligence products
     const entityProfiles = db.prepare(`
       SELECT ep.*, e.canonical_name, e.email, e.domain
@@ -1201,6 +1252,8 @@ ${activeCommitments || '(none verified active)'}
 TODAY'S CALENDAR:
 ${calendarSummary || '(no calendar events)'}
 
+${feedbackBlock}
+
 FORMAT:
 1. **The One Thing** — the single most important item today (if nothing urgent, say so)
 2. **People** — who needs attention and why (max 5, with specific recommended actions)
@@ -1217,15 +1270,59 @@ RULES:
 - If something is fine, don't mention it (selective silence)
 - If you're uncertain, say so — "(inferred)" vs "(verified)"
 - Write for someone with ADHD who will skim this in 60 seconds
+- Think strategically: what are the 2nd and 3rd order implications? What connections should be made?
 
-Return the briefing as plain text (markdown OK). No JSON wrapper.`;
+After the briefing text, include a PREPARED ACTIONS block as fenced JSON:
+
+\`\`\`json
+{"prepared_actions": [
+  {"type": "email", "to": "recipient@email.com", "subject": "...", "body": "...", "reasoning": "why send this", "project": "..."},
+  {"type": "calendar", "title": "...", "duration_min": 30, "description": "...", "reasoning": "why schedule this", "project": "..."},
+  {"type": "reminder", "text": "...", "reasoning": "why remind", "project": "..."}
+]}
+\`\`\`
+
+Include 2-5 prepared actions. Each should be a CONCRETE thing the user can approve with one click. Draft actual email bodies (not placeholders). Be specific.`;
 
     const narrative = await callClaude(prompt, 180000);
 
     if (narrative && narrative.length > 100) {
-      // Save as world narrative
+      // Split narrative text from prepared actions JSON
+      let narrativeText = narrative;
+      let actionsStored = 0;
+
+      // Extract fenced JSON block if present
+      const jsonMatch = narrative.match(/```json\s*([\s\S]*?)```/);
+      if (jsonMatch) {
+        narrativeText = narrative.replace(/```json[\s\S]*?```/, '').trim();
+        try {
+          const parsed = JSON.parse(jsonMatch[1]);
+          const actions = parsed.prepared_actions || parsed;
+          if (Array.isArray(actions)) {
+            const expiresAt = new Date(Date.now() + 72 * 3600000).toISOString();
+            for (const action of actions) {
+              db.prepare(`
+                INSERT INTO staged_actions (type, summary, payload, reasoning, project, source_task, expires_at)
+                VALUES (?, ?, ?, ?, ?, 'dream-09', ?)
+              `).run(
+                action.type || 'reminder',
+                action.subject || action.title || action.text || action.summary || 'Action',
+                JSON.stringify(action),
+                action.reasoning || '',
+                action.project || null,
+                expiresAt,
+              );
+              actionsStored++;
+            }
+          }
+        } catch (err: any) {
+          console.log(`    Prepared actions parse warning: ${err.message?.slice(0, 80)}`);
+        }
+      }
+
+      // Save as world narrative (without the JSON block)
       const narrativePath = join(homedir(), '.prime', 'world-narrative.md');
-      writeFileSync(narrativePath, `# Daily Intelligence Briefing\n_Generated: ${new Date().toLocaleString()}_\n\n${narrative}`);
+      writeFileSync(narrativePath, `# Daily Intelligence Briefing\n_Generated: ${new Date().toLocaleString()}_\n\n${narrativeText}`);
 
       // Also store in graph_state for programmatic access
       db.prepare(`
@@ -1237,7 +1334,7 @@ Return the briefing as plain text (markdown OK). No JSON wrapper.`;
         task: '09-world-narrative',
         status: 'success',
         duration_seconds: (Date.now() - start) / 1000,
-        output: { length: narrative.length, saved_to: narrativePath },
+        output: { length: narrativeText.length, actions_staged: actionsStored, saved_to: narrativePath },
       };
     }
 
