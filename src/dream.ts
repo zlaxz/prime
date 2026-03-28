@@ -1432,6 +1432,16 @@ ${activeCommitments || '(none verified active)'}
 TODAY'S CALENDAR:
 ${calendarSummary || '(no calendar events)'}
 
+MEETING PREP BRIEFS (generated for upcoming meetings):
+${(() => {
+  try {
+    const preps = db.prepare("SELECT value FROM graph_state WHERE key = 'meeting_preps'").get() as any;
+    if (!preps) return '(no upcoming meetings)';
+    const data = JSON.parse(preps.value);
+    return data.map((p: any) => `MEETING: ${p.meeting} (${new Date(p.time).toLocaleString()})\n${p.brief}`).join('\n\n---\n\n');
+  } catch { return '(not available)'; }
+})()}
+
 ${feedbackBlock}
 
 FORMAT:
