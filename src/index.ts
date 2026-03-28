@@ -2655,6 +2655,22 @@ program
           if (threadId) {
             fullContent = await retrieveGmailThread(db, threadId);
           }
+        } else if (item.source === 'fireflies') {
+          const { retrieveFirefliesTranscript } = await import('./source-retrieval.js');
+          const meetingId = item.source_ref?.replace('fireflies:', '');
+          if (meetingId) fullContent = await retrieveFirefliesTranscript(db, meetingId);
+        } else {
+          // For claude, cowork, otter, manual — re-extract from stored summary + metadata
+          // These sources already had content at extraction time, just need V2+ treatment
+          const meta = typeof item.metadata === 'string' ? JSON.parse(item.metadata) : (item.metadata || {});
+          const storedContent = db.prepare('SELECT title, summary, raw_content FROM knowledge WHERE id = ?').get(item.id) as any;
+          if (storedContent?.raw_content) {
+            fullContent = storedContent.raw_content;
+          } else if (storedContent?.summary && storedContent.summary.length > 50) {
+            // Use the existing summary as input for V2+ re-extraction (better than nothing)
+            fullContent = `${storedContent.title}\n\n${storedContent.summary}`;
+            if (meta.full_report) fullContent = meta.full_report;
+          }
         }
 
         if (!fullContent) {
