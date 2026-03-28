@@ -1461,6 +1461,25 @@ async function task09WorldNarrative(db: Database.Database): Promise<TaskResult> 
       ORDER BY acted_at DESC LIMIT 10
     `).all() as any[];
 
+    // Build episodic understanding block (outside template to avoid nested backtick issues)
+    let episodicBlock = '(no recent episodic moments)';
+    try {
+      const moments = db.prepare(
+        "SELECT moment_type, what_happened, why_it_matters, consequence, preceded_by, enables, cascade, project, confidence FROM episodic_moments WHERE created_at >= datetime('now', '-7 days') ORDER BY confidence DESC LIMIT 15"
+      ).all() as any[];
+      if (moments.length > 0) {
+        episodicBlock = moments.map((m: any) => {
+          let line = `[${m.moment_type}] ${m.what_happened}`;
+          line += `\n  WHY: ${m.why_it_matters}`;
+          if (m.consequence) line += `\n  CONSEQUENCE: ${m.consequence}`;
+          if (m.enables) line += `\n  ENABLES: ${m.enables}`;
+          if (m.cascade) line += `\n  CASCADE: ${m.cascade}`;
+          if (m.project) line += `\n  PROJECT: ${m.project}`;
+          return line;
+        }).join('\n\n');
+      }
+    } catch {}
+
     const feedbackBlock = yesterdayOutcomes.length > 0
       ? 'YESTERDAY\'S ACTION OUTCOMES (learn from what user approved vs rejected):\n' +
         yesterdayOutcomes.map((a: any) =>
@@ -1557,26 +1576,7 @@ PROJECT INTELLIGENCE (from dream analysis):
 ${projectSummary || '(no project intelligence yet)'}
 
 EPISODIC UNDERSTANDING (recent moments that shaped the business — use these for deep reasoning):
-${(() => {
-  try {
-    const moments = db.prepare(\`
-      SELECT moment_type, what_happened, why_it_matters, consequence, preceded_by, enables, cascade, project, confidence
-      FROM episodic_moments
-      WHERE created_at >= datetime('now', '-7 days')
-      ORDER BY confidence DESC LIMIT 15
-    \`).all() as any[];
-    if (moments.length === 0) return '(no recent episodic moments)';
-    return moments.map((m: any) => {
-      let line = \`[\${m.moment_type}] \${m.what_happened}\`;
-      line += \`\\n  WHY: \${m.why_it_matters}\`;
-      if (m.consequence) line += \`\\n  CONSEQUENCE: \${m.consequence}\`;
-      if (m.enables) line += \`\\n  ENABLES: \${m.enables}\`;
-      if (m.cascade) line += \`\\n  CASCADE: \${m.cascade}\`;
-      if (m.project) line += \`\\n  PROJECT: \${m.project}\`;
-      return line;
-    }).join('\\n\\n');
-  } catch { return '(not available)'; }
-})()}
+${episodicBlock}
 
 CROSS-PROJECT CONNECTIONS (opportunities the user may not see):
 ${(() => {
