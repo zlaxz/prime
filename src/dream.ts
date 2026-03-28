@@ -1554,6 +1554,12 @@ export async function runDreamPipeline(
   results.push(r03);
   console.log(`    ${r03.status === 'success' ? '✓' : '✗'} ${r03.status} (${r03.duration_seconds.toFixed(1)}s)${r03.output ? ` — ${JSON.stringify(r03.output).slice(0, 100)}` : ''}`);
 
+  // Task 12: Proactive Meeting Prep (calendar-driven, always runs)
+  console.log('  Task 12: Meeting prep...');
+  const r12 = await task12MeetingPrep(db);
+  results.push(r12);
+  console.log(`    ${r12.status === 'success' ? '✓' : r12.status === 'skipped' ? '○' : '✗'} ${r12.status} (${r12.duration_seconds.toFixed(1)}s)${r12.output ? ` — ${JSON.stringify(r12.output).slice(0, 100)}` : ''}`);
+
   // ── INTELLIGENCE LAYER (LLM-powered, skip in quick mode) ──────
   if (!options.quick) {
     // Task 06: Entity Understanding — WHO matters and WHY
