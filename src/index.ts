@@ -2643,34 +2643,32 @@ program
     let failed = 0;
     let skipped = 0;
 
-    for (const item of items) {
+    // Process in parallel batches — 5 concurrent (Gmail allows ~10 QPS, extraction is CPU-bound)
+    const CONCURRENCY = 5;
+
+    async function processItem(item: any): Promise<boolean> {
       try {
         let fullContent: string | null = null;
 
-        // Retrieve actual source content via API
         if (item.source === 'gmail' || item.source === 'gmail-sent') {
           const threadId = item.source_ref?.replace('thread:', '');
           if (threadId) {
             fullContent = await retrieveGmailThread(db, threadId);
           }
         }
-        // TODO: Add Fireflies, Claude, Otter retrieval here
 
         if (!fullContent) {
           skipped++;
-          continue;
+          return false;
         }
 
-        // Re-extract with V2 using actual content
         const extV2 = await extractIntelligenceV2(fullContent, apiKey);
         const ext = toV1(extV2);
 
-        // Generate new embedding from better summary
         const embText = `${ext.title}\n${ext.summary}`;
         const embedding = apiKey ? await generateEmbedding(embText, apiKey) : null;
         const embBlob = embedding ? Buffer.from(new Float32Array(embedding).buffer) : null;
 
-        // Update the item
         db.prepare(`UPDATE knowledge SET
           title = ?, summary = ?, contacts = ?, organizations = ?,
           decisions = ?, commitments = ?, action_items = ?, tags = ?,
@@ -2690,13 +2688,18 @@ program
         );
 
         reExtracted++;
-        process.stdout.write(`\r  Re-extracted: ${reExtracted}/${items.length} (${failed} failed, ${skipped} skipped)`);
-
-        // Small delay to avoid Gmail rate limits
-        await new Promise(r => setTimeout(r, 500));
+        return true;
       } catch (err: any) {
         failed++;
+        return false;
       }
+    }
+
+    // Parallel batch processing
+    for (let i = 0; i < items.length; i += CONCURRENCY) {
+      const batch = items.slice(i, i + CONCURRENCY);
+      await Promise.all(batch.map(processItem));
+      process.stdout.write(`\r  Re-extracted: ${reExtracted}/${items.length} (${failed} failed, ${skipped} skipped)`);
     }
 
     console.log(`\n\n  ✓ Re-extraction complete: ${reExtracted} updated, ${failed} failed, ${skipped} skipped\n`);
