@@ -316,19 +316,24 @@ Return JSON:
 async function task06EntityUnderstanding(db: Database.Database): Promise<TaskResult> {
   const start = Date.now();
   try {
-    // Get all entities with open (awaiting_reply) threads that don't have
-    // a user-override profile already
+    // Evaluate ALL active entities — not just those with open threads.
+    // Important relationships need monitoring even when no email is pending.
+    // This REPLACES task 02 (shallow classification) with deep understanding.
     const candidates = db.prepare(`
-      SELECT DISTINCT e.id, e.canonical_name, e.email, e.domain,
-        e.user_label, e.relationship_type
+      SELECT e.id, e.canonical_name, e.email, e.domain,
+        e.user_label, e.relationship_type,
+        COUNT(em.id) as mention_count,
+        MAX(em.mention_date) as last_seen
       FROM entities e
-      JOIN entity_mentions em ON e.id = em.entity_id
-      JOIN knowledge k ON em.knowledge_item_id = k.id
-      WHERE k.tags LIKE '%awaiting_reply%'
-        AND e.user_dismissed = 0
+      LEFT JOIN entity_mentions em ON e.id = em.entity_id
+      WHERE e.user_dismissed = 0
         AND e.type = 'person'
         AND e.canonical_name NOT LIKE '%Zach%Stock%'
         AND (e.user_label IS NULL OR e.user_label NOT IN ('employee', 'noise'))
+      GROUP BY e.id
+      HAVING mention_count >= 3
+      ORDER BY mention_count DESC
+      LIMIT 60
     `).all() as any[];
 
     // Filter out entities that already have a fresh, user-confirmed profile
