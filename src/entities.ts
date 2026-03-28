@@ -616,6 +616,331 @@ export function getTopPatterns(db: Database.Database, limit: number = 20): Commu
     .filter(Boolean) as CommunicationPattern[];
 }
 
+// ── Entity Understanding Builder ─────────────────────────────
+// Analyzes communication DATA to build rich understanding profiles.
+// No LLM. Just pattern recognition from what the emails actually are.
+
+export interface EntityUnderstanding {
+  entity_id: string;
+  entity_name: string;
+  communication_nature: 'transactional' | 'relational' | 'strategic' | 'informational' | 'spam' | 'unknown';
+  reply_expectation: 'never' | 'rarely' | 'sometimes' | 'usually' | 'always' | 'unknown';
+  email_types: string[];
+  importance_to_business: 'critical' | 'high' | 'medium' | 'low' | 'none' | 'unknown';
+  importance_evidence: string;
+  relationship_evidence: string;
+  alert_verdict: 'surface' | 'suppress' | 'pending';
+  verdict_reasoning: string;
+  verdict_confidence: number;
+}
+
+// Patterns that indicate transactional/informational emails (no reply needed)
+const TRANSACTIONAL_TITLE_PATTERNS = [
+  { pattern: /\binvoice\b/i, type: 'invoice' },
+  { pattern: /\bpayment\b/i, type: 'payment' },
+  { pattern: /\breceipt\b/i, type: 'receipt' },
+  { pattern: /\bpolicy\s*(issued|delivered|attached|review)\b/i, type: 'policy_delivery' },
+  { pattern: /\bsubmission\s*acknowledged\b/i, type: 'acknowledgment' },
+  { pattern: /\backnowledge(d|ment)\b/i, type: 'acknowledgment' },
+  { pattern: /\bconfirmation\b/i, type: 'confirmation' },
+  { pattern: /\bnotification\b/i, type: 'notification' },
+  { pattern: /\brenewal\s*(notice|reminder)\b/i, type: 'renewal_notice' },
+  { pattern: /\bcertificate\b.*\b(issued|attached)\b/i, type: 'certificate' },
+  { pattern: /\bstatement\b/i, type: 'statement' },
+  { pattern: /\breport\b.*\b(attached|enclosed)\b/i, type: 'report_delivery' },
+];
+
+const RELATIONAL_TITLE_PATTERNS = [
+  { pattern: /\bmeeting\b|\bschedule\b|\bcall\b/i, type: 'meeting_request' },
+  { pattern: /\bquestion\b|\basking\b|\bneed\b.*\byour\b/i, type: 'question' },
+  { pattern: /\bproposal\b|\bopportunity\b/i, type: 'proposal' },
+  { pattern: /\bfollow\s*up\b.*\b(on|regarding|re)\b/i, type: 'follow_up' },
+  { pattern: /\bintro(duction)?\b/i, type: 'introduction' },
+  { pattern: /\bdiscuss(ion)?\b|\bcatch\s*up\b/i, type: 'discussion' },
+  { pattern: /\bdecision\b|\bapproval\b|\bsign\s*off\b/i, type: 'decision_needed' },
+];
+
+const SPAM_TITLE_PATTERNS = [
+  { pattern: /cold outreach/i, type: 'cold_outreach' },
+  { pattern: /sales (outreach|email|pitch)/i, type: 'sales_pitch' },
+  { pattern: /unsolicited/i, type: 'unsolicited' },
+  { pattern: /\boffer(ing)?\b.*\b(services|solution)\b/i, type: 'service_offer' },
+];
+
+export function buildEntityUnderstanding(db: Database.Database, entityId: string): EntityUnderstanding | null {
+  const entity = db.prepare('SELECT * FROM entities WHERE id = ?').get(entityId) as any;
+  if (!entity) return null;
+
+  // Get ALL items involving this entity
+  const items = db.prepare(`
+    SELECT k.id, k.title, k.summary, k.source, k.source_date, k.tags, k.metadata,
+           em.direction, em.role
+    FROM knowledge k
+    JOIN entity_mentions em ON k.id = em.knowledge_item_id
+    WHERE em.entity_id = ?
+    ORDER BY k.source_date ASC
+  `).all(entityId) as any[];
+
+  if (items.length === 0) {
+    return {
+      entity_id: entityId,
+      entity_name: entity.canonical_name,
+      communication_nature: 'unknown',
+      reply_expectation: 'unknown',
+      email_types: [],
+      importance_to_business: 'unknown',
+      importance_evidence: 'No communication history',
+      relationship_evidence: 'No data',
+      alert_verdict: 'suppress',
+      verdict_reasoning: 'No communication history — nothing to alert on',
+      verdict_confidence: 0.9,
+    };
+  }
+
+  // ── Classify each email by type ────────────────────────────
+  const emailTypes = new Map<string, number>();
+  let transactionalCount = 0;
+  let relationalCount = 0;
+  let spamCount = 0;
+  let inboundCount = 0;
+  let outboundCount = 0;
+
+  for (const item of items) {
+    const title = item.title || '';
+    const tags = parseJsonArray(typeof item.tags === 'string' ? item.tags : JSON.stringify(item.tags || []));
+    const meta = parseJsonObj(typeof item.metadata === 'string' ? item.metadata : JSON.stringify(item.metadata || {}));
+
+    if (item.direction === 'inbound') inboundCount++;
+    if (item.direction === 'outbound') outboundCount++;
+
+    // Check title patterns
+    for (const p of TRANSACTIONAL_TITLE_PATTERNS) {
+      if (p.pattern.test(title)) {
+        emailTypes.set(p.type, (emailTypes.get(p.type) || 0) + 1);
+        transactionalCount++;
+      }
+    }
+    for (const p of RELATIONAL_TITLE_PATTERNS) {
+      if (p.pattern.test(title)) {
+        emailTypes.set(p.type, (emailTypes.get(p.type) || 0) + 1);
+        relationalCount++;
+      }
+    }
+    for (const p of SPAM_TITLE_PATTERNS) {
+      if (p.pattern.test(title)) {
+        emailTypes.set(p.type, (emailTypes.get(p.type) || 0) + 1);
+        spamCount++;
+      }
+    }
+
+    // Also check tags for invoice/billing patterns
+    if (tags.some((t: string) => /invoice|billing|payment|accounts.payable/i.test(t))) {
+      emailTypes.set('invoice', (emailTypes.get('invoice') || 0) + 1);
+      transactionalCount++;
+    }
+  }
+
+  const typeList = [...emailTypes.entries()].sort((a, b) => b[1] - a[1]).map(([t, c]) => t);
+
+  // ── Determine communication nature ─────────────────────────
+  let nature: EntityUnderstanding['communication_nature'] = 'unknown';
+  if (spamCount > items.length * 0.5) {
+    nature = 'spam';
+  } else if (transactionalCount > items.length * 0.5) {
+    nature = 'transactional';
+  } else if (relationalCount > items.length * 0.3) {
+    nature = 'relational';
+  } else if (transactionalCount > 0 && relationalCount === 0) {
+    nature = 'transactional';
+  } else if (items.length <= 2 && spamCount === 0) {
+    nature = 'unknown'; // too little data
+  }
+
+  // ── Determine reply expectation ────────────────────────────
+  let replyExpectation: EntityUnderstanding['reply_expectation'] = 'unknown';
+  if (nature === 'transactional') replyExpectation = 'rarely';
+  if (nature === 'spam') replyExpectation = 'never';
+  if (nature === 'informational') replyExpectation = 'never';
+
+  // If this person sends questions, proposals, meeting requests → replies expected
+  if (emailTypes.has('question') || emailTypes.has('decision_needed')) {
+    replyExpectation = 'usually';
+  } else if (emailTypes.has('meeting_request') || emailTypes.has('proposal') || emailTypes.has('introduction')) {
+    replyExpectation = 'sometimes';
+  }
+
+  // ── Infer relationship from patterns ───────────────────────
+  let relEvidence = '';
+
+  // Sends invoices TO user → vendor
+  if (emailTypes.has('invoice') || emailTypes.has('payment')) {
+    relEvidence += `Sends invoices/billing (${emailTypes.get('invoice') || emailTypes.get('payment')}x). `;
+  }
+  // Issues policies → carrier/underwriter
+  if (emailTypes.has('policy_delivery') || emailTypes.has('certificate')) {
+    relEvidence += 'Issues policies/certificates. ';
+  }
+  // Acknowledges submissions → carrier
+  if (emailTypes.has('acknowledgment')) {
+    relEvidence += 'Acknowledges submissions. ';
+  }
+  // Sends proposals → potential partner/vendor
+  if (emailTypes.has('proposal') || emailTypes.has('introduction')) {
+    relEvidence += 'Sends proposals/introductions. ';
+  }
+  // Domain-based inference
+  if (entity.domain) {
+    relEvidence += `Domain: ${entity.domain}. `;
+  }
+
+  // Inbound/outbound ratio
+  if (inboundCount > 0 || outboundCount > 0) {
+    relEvidence += `Communication: ${inboundCount} inbound, ${outboundCount} outbound. `;
+  }
+
+  // ── Business importance ────────────────────────────────────
+  let importance: EntityUnderstanding['importance_to_business'] = 'unknown';
+  let importEvidence = '';
+
+  const userLabel = entity.user_label;
+  if (userLabel === 'partner' || userLabel === 'client') {
+    importance = 'high';
+    importEvidence = `User labeled as ${userLabel}. `;
+  } else if (userLabel === 'advisor') {
+    importance = 'medium';
+    importEvidence = 'User labeled as advisor. ';
+  } else if (userLabel === 'employee') {
+    importance = 'medium';
+    importEvidence = 'Employee — operational, not external. ';
+  } else if (userLabel === 'vendor') {
+    importance = 'low';
+    importEvidence = 'Vendor — service provider. ';
+  } else if (nature === 'transactional') {
+    importance = 'low';
+    importEvidence = 'Transactional communications only. ';
+  } else if (nature === 'spam') {
+    importance = 'none';
+    importEvidence = 'Spam/cold outreach. ';
+  } else if (items.length >= 10 && relationalCount > 0) {
+    importance = 'medium';
+    importEvidence = `${items.length} interactions with relational content. `;
+  }
+
+  // ── Alert verdict ──────────────────────────────────────────
+  let verdict: EntityUnderstanding['alert_verdict'] = 'pending';
+  let verdictReasoning = '';
+  let verdictConfidence = 0.5;
+
+  // Check open threads
+  const openThreads = items.filter(i => {
+    const tags = parseJsonArray(typeof i.tags === 'string' ? i.tags : JSON.stringify(i.tags || []));
+    return tags.includes('awaiting_reply');
+  });
+
+  if (openThreads.length === 0) {
+    verdict = 'suppress';
+    verdictReasoning = 'No open threads.';
+    verdictConfidence = 1.0;
+  } else if (nature === 'spam') {
+    verdict = 'suppress';
+    verdictReasoning = 'Spam/cold outreach — never surface.';
+    verdictConfidence = 0.95;
+  } else if (nature === 'transactional' && replyExpectation === 'rarely') {
+    verdict = 'suppress';
+    verdictReasoning = `Transactional relationship (${typeList.slice(0, 3).join(', ')}). These emails don't require replies.`;
+    verdictConfidence = 0.85;
+  } else if (importance === 'high' || importance === 'critical') {
+    verdict = 'surface';
+    verdictReasoning = `High importance ${userLabel || 'relationship'} with ${openThreads.length} open thread(s).`;
+    verdictConfidence = 0.8;
+  } else if (nature === 'relational' && items.length >= 5) {
+    verdict = 'surface';
+    verdictReasoning = `Active relational contact with ${openThreads.length} open thread(s).`;
+    verdictConfidence = 0.65;
+  } else if (importance === 'low' || importance === 'none') {
+    verdict = 'suppress';
+    verdictReasoning = `Low importance, ${nature} communication. Not worth surfacing.`;
+    verdictConfidence = 0.75;
+  }
+
+  return {
+    entity_id: entityId,
+    entity_name: entity.canonical_name,
+    communication_nature: nature,
+    reply_expectation: replyExpectation,
+    email_types: typeList,
+    importance_to_business: importance,
+    importance_evidence: importEvidence.trim(),
+    relationship_evidence: relEvidence.trim(),
+    alert_verdict: verdict,
+    verdict_reasoning: verdictReasoning,
+    verdict_confidence: verdictConfidence,
+  };
+}
+
+/**
+ * Build understanding profiles for all entities with open threads.
+ * Stores results in entity_profiles table for real-time alert lookup.
+ */
+export function buildAllEntityProfiles(db: Database.Database): { profiled: number; surface: number; suppress: number } {
+  const stats = { profiled: 0, surface: 0, suppress: 0 };
+
+  // Get all entities that have awaiting_reply items
+  const entitiesWithOpenThreads = db.prepare(`
+    SELECT DISTINCT em.entity_id
+    FROM entity_mentions em
+    JOIN knowledge k ON em.knowledge_item_id = k.id
+    WHERE k.tags LIKE '%awaiting_reply%'
+  `).all() as any[];
+
+  for (const row of entitiesWithOpenThreads) {
+    // Don't overwrite user-set profiles
+    const existing = db.prepare(
+      'SELECT user_override FROM entity_profiles WHERE entity_id = ?'
+    ).get(row.entity_id) as any;
+    if (existing?.user_override) continue;
+
+    const understanding = buildEntityUnderstanding(db, row.entity_id);
+    if (!understanding) continue;
+
+    db.prepare(`
+      INSERT INTO entity_profiles (entity_id, communication_nature, reply_expectation, email_types,
+        importance_to_business, importance_evidence, relationship_evidence,
+        alert_verdict, verdict_reasoning, verdict_confidence, last_verified_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      ON CONFLICT(entity_id) DO UPDATE SET
+        communication_nature = excluded.communication_nature,
+        reply_expectation = excluded.reply_expectation,
+        email_types = excluded.email_types,
+        importance_to_business = excluded.importance_to_business,
+        importance_evidence = excluded.importance_evidence,
+        relationship_evidence = excluded.relationship_evidence,
+        alert_verdict = excluded.alert_verdict,
+        verdict_reasoning = excluded.verdict_reasoning,
+        verdict_confidence = excluded.verdict_confidence,
+        last_verified_at = excluded.last_verified_at,
+        updated_at = excluded.updated_at
+    `).run(
+      understanding.entity_id,
+      understanding.communication_nature,
+      understanding.reply_expectation,
+      JSON.stringify(understanding.email_types),
+      understanding.importance_to_business,
+      understanding.importance_evidence,
+      understanding.relationship_evidence,
+      understanding.alert_verdict,
+      understanding.verdict_reasoning,
+      understanding.verdict_confidence,
+    );
+
+    stats.profiled++;
+    if (understanding.alert_verdict === 'surface') stats.surface++;
+    if (understanding.alert_verdict === 'suppress') stats.suppress++;
+  }
+
+  return stats;
+}
+
 // ── Helpers ──────────────────────────────────────────────────
 
 function parseJsonArray(val: any): string[] {

@@ -309,6 +309,219 @@ Return JSON:
   }
 }
 
+// ── Task 06: Entity Understanding — THE intelligence layer ──
+// Sends full context to claude -p. No regex. No heuristics.
+// The LLM reads every email and makes a judgment call.
+
+async function task06EntityUnderstanding(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    // Get all entities with open (awaiting_reply) threads that don't have
+    // a user-override profile already
+    const candidates = db.prepare(`
+      SELECT DISTINCT e.id, e.canonical_name, e.email, e.domain,
+        e.user_label, e.relationship_type
+      FROM entities e
+      JOIN entity_mentions em ON e.id = em.entity_id
+      JOIN knowledge k ON em.knowledge_item_id = k.id
+      WHERE k.tags LIKE '%awaiting_reply%'
+        AND e.user_dismissed = 0
+        AND e.type = 'person'
+        AND e.canonical_name NOT LIKE '%Zach%Stock%'
+        AND (e.user_label IS NULL OR e.user_label NOT IN ('employee', 'noise'))
+    `).all() as any[];
+
+    // Filter out entities that already have a fresh, user-confirmed profile
+    const needsEval = candidates.filter((c: any) => {
+      const profile = db.prepare(
+        'SELECT user_override, last_verified_at FROM entity_profiles WHERE entity_id = ?'
+      ).get(c.id) as any;
+      if (profile?.user_override) return false;
+      // Re-evaluate if no profile or older than 7 days
+      if (!profile?.last_verified_at) return true;
+      const age = Date.now() - new Date(profile.last_verified_at).getTime();
+      return age > 7 * 86400000;
+    });
+
+    if (needsEval.length === 0) {
+      return { task: '06-entity-understanding', status: 'skipped', duration_seconds: 0, output: { reason: 'all entities profiled' } };
+    }
+
+    console.log(`    Evaluating ${needsEval.length} entities with LLM...`);
+
+    // Process in batches of 5 entities per LLM call
+    const BATCH_SIZE = 5;
+    let evaluated = 0;
+    let surfaced = 0;
+    let suppressed = 0;
+
+    for (let i = 0; i < needsEval.length; i += BATCH_SIZE) {
+      const batch = needsEval.slice(i, i + BATCH_SIZE);
+
+      // Build rich context for each entity in the batch
+      const entityContexts = batch.map((entity: any) => {
+        // Get ALL items involving this entity (titles, summaries, dates, direction)
+        const items = db.prepare(`
+          SELECT k.title, k.summary, k.source, k.source_date, k.tags, k.project,
+                 em.direction, em.role,
+                 json_extract(k.metadata, '$.last_from') as last_from
+          FROM knowledge k
+          JOIN entity_mentions em ON k.id = em.knowledge_item_id
+          WHERE em.entity_id = ?
+          ORDER BY k.source_date DESC
+        `).all(entity.id) as any[];
+
+        // Get open threads specifically
+        const openThreads = items.filter((it: any) => {
+          const tags = typeof it.tags === 'string' ? JSON.parse(it.tags) : (it.tags || []);
+          return tags.includes('awaiting_reply');
+        });
+
+        // Get communication stats
+        const stats = db.prepare(`
+          SELECT COUNT(*) as total,
+            SUM(CASE WHEN direction = 'inbound' THEN 1 ELSE 0 END) as inbound,
+            SUM(CASE WHEN direction = 'outbound' THEN 1 ELSE 0 END) as outbound,
+            MIN(mention_date) as first_seen,
+            MAX(mention_date) as last_seen
+          FROM entity_mentions WHERE entity_id = ?
+        `).get(entity.id) as any;
+
+        const itemLines = items.slice(0, 15).map((it: any) => {
+          const tags = typeof it.tags === 'string' ? JSON.parse(it.tags) : (it.tags || []);
+          const isOpen = tags.includes('awaiting_reply') ? ' [AWAITING REPLY]' : '';
+          return `  ${it.source_date?.slice(0, 10) || '?'} | ${it.source} | ${it.direction || '?'} | ${it.title}${isOpen}`;
+        }).join('\n');
+
+        const openLines = openThreads.slice(0, 5).map((it: any) =>
+          `  - "${it.title}" (${it.source_date?.slice(0, 10) || '?'})`
+        ).join('\n');
+
+        return `
+ENTITY: ${entity.canonical_name}
+Email: ${entity.email || 'unknown'}
+Domain: ${entity.domain || 'unknown'}
+Current label: ${entity.user_label || entity.relationship_type || 'none'}
+Total interactions: ${stats?.total || 0} (${stats?.inbound || 0} inbound, ${stats?.outbound || 0} outbound)
+First seen: ${stats?.first_seen?.slice(0, 10) || '?'} | Last seen: ${stats?.last_seen?.slice(0, 10) || '?'}
+Open threads (awaiting reply): ${openThreads.length}
+${openLines || '  (none)'}
+
+All communications (most recent first):
+${itemLines || '  (none)'}
+`;
+      }).join('\n---\n');
+
+      const prompt = `You are evaluating business contacts for an AI Chief of Staff system. The user is Zach Stock, founder of Recapture Insurance (an MGA/insurance company).
+
+For each entity below, analyze their ENTIRE communication history and determine:
+1. What is this person's actual relationship to Zach's business?
+2. What kind of emails do they send? (transactional like invoices/policies, relational like meetings/discussions, informational like notifications, or spam like cold outreach)
+3. Do any of their "awaiting reply" threads ACTUALLY need a reply from Zach?
+4. Should the system surface alerts about this person, or stay silent?
+
+Think like a human executive assistant who has read every email. If a person only sends invoices and policy documents, they don't need replies flagged. If someone sent a meeting request 25 days ago and Zach never responded, that MIGHT need attention — but only if the relationship matters.
+
+ENTITIES TO EVALUATE:
+${entityContexts}
+
+Return ONLY this JSON array (no other text):
+[
+  {
+    "name": "Full Name",
+    "relationship": "partner|client|vendor|carrier|broker|advisor|employee|cold_outreach|automated|unknown",
+    "communication_nature": "transactional|relational|strategic|informational|spam",
+    "reply_needed": true/false,
+    "reply_reasoning": "Why or why not a reply is needed — be specific",
+    "alert_verdict": "surface|suppress",
+    "verdict_reasoning": "Why surface or suppress — reference specific emails",
+    "importance": "critical|high|medium|low|none",
+    "confidence": 0.0-1.0
+  }
+]`;
+
+      try {
+        const response = await callClaude(prompt, 180000);
+        const parsed = tryParseJSON(response);
+
+        if (parsed && Array.isArray(parsed)) {
+          for (const item of parsed) {
+            if (!item.name || !item.alert_verdict) continue;
+
+            // Find matching entity
+            const matchEntity = batch.find((e: any) =>
+              e.canonical_name.toLowerCase() === item.name.toLowerCase()
+            );
+            if (!matchEntity) continue;
+
+            // Map LLM reply_expectation from reply_needed
+            const replyExp = item.reply_needed ? 'sometimes' :
+              item.communication_nature === 'spam' ? 'never' :
+              item.communication_nature === 'transactional' ? 'rarely' : 'unknown';
+
+            // Store profile
+            db.prepare(`
+              INSERT INTO entity_profiles (entity_id, communication_nature, reply_expectation,
+                email_types, importance_to_business, importance_evidence,
+                relationship_evidence, alert_verdict, verdict_reasoning,
+                verdict_confidence, last_verified_at, updated_at)
+              VALUES (?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+              ON CONFLICT(entity_id) DO UPDATE SET
+                communication_nature = excluded.communication_nature,
+                reply_expectation = excluded.reply_expectation,
+                importance_to_business = excluded.importance_to_business,
+                importance_evidence = excluded.importance_evidence,
+                relationship_evidence = excluded.relationship_evidence,
+                alert_verdict = excluded.alert_verdict,
+                verdict_reasoning = excluded.verdict_reasoning,
+                verdict_confidence = excluded.verdict_confidence,
+                last_verified_at = excluded.last_verified_at,
+                updated_at = excluded.updated_at
+            `).run(
+              matchEntity.id,
+              item.communication_nature || 'unknown',
+              replyExp,
+              item.importance || 'unknown',
+              item.verdict_reasoning || '',
+              item.reply_reasoning || '',
+              item.alert_verdict,
+              item.verdict_reasoning || '',
+              item.confidence || 0.5,
+            );
+
+            // Also update entity relationship_type if AI provides one and user hasn't set it
+            if (item.relationship && !matchEntity.user_label) {
+              db.prepare(`
+                UPDATE entities SET relationship_type = ?, relationship_confidence = ?,
+                  updated_at = datetime('now')
+                WHERE id = ? AND user_label IS NULL
+              `).run(item.relationship, item.confidence || 0.5, matchEntity.id);
+            }
+
+            evaluated++;
+            if (item.alert_verdict === 'surface') surfaced++;
+            else suppressed++;
+          }
+        }
+      } catch (err: any) {
+        console.log(`    Batch ${i / BATCH_SIZE + 1} failed: ${err.message.slice(0, 100)}`);
+      }
+
+      // Progress
+      console.log(`    Batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(needsEval.length / BATCH_SIZE)}: ${evaluated} evaluated`);
+    }
+
+    return {
+      task: '06-entity-understanding',
+      status: 'success',
+      duration_seconds: (Date.now() - start) / 1000,
+      output: { evaluated, surfaced, suppressed, total_candidates: needsEval.length },
+    };
+  } catch (err: any) {
+    return { task: '06-entity-understanding', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
 // ── Pipeline Runner ─────────────────────────────────────────
 
 export async function runDreamPipeline(
@@ -344,7 +557,15 @@ export async function runDreamPipeline(
   results.push(r03);
   console.log(`    ${r03.status === 'success' ? '✓' : '✗'} ${r03.status} (${r03.duration_seconds.toFixed(1)}s)${r03.output ? ` — ${JSON.stringify(r03.output).slice(0, 100)}` : ''}`);
 
-  // Task 04: World rebuild
+  // Task 06: Entity Understanding (LLM-powered, skip in quick mode)
+  if (!options.quick) {
+    console.log('  Task 06: Entity understanding (LLM)...');
+    const r06 = await task06EntityUnderstanding(db);
+    results.push(r06);
+    console.log(`    ${r06.status === 'success' ? '✓' : r06.status === 'skipped' ? '○' : '✗'} ${r06.status} (${r06.duration_seconds.toFixed(1)}s)${r06.output ? ` — ${JSON.stringify(r06.output).slice(0, 100)}` : ''}`);
+  }
+
+  // Task 04: World rebuild (AFTER entity understanding, so world model uses fresh profiles)
   console.log('  Task 04: Rebuild world model...');
   const r04 = await task04WorldRebuild(db);
   results.push(r04);

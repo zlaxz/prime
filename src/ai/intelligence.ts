@@ -44,131 +44,372 @@ export interface AlertItem {
   daysSince?: number;
   source_ref?: string;
   conversation_uuid?: string;
+  item_id?: string;
+  confidence?: number;         // 0-1: how confident the system is this needs attention
+  reasoning?: string;          // why this alert was surfaced (provenance)
+}
+
+// ── Entity filter sets (shared across alert functions) ─────────
+interface EntityFilters {
+  dismissedEntityIds: Set<string>;
+  dismissedDomains: Set<string>;
+  employeeEntityIds: Set<string>;
+  noiseEntityIds: Set<string>;
+}
+
+function loadEntityFilters(db: Database.Database): EntityFilters {
+  const filters: EntityFilters = {
+    dismissedEntityIds: new Set(),
+    dismissedDomains: new Set(),
+    employeeEntityIds: new Set(),
+    noiseEntityIds: new Set(),
+  };
+
+  try {
+    // Dismissed entities
+    const dismissed = db.prepare('SELECT id, domain FROM entities WHERE user_dismissed = 1').all() as any[];
+    for (const d of dismissed) {
+      filters.dismissedEntityIds.add(d.id);
+      if (d.domain) filters.dismissedDomains.add(d.domain.toLowerCase());
+    }
+
+    // Dismissed domains from dismissals table
+    const domainPatterns = db.prepare('SELECT domain FROM dismissals WHERE domain IS NOT NULL').all() as any[];
+    for (const p of domainPatterns) filters.dismissedDomains.add(p.domain.toLowerCase());
+
+    // Employee entities
+    const employees = db.prepare(`
+      SELECT id FROM entities
+      WHERE (user_label = 'employee' OR relationship_type = 'employee') AND user_dismissed = 0
+    `).all() as any[];
+    for (const e of employees) filters.employeeEntityIds.add(e.id);
+
+    // Noise entities
+    const noise = db.prepare(`
+      SELECT id FROM entities
+      WHERE (user_label = 'noise' OR relationship_type = 'noise') AND user_dismissed = 0
+    `).all() as any[];
+    for (const n of noise) filters.noiseEntityIds.add(n.id);
+  } catch {}
+
+  return filters;
+}
+
+// ── Person-level context for dropped ball analysis ─────────────
+interface PersonContext {
+  entity_id: string;
+  canonical_name: string;
+  relationship_type: string | null;
+  user_label: string | null;
+  total_mentions: number;
+  last_interaction: string | null;
+  days_since_last: number;
+  recent_7d_count: number;       // interactions in last 7 days (ANY channel)
+  recent_14d_count: number;      // interactions in last 14 days
+  avg_gap_days: number;          // typical gap between interactions
+  has_calendar_event: boolean;   // met recently via calendar
+  has_newer_thread: boolean;     // newer email thread exists (this person)
+  open_threads: any[];           // the awaiting_reply items for this person
+}
+
+function buildPersonContexts(db: Database.Database, filters: EntityFilters): Map<string, PersonContext> {
+  const contexts = new Map<string, PersonContext>();
+  const now = Date.now();
+  const sevenDaysAgo = new Date(now - 7 * 86400000).toISOString();
+  const fourteenDaysAgo = new Date(now - 14 * 86400000).toISOString();
+
+  // Get all awaiting_reply items
+  const awaitingItems = queryRows(db, `
+    SELECT * FROM knowledge
+    WHERE tags LIKE '%awaiting_reply%'
+    ORDER BY source_date DESC
+  `, []);
+
+  // For each item, resolve the sender to an entity and group
+  for (const item of awaitingItems) {
+    const meta = item.metadata || {};
+    if (meta.user_replied) continue;
+
+    // Resolve sender to entity
+    let entityId: string | null = null;
+    let entityName: string | null = null;
+
+    if (meta.last_from) {
+      const lastFrom = meta.last_from as string;
+      const emailMatch = lastFrom.match(/<([^>]+)>/) || lastFrom.match(/([^\s]+@[^\s]+)/);
+      const email = emailMatch ? emailMatch[1].toLowerCase() : null;
+
+      // Try email lookup
+      if (email) {
+        try {
+          const entity = db.prepare('SELECT id, canonical_name, user_label, relationship_type, domain FROM entities WHERE email = ?').get(email) as any;
+          if (entity) {
+            entityId = entity.id;
+            entityName = entity.canonical_name;
+          }
+        } catch {}
+
+        // Check dismissed domain
+        if (!entityId) {
+          const domain = email.split('@')[1];
+          if (domain && filters.dismissedDomains.has(domain)) continue;
+        }
+      }
+    }
+
+    // Fallback: try to match via contacts list
+    if (!entityId) {
+      const contacts = (item.contacts || []).filter((c: string) => !c.toLowerCase().includes('zach stock'));
+      if (contacts.length === 0) continue;
+
+      for (const contactName of contacts) {
+        try {
+          const normalized = contactName.toLowerCase().replace(/[^a-z\s-]/g, '').trim();
+          const alias = db.prepare('SELECT entity_id FROM entity_aliases WHERE alias_normalized = ?').get(normalized) as any;
+          if (alias) {
+            const entity = db.prepare('SELECT id, canonical_name FROM entities WHERE id = ?').get(alias.entity_id) as any;
+            if (entity) {
+              entityId = entity.id;
+              entityName = entity.canonical_name;
+              break;
+            }
+          }
+        } catch {}
+      }
+
+      // Still no entity — use first non-self contact as key
+      if (!entityId) {
+        entityName = contacts[0];
+        entityId = `unresolved:${entityName.toLowerCase()}`;
+      }
+    }
+
+    // Skip filtered entities
+    if (entityId && !entityId.startsWith('unresolved:')) {
+      if (filters.dismissedEntityIds.has(entityId)) continue;
+      if (filters.employeeEntityIds.has(entityId)) continue;
+      if (filters.noiseEntityIds.has(entityId)) continue;
+    }
+
+    // Build or update person context
+    if (!contexts.has(entityId!)) {
+      let totalMentions = 0;
+      let lastInteraction: string | null = null;
+      let recent7d = 0;
+      let recent14d = 0;
+      let avgGap = 0;
+      let hasCalendar = false;
+      let hasNewerThread = false;
+      let relType: string | null = null;
+      let userLabel: string | null = null;
+
+      if (entityId && !entityId.startsWith('unresolved:')) {
+        try {
+          // Get full interaction stats from entity_mentions
+          const stats = db.prepare(`
+            SELECT COUNT(*) as total,
+              MAX(mention_date) as last_seen,
+              SUM(CASE WHEN mention_date >= ? THEN 1 ELSE 0 END) as recent_7d,
+              SUM(CASE WHEN mention_date >= ? THEN 1 ELSE 0 END) as recent_14d
+            FROM entity_mentions WHERE entity_id = ?
+          `).get(sevenDaysAgo, fourteenDaysAgo, entityId) as any;
+
+          totalMentions = stats?.total || 0;
+          lastInteraction = stats?.last_seen || null;
+          recent7d = stats?.recent_7d || 0;
+          recent14d = stats?.recent_14d || 0;
+
+          // Calculate avg gap from mention dates
+          const dates = (db.prepare(
+            'SELECT mention_date FROM entity_mentions WHERE entity_id = ? AND mention_date IS NOT NULL ORDER BY mention_date ASC'
+          ).all(entityId) as any[]).map(r => new Date(r.mention_date).getTime());
+
+          if (dates.length >= 2) {
+            const gaps: number[] = [];
+            for (let i = 1; i < dates.length; i++) {
+              gaps.push((dates[i] - dates[i - 1]) / 86400000);
+            }
+            avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+          }
+
+          // Check for calendar events with this person (resolution evidence)
+          hasCalendar = !!(db.prepare(`
+            SELECT 1 FROM knowledge k
+            JOIN entity_mentions em ON k.id = em.knowledge_item_id
+            WHERE em.entity_id = ? AND k.source = 'calendar'
+              AND k.source_date >= ?
+            LIMIT 1
+          `).get(entityId, fourteenDaysAgo));
+
+          // Check for newer email threads (not awaiting) with this person
+          hasNewerThread = !!(db.prepare(`
+            SELECT 1 FROM knowledge k
+            JOIN entity_mentions em ON k.id = em.knowledge_item_id
+            WHERE em.entity_id = ? AND k.source IN ('gmail', 'gmail-sent')
+              AND k.tags NOT LIKE '%awaiting_reply%'
+              AND k.source_date >= ?
+            LIMIT 1
+          `).get(entityId, fourteenDaysAgo));
+
+          // Get relationship type
+          const entityRow = db.prepare('SELECT relationship_type, user_label FROM entities WHERE id = ?').get(entityId) as any;
+          relType = entityRow?.relationship_type;
+          userLabel = entityRow?.user_label;
+        } catch {}
+      }
+
+      contexts.set(entityId!, {
+        entity_id: entityId!,
+        canonical_name: entityName!,
+        relationship_type: relType,
+        user_label: userLabel,
+        total_mentions: totalMentions,
+        last_interaction: lastInteraction,
+        days_since_last: lastInteraction ? daysBetween(lastInteraction) : 999,
+        recent_7d_count: recent7d,
+        recent_14d_count: recent14d,
+        avg_gap_days: avgGap,
+        has_calendar_event: hasCalendar,
+        has_newer_thread: hasNewerThread,
+        open_threads: [],
+      });
+    }
+
+    contexts.get(entityId!)!.open_threads.push(item);
+  }
+
+  return contexts;
 }
 
 export function getAlerts(db: Database.Database): AlertItem[] {
   const alerts: AlertItem[] = [];
   const now = new Date();
+  const filters = loadEntityFilters(db);
 
-  // ── Build entity filters ──────────────────────────────────
-  // Get dismissed entity names + domains
-  const dismissedNames = new Set<string>();
-  const dismissedDomains = new Set<string>();
-  const employeeNames = new Set<string>();
+  // ── 1. Person-level dropped balls ────────────────────────────
+  // TWO-LAYER ARCHITECTURE:
+  //   Layer 1 (primary): Entity understanding profiles — pre-computed deep analysis
+  //   Layer 2 (fallback): Real-time heuristics for entities without profiles
+  //
+  // The dream pipeline builds entity_profiles with rich understanding of each
+  // relationship. Real-time getAlerts() just reads the verdict. No guessing.
 
-  try {
-    const dismissed = db.prepare('SELECT canonical_name, domain FROM entities WHERE user_dismissed = 1').all() as any[];
-    for (const d of dismissed) {
-      dismissedNames.add(d.canonical_name.toLowerCase());
-      if (d.domain) dismissedDomains.add(d.domain.toLowerCase());
+  const personContexts = buildPersonContexts(db, filters);
+
+  for (const [entityId, person] of personContexts) {
+    // Skip self
+    if (/zach(ary)?\s*(d\.?\s*)?stock/i.test(person.canonical_name)) continue;
+
+    const threads = person.open_threads;
+    if (threads.length === 0) continue;
+
+    // ── Layer 1: Check entity profile (pre-computed understanding) ──
+    // If the entity has a profile with a verdict, USE IT. Don't second-guess.
+    let profileUsed = false;
+    if (entityId && !entityId.startsWith('unresolved:')) {
+      try {
+        const profile = db.prepare(
+          'SELECT alert_verdict, verdict_reasoning, verdict_confidence, communication_nature, reply_expectation, importance_to_business FROM entity_profiles WHERE entity_id = ?'
+        ).get(entityId) as any;
+
+        if (profile && profile.alert_verdict !== 'pending') {
+          profileUsed = true;
+
+          if (profile.alert_verdict === 'suppress') {
+            continue; // Profile says suppress — done
+          }
+
+          if (profile.alert_verdict === 'surface') {
+            // Profile says surface — build the alert from profile intelligence
+            const mostImportant = threads[0]; // already sorted by date desc
+            const meta = mostImportant.metadata || {};
+            const threadAge = mostImportant.source_date ? daysBetween(mostImportant.source_date) : 0;
+            const projects = [...new Set(threads.map((t: any) => t.project).filter(Boolean))];
+
+            // Still apply real-time activity check — profile might be stale
+            if (person.recent_7d_count > 0) continue;
+            if (person.has_calendar_event) continue;
+            if (person.has_newer_thread) continue;
+
+            let severity: AlertItem['severity'];
+            if (profile.importance_to_business === 'critical' || profile.importance_to_business === 'high') {
+              severity = threadAge > 14 ? 'critical' : threadAge > 7 ? 'high' : 'normal';
+            } else {
+              severity = threadAge > 30 ? 'high' : 'normal';
+            }
+
+            alerts.push({
+              type: 'dropped_ball',
+              severity,
+              title: `${person.canonical_name} — ${threads.length} open thread${threads.length > 1 ? 's' : ''}`,
+              detail: `"${mostImportant.title}" — ${threadAge}d [${profile.communication_nature}, ${profile.reply_expectation} reply expected]`,
+              contact: person.canonical_name,
+              project: projects[0] || mostImportant.project,
+              daysSince: threadAge,
+              source_ref: mostImportant.source_ref,
+              conversation_uuid: meta.conversation_uuid || meta.thread_id,
+              item_id: mostImportant.id,
+              confidence: profile.verdict_confidence,
+              reasoning: profile.verdict_reasoning,
+            });
+          }
+        }
+      } catch {}
     }
 
-    // Get all aliases for dismissed entities
-    const dismissedAliases = db.prepare(`
-      SELECT ea.alias_normalized FROM entity_aliases ea
-      JOIN entities e ON ea.entity_id = e.id WHERE e.user_dismissed = 1
-    `).all() as any[];
-    for (const a of dismissedAliases) dismissedNames.add(a.alias_normalized);
+    // ── Layer 2: Real-time heuristics (no profile available) ────────
+    // Conservative: when we DON'T understand the entity, default to SILENCE
+    if (profileUsed) continue;
 
-    // Get dismissed patterns/domains from dismissals table
-    const patterns = db.prepare('SELECT domain FROM dismissals WHERE domain IS NOT NULL').all() as any[];
-    for (const p of patterns) dismissedDomains.add(p.domain.toLowerCase());
+    // Activity filters
+    if (person.recent_7d_count > 0) continue;
+    if (person.has_calendar_event) continue;
+    if (person.has_newer_thread) continue;
+    if (person.total_mentions <= 2) continue;
 
-    // Get employee names (don't flag their emails as dropped balls)
-    const employees = db.prepare(`
-      SELECT canonical_name FROM entities
-      WHERE (user_label = 'employee' OR relationship_type = 'employee') AND user_dismissed = 0
-    `).all() as any[];
-    for (const e of employees) employeeNames.add(e.canonical_name.toLowerCase());
-
-    const employeeAliases = db.prepare(`
-      SELECT ea.alias_normalized FROM entity_aliases ea
-      JOIN entities e ON ea.entity_id = e.id
-      WHERE (e.user_label = 'employee' OR e.relationship_type = 'employee') AND e.user_dismissed = 0
-    `).all() as any[];
-    for (const a of employeeAliases) employeeNames.add(a.alias_normalized);
-  } catch {
-    // Entity tables might not exist yet
-  }
-
-  // Helper: check if ALL contacts on an item are filtered out
-  const shouldFilter = (contacts: string[]): boolean => {
-    if (contacts.length === 0) return false;
-    return contacts.every(c => {
-      const lower = c.toLowerCase();
-      const normalized = lower.replace(/[^a-z\s-]/g, '').trim();
-      return dismissedNames.has(lower) || dismissedNames.has(normalized) ||
-             employeeNames.has(lower) || employeeNames.has(normalized);
-    });
-  };
-
-  // ── 1. Dropped balls — people waiting on you ──────────────
-  const awaitingItems = queryRows(db, `
-    SELECT * FROM knowledge
-    WHERE tags LIKE '%awaiting_reply%'
-    ORDER BY source_date ASC
-  `, []);
-
-  for (const item of awaitingItems) {
-    const meta = item.metadata || {};
-    if (meta.user_replied) continue; // already handled via sent mail
-
-    const contacts = item.contacts || [];
-
-    // Filter self
-    const nonSelf = contacts.filter((c: string) => !c.toLowerCase().includes('zach stock'));
-    if (nonSelf.length === 0) continue;
-
-    // Check who sent LAST — if they're an employee or dismissed, skip
-    if (meta.last_from) {
-      const lastFromLower = (meta.last_from as string).toLowerCase();
-
-      // Extract email from last_from header
-      const emailMatch = lastFromLower.match(/<([^>]+)>/) || lastFromLower.match(/([^\s]+@[^\s]+)/);
-      const lastEmail = emailMatch ? emailMatch[1] : null;
-
-      // Check employee by email (most reliable)
-      if (lastEmail) {
-        try {
-          const entityByEmail = db.prepare(
-            "SELECT user_label, relationship_type FROM entities WHERE email = ?"
-          ).get(lastEmail) as any;
-          if (entityByEmail && (entityByEmail.user_label === 'employee' || entityByEmail.relationship_type === 'employee')) continue;
-          if (entityByEmail && entityByEmail.user_label === 'noise') continue;
-        } catch {}
-      }
-
-      // Check employee by name (fallback)
-      const lastSenderIsEmployee = Array.from(employeeNames).some(name => lastFromLower.includes(name));
-      if (lastSenderIsEmployee) continue;
-
-      // Check dismissed by name
-      const lastSenderIsDismissed = Array.from(dismissedNames).some(name => lastFromLower.includes(name));
-      if (lastSenderIsDismissed) continue;
-
-      // Check dismissed domain
-      if (lastEmail) {
-        const domainPart = lastEmail.split('@')[1];
-        if (domainPart && dismissedDomains.has(domainPart)) continue;
-      }
+    // Cadence check
+    if (person.avg_gap_days > 0) {
+      const oldestThread = threads[threads.length - 1];
+      const threadAge = oldestThread?.source_date ? daysBetween(oldestThread.source_date) : 0;
+      if (threadAge < person.avg_gap_days * 2) continue;
     }
 
-    // Also check if ALL contacts are filtered (for non-Gmail sources without last_from)
-    if (shouldFilter(nonSelf)) continue;
+    // Without a profile, ONLY surface if there's strong evidence this matters:
+    // - User has explicitly labeled this person as important
+    // - Multiple open threads (pattern of unanswered communication)
+    // - Recent threads (not ancient history)
+    const relType = person.user_label || person.relationship_type;
+    const oldestThread = threads[threads.length - 1];
+    const oldestAge = oldestThread?.source_date ? daysBetween(oldestThread.source_date) : 0;
 
-    const days = item.source_date ? daysBetween(item.source_date) : 0;
-    if (days < 7) continue;
+    // Without profile + without user label = don't alert (selective silence)
+    // The dream pipeline will build a profile and THEN decide
+    if (!relType || relType === 'vendor' || relType === 'noise') continue;
+
+    // Ancient threads without follow-up = dead
+    if (oldestAge > 45) continue;
+
+    // Only surface for explicitly important relationships (user-verified)
+    if (relType !== 'partner' && relType !== 'client' && relType !== 'advisor') continue;
+
+    const mostImportant = threads[0];
+    const meta = mostImportant.metadata || {};
+    const threadAge = mostImportant.source_date ? daysBetween(mostImportant.source_date) : 0;
+    const projects = [...new Set(threads.map((t: any) => t.project).filter(Boolean))];
 
     alerts.push({
       type: 'dropped_ball',
-      severity: days > 21 ? 'critical' : days > 14 ? 'high' : 'normal',
-      title: `${nonSelf.join(', ')} waiting on your reply`,
-      detail: `"${item.title}" — ${days}d`,
-      contact: nonSelf[0],
-      project: item.project,
-      daysSince: days,
-      source_ref: item.source_ref,
+      severity: threadAge > 14 ? 'critical' : threadAge > 7 ? 'high' : 'normal',
+      title: `${person.canonical_name} — ${threads.length} open thread${threads.length > 1 ? 's' : ''}`,
+      detail: `"${mostImportant.title}" — ${threadAge}d [${relType}, no profile yet]`,
+      contact: person.canonical_name,
+      project: projects[0] || mostImportant.project,
+      daysSince: threadAge,
+      source_ref: mostImportant.source_ref,
       conversation_uuid: meta.conversation_uuid || meta.thread_id,
+      item_id: mostImportant.id,
+      confidence: 0.6,
+      reasoning: `User-labeled ${relType}. No entity profile yet — run dream pipeline for deeper analysis.`,
     });
   }
 
@@ -185,6 +426,8 @@ export function getAlerts(db: Database.Database): AlertItem[] {
           detail: `Due ${c.due_date} (${daysOverdue}d ago)${c.project ? ` — ${c.project}` : ''}`,
           project: c.project,
           daysSince: daysOverdue,
+          confidence: 0.9,
+          reasoning: 'Commitment past due date',
         });
       } else if (c.due_date) {
         const daysUntil = -daysBetween(c.due_date);
@@ -196,18 +439,22 @@ export function getAlerts(db: Database.Database): AlertItem[] {
             detail: `Due ${c.due_date}${c.project ? ` — ${c.project}` : ''}`,
             project: c.project,
             daysSince: -daysUntil,
+            confidence: 0.95,
+            reasoning: 'Approaching deadline',
           });
         }
       }
     }
   } catch {}
 
-  // ── 3. Cold relationships (from entity graph, not raw scan) ──
+  // ── 3. Cold relationships ─────────────────────────────────
+  // Only alert on relationships that WERE active and went cold — not one-offs
   try {
     const coldEntities = db.prepare(`
-      SELECT e.canonical_name, e.relationship_type, e.user_label,
+      SELECT e.id, e.canonical_name, e.relationship_type, e.user_label,
         COUNT(em.id) as mentions,
-        MAX(em.mention_date) as last_seen
+        MAX(em.mention_date) as last_seen,
+        SUM(CASE WHEN em.mention_date >= datetime('now', '-30 days') THEN 1 ELSE 0 END) as recent_30d
       FROM entities e
       LEFT JOIN entity_mentions em ON e.id = em.entity_id
       WHERE e.type = 'person' AND e.user_dismissed = 0
@@ -215,28 +462,55 @@ export function getAlerts(db: Database.Database): AlertItem[] {
         AND (e.user_label IS NULL OR e.user_label NOT IN ('employee', 'noise'))
         AND (e.relationship_type IS NULL OR e.relationship_type NOT IN ('employee', 'noise'))
       GROUP BY e.id
-      HAVING mentions >= 5
+      HAVING mentions >= 5 AND recent_30d = 0
     `).all() as any[];
 
     for (const e of coldEntities) {
       if (!e.last_seen) continue;
       const days = daysBetween(e.last_seen);
-      if (days > 14) {
-        alerts.push({
-          type: 'cold_relationship',
-          severity: days > 30 ? 'high' : 'normal',
-          title: `${e.canonical_name} going cold`,
-          detail: `${days}d since last interaction (${e.mentions} mentions, ${e.user_label || e.relationship_type || 'unclassified'})`,
-          contact: e.canonical_name,
-          daysSince: days,
-        });
+      if (days <= 14) continue;
+
+      // Check if this person has a known communication cadence
+      // Only alert if the gap is abnormal for this relationship
+      const relType = e.user_label || e.relationship_type;
+      const isImportant = relType === 'partner' || relType === 'client' || relType === 'advisor';
+
+      // Need meaningful history (5+ mentions) AND the person must be important enough
+      // to warrant a cold relationship alert
+      if (!isImportant && e.mentions < 10) continue;
+
+      let confidence = 0.5;
+      let reasoning = '';
+      if (isImportant) {
+        confidence += 0.2;
+        reasoning += `${relType} relationship. `;
       }
+      if (e.mentions >= 15) {
+        confidence += 0.1;
+        reasoning += `${e.mentions} total interactions. `;
+      }
+      reasoning += `${days}d silence after active communication.`;
+
+      alerts.push({
+        type: 'cold_relationship',
+        severity: isImportant && days > 21 ? 'high' : days > 30 ? 'high' : 'normal',
+        title: `${e.canonical_name} going cold`,
+        detail: `${days}d since last interaction (${e.mentions} total, ${relType || 'unclassified'})`,
+        contact: e.canonical_name,
+        daysSince: days,
+        confidence: Math.min(confidence, 1.0),
+        reasoning: reasoning.trim(),
+      });
     }
   } catch {}
 
-  // Sort by severity
+  // Sort: severity first, then confidence descending
   const severityOrder: Record<string, number> = { critical: 0, high: 1, normal: 2 };
-  alerts.sort((a, b) => (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3));
+  alerts.sort((a, b) => {
+    const sevDiff = (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3);
+    if (sevDiff !== 0) return sevDiff;
+    return (b.confidence ?? 0) - (a.confidence ?? 0);
+  });
 
   return alerts;
 }

@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { existsSync, writeFileSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { getAlerts } from './intelligence.js';
 
 // ============================================================
 // World Model Generator — Phase 4 of v1.0 Brain Architecture
@@ -49,6 +50,8 @@ interface WorldAlert {
   entity_id: string | null;
   item_id: string | null;
   days: number;
+  confidence: number;
+  reasoning: string;
 }
 
 interface WorldModel {
@@ -181,92 +184,20 @@ export function generateWorldModel(db: Database.Database): WorldModel {
     };
   });
 
-  // ── ALERTS ──────────────────────────────────────────────
-  const alerts: WorldAlert[] = [];
-
-  // Dropped balls (awaiting_reply, NOT from dismissed entities)
-  const droppedBalls = db.prepare(`
-    SELECT k.id, k.title, k.contacts, k.source_date, k.project, k.metadata
-    FROM knowledge k
-    WHERE k.tags LIKE '%awaiting_reply%'
-    ORDER BY k.source_date ASC
-  `).all() as any[];
-
-  // Get dismissed entity names for filtering
-  const dismissedNames = new Set(
-    (db.prepare('SELECT canonical_name FROM entities WHERE user_dismissed = 1').all() as any[])
-      .map(d => d.canonical_name.toLowerCase())
-  );
-
-  for (const item of droppedBalls) {
-    const meta = typeof item.metadata === 'string' ? JSON.parse(item.metadata) : (item.metadata || {});
-    if (meta.user_replied) continue; // already handled
-
-    const contacts = typeof item.contacts === 'string' ? JSON.parse(item.contacts) : (item.contacts || []);
-
-    // Skip if ALL contacts are dismissed
-    const nonDismissed = contacts.filter((c: string) => !dismissedNames.has(c.toLowerCase()));
-    if (contacts.length > 0 && nonDismissed.length === 0) continue;
-
-    // Skip if contact is labeled 'employee' (they don't need replies to every email)
-    const isEmployee = contacts.some((c: string) => {
-      const entity = db.prepare(
-        "SELECT user_label, relationship_type FROM entities WHERE canonical_name = ? OR id IN (SELECT entity_id FROM entity_aliases WHERE alias_normalized = ?)"
-      ).get(c, c.toLowerCase().replace(/[^a-z\s-]/g, '').trim()) as any;
-      return entity && (entity.user_label === 'employee' || entity.relationship_type === 'employee');
-    });
-    if (isEmployee) continue;
-
-    const days = daysSince(item.source_date);
-    if (days < 7) continue;
-
-    alerts.push({
-      type: 'dropped_ball',
-      severity: days > 21 ? 'critical' : days > 14 ? 'high' : 'normal',
-      title: `${nonDismissed.join(', ') || 'Someone'} waiting on reply`,
-      detail: `"${item.title}" — ${days}d`,
-      entity_id: null,
-      item_id: item.id,
-      days,
-    });
-  }
-
-  // Overdue commitments
-  const overdue = db.prepare(`
-    SELECT id, text, due_date, project FROM commitments WHERE state = 'overdue'
-  `).all() as any[];
-
-  for (const c of overdue) {
-    const days = daysSince(c.due_date);
-    alerts.push({
-      type: 'overdue_commitment',
-      severity: days > 7 ? 'critical' : days > 3 ? 'high' : 'normal',
-      title: `Overdue: ${c.text}`,
-      detail: `Due ${c.due_date} (${days}d ago)${c.project ? ` — ${c.project}` : ''}`,
-      entity_id: null,
-      item_id: c.id,
-      days,
-    });
-  }
-
-  // Cold relationships (important contacts going silent)
-  for (const person of people) {
-    if (person.days_since > 14 && person.mention_count >= 5 && person.relationship_type !== 'noise') {
-      alerts.push({
-        type: 'cold_relationship',
-        severity: person.days_since > 30 ? 'high' : 'normal',
-        title: `${person.name} going cold`,
-        detail: `${person.days_since}d since last interaction (${person.mention_count} total mentions)`,
-        entity_id: person.id,
-        item_id: person.citations[0] || null,
-        days: person.days_since,
-      });
-    }
-  }
-
-  // Sort alerts by severity
-  const severityOrder: Record<string, number> = { critical: 0, high: 1, normal: 2 };
-  alerts.sort((a, b) => (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3));
+  // ── ALERTS (single source of truth: getAlerts) ──────────
+  // Uses person-level reasoning, not item-level scanning
+  const rawAlerts = getAlerts(db);
+  const alerts: WorldAlert[] = rawAlerts.map(a => ({
+    type: a.type,
+    severity: a.severity,
+    title: a.title,
+    detail: a.detail,
+    entity_id: null,
+    item_id: a.item_id || null,
+    days: a.daysSince || 0,
+    confidence: a.confidence || 0.5,
+    reasoning: a.reasoning || '',
+  }));
 
   // ── DISMISSED ──────────────────────────────────────────────
   const dismissed = db.prepare(`
@@ -364,7 +295,9 @@ export function worldModelToMarkdown(model: WorldModel): string {
     const icons: Record<string, string> = { critical: '🔴', high: '🟠', normal: '🔵' };
     for (const a of model.alerts) {
       const cite = a.item_id ? ` [${a.item_id.slice(0, 8)}]` : '';
-      lines.push(`${icons[a.severity] || '⚪'} ${a.title} — ${a.detail}${cite}`);
+      const conf = a.confidence ? ` (${Math.round(a.confidence * 100)}% confidence)` : '';
+      lines.push(`${icons[a.severity] || '⚪'} ${a.title} — ${a.detail}${conf}${cite}`);
+      if (a.reasoning) lines.push(`  Why: ${a.reasoning}`);
     }
     lines.push('');
   }

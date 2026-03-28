@@ -307,6 +307,57 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_artifacts_project ON artifacts(project);
     CREATE INDEX IF NOT EXISTS idx_artifacts_type ON artifacts(type);
 
+    -- ============================================================
+    -- Entity Understanding Profiles
+    -- Rich comprehension of each entity, not just a label
+    -- Updated by dream pipeline, consumed by alert system
+    -- ============================================================
+    CREATE TABLE IF NOT EXISTS entity_profiles (
+      entity_id TEXT PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
+      communication_nature TEXT NOT NULL DEFAULT 'unknown',   -- 'transactional','relational','strategic','informational','spam'
+      reply_expectation TEXT NOT NULL DEFAULT 'unknown',      -- 'never','rarely','sometimes','usually','always'
+      email_types TEXT DEFAULT '[]',                          -- JSON: ['invoice','policy','acknowledgment','question','proposal']
+      importance_to_business TEXT DEFAULT 'unknown',          -- 'critical','high','medium','low','none'
+      importance_evidence TEXT DEFAULT '',                     -- why this importance rating
+      relationship_evidence TEXT DEFAULT '',                   -- what data supports the relationship classification
+      alert_verdict TEXT DEFAULT 'pending',                   -- 'surface','suppress','pending'
+      verdict_reasoning TEXT DEFAULT '',                       -- LLM explanation of verdict
+      verdict_confidence REAL DEFAULT 0.0,
+      last_verified_at TEXT,                                  -- when dream pipeline last evaluated
+      user_override INTEGER DEFAULT 0,                        -- user explicitly set this (never auto-change)
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- ============================================================
+    -- Alert Verdicts
+    -- Pre-computed by dream pipeline, consumed by real-time getAlerts
+    -- Each entity with open threads gets a verdict
+    -- ============================================================
+    CREATE TABLE IF NOT EXISTS alert_verdicts (
+      id TEXT PRIMARY KEY,
+      entity_id TEXT REFERENCES entities(id) ON DELETE CASCADE,
+      entity_name TEXT NOT NULL,
+      verdict TEXT NOT NULL,                 -- 'surface','suppress','defer'
+      confidence REAL NOT NULL DEFAULT 0.0,
+      reasoning TEXT NOT NULL DEFAULT '',    -- LLM explanation
+      severity TEXT DEFAULT 'normal',       -- 'critical','high','normal'
+      suggested_action TEXT,                -- 'reply','call','dismiss','defer'
+      open_thread_count INTEGER DEFAULT 0,
+      oldest_thread_days INTEGER DEFAULT 0,
+      context_summary TEXT,                 -- brief context for COS
+      computed_at TEXT DEFAULT (datetime('now')),
+      expires_at TEXT,                      -- stale after this time
+      user_acted INTEGER DEFAULT 0,         -- did user act on this?
+      user_action TEXT                      -- what did user do?
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_verdicts_entity ON alert_verdicts(entity_id);
+    CREATE INDEX IF NOT EXISTS idx_verdicts_verdict ON alert_verdicts(verdict, confidence DESC);
+    CREATE INDEX IF NOT EXISTS idx_verdicts_expires ON alert_verdicts(expires_at);
+    CREATE INDEX IF NOT EXISTS idx_profiles_verdict ON entity_profiles(alert_verdict);
+    CREATE INDEX IF NOT EXISTS idx_profiles_nature ON entity_profiles(communication_nature);
+
     -- Entity indexes
     CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_email ON entities(email) WHERE email IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
