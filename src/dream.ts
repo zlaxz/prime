@@ -434,6 +434,15 @@ async function task06EntityUnderstanding(db: Database.Database): Promise<TaskRes
           `  - ${c.text} [${c.state}]${c.due_date ? ' due: ' + c.due_date : ''}`
         ).join('\n');
 
+        // Projects this person ACTUALLY appears in (from data, not assumption)
+        const actualProjects = db.prepare(`
+          SELECT DISTINCT k.project, COUNT(*) as cnt FROM knowledge k
+          JOIN entity_mentions em ON k.id = em.knowledge_item_id
+          WHERE em.entity_id = ? AND k.project IS NOT NULL AND k.project != ''
+          GROUP BY k.project ORDER BY cnt DESC
+        `).all(entity.id) as any[];
+        const projectLine = actualProjects.map((p: any) => `${p.project} (${p.cnt} items)`).join(', ');
+
         return `
 ENTITY: ${entity.canonical_name}
 Email: ${entity.email || 'unknown'}
@@ -441,6 +450,7 @@ Domain: ${entity.domain || 'unknown'}
 Current label: ${entity.user_label || entity.relationship_type || 'none'}
 Total interactions: ${stats?.total || 0} (${stats?.inbound || 0} inbound, ${stats?.outbound || 0} outbound)
 First seen: ${stats?.first_seen?.slice(0, 10) || '?'} | Last seen: ${stats?.last_seen?.slice(0, 10) || '?'}
+PROJECTS (from data): ${projectLine || '(none)'}
 Open threads: ${openThreads.length}
 Connected to: ${connections.length > 0 ? '\n' + connectionLines : '(no connections)'}
 Open commitments: ${commitments.length > 0 ? '\n' + commitmentLines : '(none)'}
@@ -457,13 +467,12 @@ ${itemLines || '  (none)'}
 
 BUSINESS CONTEXT:
 Zach Stock is the founder of Recapture Insurance, a Managing General Agency (MGA) in the insurance industry.
-- An MGA underwrites policies on behalf of carriers. Carrier capacity relationships (e.g., Konduit, Bishop Street) are EXISTENTIAL — losing a carrier partner can shut down the business.
-- Revenue comes from brokers who submit business to Recapture. Broker pipeline = revenue pipeline.
-- Key projects: Carefront (new MGA launch), Foresite Healthcare, AgencyEquity (Bishop Street partnership)
-- Zach has ADHD — he drops balls not from lack of caring but from context-switching. The system must catch what he misses.
-- Employees: Forrest Pullen, Keane Angle — their emails are operational, not "dropped balls"
-- Critical relationships: carrier partners > client brokers > advisors > vendors > cold outreach
-${businessCtx ? '\nAdditional context:\n' + businessCtx : ''}
+- An MGA underwrites policies on behalf of carriers. Carrier capacity is existential.
+- Zach has ADHD — he drops balls from context-switching, not lack of caring.
+- Employees (skip as alerts): Forrest Pullen, Keane Angle
+${businessCtx ? '\nAdditional user-provided context:\n' + businessCtx : ''}
+
+IMPORTANT: Do NOT assume which projects a person is connected to. The data below shows exactly which projects each entity appears in. Trust the DATA, not assumptions. If an entity's communications are all about "Physician Cyber Program", they are NOT involved in "Carefront" even if both are insurance projects.
 
 EVALUATION INSTRUCTIONS:
 For each entity, analyze their ENTIRE communication history including extracted commitments, decisions, and action items. Consider:
@@ -928,13 +937,8 @@ export async function runDreamPipeline(
   results.push(r01);
   console.log(`    ${r01.status === 'success' ? '✓' : r01.status === 'skipped' ? '○' : '✗'} ${r01.status} (${r01.duration_seconds.toFixed(1)}s)${r01.output ? ` — ${JSON.stringify(r01.output).slice(0, 100)}` : ''}`);
 
-  // Task 02: Entity classify (skip in quick mode)
-  if (!options.quick) {
-    console.log('  Task 02: Classify entities...');
-    const r02 = await task02EntityClassify(db);
-    results.push(r02);
-    console.log(`    ${r02.status === 'success' ? '✓' : r02.status === 'skipped' ? '○' : '✗'} ${r02.status} (${r02.duration_seconds.toFixed(1)}s)${r02.output ? ` — ${JSON.stringify(r02.output).slice(0, 100)}` : ''}`);
-  }
+  // Task 02: SKIPPED — replaced by Task 06 (deep entity understanding)
+  // Task 02 was shallow (stats only). Task 06 sends full context + extracted intelligence.
 
   // Task 03: Commitment check
   console.log('  Task 03: Check commitments...');
