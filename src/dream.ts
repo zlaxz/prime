@@ -363,11 +363,12 @@ async function task06EntityUnderstanding(db: Database.Database): Promise<TaskRes
     for (let i = 0; i < needsEval.length; i += BATCH_SIZE) {
       const batch = needsEval.slice(i, i + BATCH_SIZE);
 
-      // Build rich context for each entity in the batch
+      // Build DEEP context for each entity — not just titles, but the full intelligence
       const entityContexts = batch.map((entity: any) => {
-        // Get ALL items involving this entity (titles, summaries, dates, direction)
+        // Get ALL items with FULL extracted intelligence
         const items = db.prepare(`
           SELECT k.title, k.summary, k.source, k.source_date, k.tags, k.project,
+                 k.contacts, k.commitments, k.decisions, k.action_items, k.importance,
                  em.direction, em.role,
                  json_extract(k.metadata, '$.last_from') as last_from
           FROM knowledge k
@@ -376,13 +377,13 @@ async function task06EntityUnderstanding(db: Database.Database): Promise<TaskRes
           ORDER BY k.source_date DESC
         `).all(entity.id) as any[];
 
-        // Get open threads specifically
+        // Open threads
         const openThreads = items.filter((it: any) => {
           const tags = typeof it.tags === 'string' ? JSON.parse(it.tags) : (it.tags || []);
           return tags.includes('awaiting_reply');
         });
 
-        // Get communication stats
+        // Communication stats
         const stats = db.prepare(`
           SELECT COUNT(*) as total,
             SUM(CASE WHEN direction = 'inbound' THEN 1 ELSE 0 END) as inbound,
@@ -392,14 +393,45 @@ async function task06EntityUnderstanding(db: Database.Database): Promise<TaskRes
           FROM entity_mentions WHERE entity_id = ?
         `).get(entity.id) as any;
 
-        const itemLines = items.slice(0, 15).map((it: any) => {
+        // CROSS-ENTITY: who do they co-occur with? (relationship web)
+        const connections = db.prepare(`
+          SELECT e2.canonical_name, e2.user_label, e2.relationship_type,
+            ee.co_occurrence_count, ee.edge_type
+          FROM entity_edges ee
+          JOIN entities e2 ON (CASE WHEN ee.source_entity_id = ? THEN ee.target_entity_id ELSE ee.source_entity_id END = e2.id)
+          WHERE (ee.source_entity_id = ? OR ee.target_entity_id = ?)
+            AND e2.user_dismissed = 0 AND e2.canonical_name NOT LIKE '%Zach%Stock%'
+          ORDER BY ee.co_occurrence_count DESC LIMIT 5
+        `).all(entity.id, entity.id, entity.id) as any[];
+
+        // Open commitments involving this person
+        const commitments = db.prepare(`
+          SELECT text, state, due_date FROM commitments
+          WHERE (owner LIKE ? OR assigned_to LIKE ?) AND state IN ('active', 'overdue')
+        `).all(`%${entity.canonical_name}%`, `%${entity.canonical_name}%`) as any[];
+
+        // Build RICH item lines with extracted intelligence
+        const itemLines = items.slice(0, 20).map((it: any) => {
           const tags = typeof it.tags === 'string' ? JSON.parse(it.tags) : (it.tags || []);
           const isOpen = tags.includes('awaiting_reply') ? ' [AWAITING REPLY]' : '';
-          return `  ${it.source_date?.slice(0, 10) || '?'} | ${it.source} | ${it.direction || '?'} | ${it.title}${isOpen}`;
+          const extractedCommitments = typeof it.commitments === 'string' ? JSON.parse(it.commitments || '[]') : (it.commitments || []);
+          const extractedDecisions = typeof it.decisions === 'string' ? JSON.parse(it.decisions || '[]') : (it.decisions || []);
+          const extractedActions = typeof it.action_items === 'string' ? JSON.parse(it.action_items || '[]') : (it.action_items || []);
+
+          let line = `  ${it.source_date?.slice(0, 10) || '?'} | ${it.source} | ${it.direction || '?'} | ${it.title}${isOpen}`;
+          line += `\n    Summary: ${(it.summary || '').slice(0, 150)}`;
+          if (extractedCommitments.length) line += `\n    Commitments: ${extractedCommitments.slice(0, 2).join('; ')}`;
+          if (extractedDecisions.length) line += `\n    Decisions: ${extractedDecisions.slice(0, 2).join('; ')}`;
+          if (extractedActions.length) line += `\n    Action items: ${extractedActions.slice(0, 2).join('; ')}`;
+          return line;
         }).join('\n');
 
-        const openLines = openThreads.slice(0, 5).map((it: any) =>
-          `  - "${it.title}" (${it.source_date?.slice(0, 10) || '?'})`
+        const connectionLines = connections.map((c: any) =>
+          `  ${c.canonical_name} [${c.user_label || c.relationship_type || '?'}] (${c.co_occurrence_count} shared items)`
+        ).join('\n');
+
+        const commitmentLines = commitments.map((c: any) =>
+          `  - ${c.text} [${c.state}]${c.due_date ? ' due: ' + c.due_date : ''}`
         ).join('\n');
 
         return `
@@ -409,8 +441,9 @@ Domain: ${entity.domain || 'unknown'}
 Current label: ${entity.user_label || entity.relationship_type || 'none'}
 Total interactions: ${stats?.total || 0} (${stats?.inbound || 0} inbound, ${stats?.outbound || 0} outbound)
 First seen: ${stats?.first_seen?.slice(0, 10) || '?'} | Last seen: ${stats?.last_seen?.slice(0, 10) || '?'}
-Open threads (awaiting reply): ${openThreads.length}
-${openLines || '  (none)'}
+Open threads: ${openThreads.length}
+Connected to: ${connections.length > 0 ? '\n' + connectionLines : '(no connections)'}
+Open commitments: ${commitments.length > 0 ? '\n' + commitmentLines : '(none)'}
 
 All communications (most recent first):
 ${itemLines || '  (none)'}
