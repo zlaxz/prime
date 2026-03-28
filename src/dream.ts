@@ -7,6 +7,7 @@ import { getDb, getConfig } from './db.js';
 import { generateWorldModel, saveWorldModel, worldModelToMarkdown } from './ai/world.js';
 import { getAlerts } from './ai/intelligence.js';
 import { buildEntityGraph } from './entities.js';
+import { retrieveDeepContext } from './source-retrieval.js';
 
 // ============================================================
 // Dream State Pipeline — Phase 5 of v1.0 Brain Architecture
@@ -460,6 +461,31 @@ ${itemLines || '  (none)'}
 `;
       }).join('\n---\n');
 
+      // SOURCE RETRIEVAL: For the batch, retrieve actual content from APIs
+      // for the most important items. This is "going back to the shelf."
+      let deepContextBlock = '';
+      try {
+        // Pick the 2 most important entities in this batch to do deep retrieval
+        const deepEntities = batch.slice(0, 2);
+        for (const entity of deepEntities) {
+          const entityItems = db.prepare(`
+            SELECT k.title, k.source, k.source_ref, k.source_date, k.metadata
+            FROM knowledge_primary k
+            JOIN entity_mentions em ON k.id = em.knowledge_item_id
+            WHERE em.entity_id = ?
+            ORDER BY k.source_date DESC
+          `).all(entity.id) as any[];
+
+          const deepContent = await retrieveDeepContext(db, entityItems, 2);
+          if (deepContent) {
+            deepContextBlock += `\n\nDEEP SOURCE CONTENT for ${entity.canonical_name}:${deepContent}`;
+          }
+        }
+      } catch (err: any) {
+        // Source retrieval is best-effort — don't fail the whole task
+        console.log(`    Source retrieval warning: ${err.message?.slice(0, 100)}`);
+      }
+
       // Load business context if available
       const businessCtx = getConfig(db, 'business_context') || '';
 
@@ -505,6 +531,7 @@ CRITICAL: An email tagged "awaiting reply" does NOT mean a reply is needed. Eval
 
 ENTITIES TO EVALUATE:
 ${entityContexts}
+${deepContextBlock ? '\n--- ORIGINAL SOURCE MATERIAL (retrieved from APIs — this is the ACTUAL content, not summaries) ---' + deepContextBlock : ''}
 
 Return ONLY this JSON array (no other text):
 [
