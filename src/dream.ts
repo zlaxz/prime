@@ -84,7 +84,7 @@ async function task01Consolidate(db: Database.Database): Promise<TaskResult> {
     const lastRun = (db.prepare("SELECT value FROM graph_state WHERE key = 'last_dream_run'").get() as any)?.value || '2000-01-01';
     const newItems = db.prepare(`
       SELECT id, title, summary, source, source_date, contacts, organizations, project, tags, metadata
-      FROM knowledge WHERE source_date > ? AND source NOT IN ('agent-report','agent-notification','briefing')
+      FROM knowledge_primary WHERE source_date > ?
       ORDER BY source_date DESC LIMIT 50
     `).all(lastRun) as any[];
 
@@ -251,7 +251,7 @@ async function task05SelfAudit(db: Database.Database): Promise<TaskResult> {
   try {
     // Get yesterday's agent reports
     const reports = db.prepare(`
-      SELECT title, summary, metadata FROM knowledge
+      SELECT title, summary, metadata FROM knowledge_derived
       WHERE source = 'agent-report' AND source_date >= datetime('now', '-1 day')
       ORDER BY source_date DESC LIMIT 3
     `).all() as any[];
@@ -371,7 +371,7 @@ async function task06EntityUnderstanding(db: Database.Database): Promise<TaskRes
                  k.contacts, k.commitments, k.decisions, k.action_items, k.importance,
                  em.direction, em.role,
                  json_extract(k.metadata, '$.last_from') as last_from
-          FROM knowledge k
+          FROM knowledge_primary k
           JOIN entity_mentions em ON k.id = em.knowledge_item_id
           WHERE em.entity_id = ?
           ORDER BY k.source_date DESC
@@ -436,7 +436,7 @@ async function task06EntityUnderstanding(db: Database.Database): Promise<TaskRes
 
         // Projects this person ACTUALLY appears in (from data, not assumption)
         const actualProjects = db.prepare(`
-          SELECT DISTINCT k.project, COUNT(*) as cnt FROM knowledge k
+          SELECT DISTINCT k.project, COUNT(*) as cnt FROM knowledge_primary k
           JOIN entity_mentions em ON k.id = em.knowledge_item_id
           WHERE em.entity_id = ? AND k.project IS NOT NULL AND k.project != ''
           GROUP BY k.project ORDER BY cnt DESC
@@ -463,14 +463,33 @@ ${itemLines || '  (none)'}
       // Load business context if available
       const businessCtx = getConfig(db, 'business_context') || '';
 
+      // Load USER CORRECTIONS as hard constraints
+      const userLabeled = db.prepare(`
+        SELECT canonical_name, user_label, user_notes FROM entities
+        WHERE user_label IS NOT NULL AND user_dismissed = 0
+      `).all() as any[];
+      const userDismissed = db.prepare(`
+        SELECT canonical_name FROM entities WHERE user_dismissed = 1
+      `).all() as any[];
+
+      const correctionLines = userLabeled.map((e: any) =>
+        `- ${e.canonical_name} IS a ${e.user_label}${e.user_notes ? ' (' + e.user_notes + ')' : ''}`
+      ).join('\n');
+      const dismissedLines = userDismissed.map((e: any) => e.canonical_name).join(', ');
+
       const prompt = `You are the AI Chief of Staff for Zach Stock. You have DEEP knowledge of his business and must evaluate each contact with that understanding.
 
 BUSINESS CONTEXT:
 Zach Stock is the founder of Recapture Insurance, a Managing General Agency (MGA) in the insurance industry.
 - An MGA underwrites policies on behalf of carriers. Carrier capacity is existential.
 - Zach has ADHD — he drops balls from context-switching, not lack of caring.
-- Employees (skip as alerts): Forrest Pullen, Keane Angle
 ${businessCtx ? '\nAdditional user-provided context:\n' + businessCtx : ''}
+
+USER-VERIFIED CORRECTIONS (THESE ARE ABSOLUTE — NEVER contradict):
+${correctionLines || '(none)'}
+
+DISMISSED CONTACTS (NEVER surface these):
+${dismissedLines || '(none)'}
 
 IMPORTANT: Do NOT assume which projects a person is connected to. The data below shows exactly which projects each entity appears in. Trust the DATA, not assumptions. If an entity's communications are all about "Physician Cyber Program", they are NOT involved in "Carefront" even if both are insurance projects.
 
@@ -593,7 +612,7 @@ async function task07ProjectUnderstanding(db: Database.Database): Promise<TaskRe
     const projects = db.prepare(`
       SELECT project, COUNT(*) as item_count, MAX(source_date) as last_activity,
         GROUP_CONCAT(DISTINCT source) as sources
-      FROM knowledge
+      FROM knowledge_primary
       WHERE project IS NOT NULL AND project != ''
       GROUP BY project HAVING item_count >= 3
       ORDER BY MAX(source_date) DESC LIMIT 15
@@ -618,7 +637,7 @@ async function task07ProjectUnderstanding(db: Database.Database): Promise<TaskRe
 
       // Recent items
       const items = db.prepare(`
-        SELECT title, source, source_date, summary FROM knowledge
+        SELECT title, source, source_date, summary FROM knowledge_primary
         WHERE project = ? ORDER BY source_date DESC LIMIT 10
       `).all(proj.project) as any[];
 
@@ -720,7 +739,7 @@ async function task08CommitmentVerification(db: Database.Database): Promise<Task
       let recentActivity = '';
       if (c.project) {
         const recent = db.prepare(`
-          SELECT title, source_date FROM knowledge
+          SELECT title, source_date FROM knowledge_primary
           WHERE project = ? AND source_date > ? ORDER BY source_date DESC LIMIT 3
         `).all(c.project, c.due_date || '2000-01-01') as any[];
         if (recent.length > 0) {
@@ -831,7 +850,7 @@ async function task09WorldNarrative(db: Database.Database): Promise<TaskResult> 
     // Get today's calendar if available
     const today = new Date().toISOString().slice(0, 10);
     const calendarItems = db.prepare(`
-      SELECT title, summary, source_date FROM knowledge
+      SELECT title, summary, source_date FROM knowledge_primary
       WHERE source = 'calendar' AND source_date >= ? AND source_date < datetime(?, '+1 day')
       ORDER BY source_date ASC
     `).all(today, today) as any[];
@@ -853,19 +872,37 @@ async function task09WorldNarrative(db: Database.Database): Promise<TaskResult> 
       `${c.source_date?.slice(11, 16) || '?'} ${c.title}`
     ).join('\n');
 
+    // Load user corrections as hard constraints for the narrative
+    const userCorrections = db.prepare(`
+      SELECT canonical_name, user_label, user_notes FROM entities
+      WHERE user_label IS NOT NULL AND user_dismissed = 0
+    `).all() as any[];
+    const correctionBlock = userCorrections.map((e: any) =>
+      `- ${e.canonical_name} = ${e.user_label}${e.user_notes ? ' (' + e.user_notes + ')' : ''}`
+    ).join('\n');
+
+    // Load the SQL world model as verified facts
+    const worldModelPath = join(homedir(), '.prime', 'world.md');
+    let verifiedFacts = '';
+    try { verifiedFacts = readFileSync(worldModelPath, 'utf-8'); } catch {}
+
     const prompt = `You are the AI Chief of Staff synthesizing a daily intelligence briefing for Zach Stock, founder of Recapture Insurance (MGA/insurtech).
 
 Write a concise narrative (not a data dump) that tells Zach what he needs to know TODAY. Write as if you are his most trusted advisor speaking directly to him. Be opinionated — prioritize, recommend, warn.
 
-INTELLIGENCE INPUTS:
+VERIFIED FACTS (from SQL world model — primary sources only, treat as TRUE):
+${verifiedFacts.slice(0, 4000) || '(no world model available)'}
 
-PEOPLE NEEDING ATTENTION (${entityProfiles.length}):
+USER-VERIFIED CORRECTIONS (ABSOLUTE — NEVER contradict these):
+${correctionBlock || '(none)'}
+
+ENTITY INTELLIGENCE (from dream analysis — useful but flag uncertainty):
 ${surfaceAlerts || '(none — all relationships healthy)'}
 
-PROJECTS (${projects.length}):
+PROJECT INTELLIGENCE (from dream analysis):
 ${projectSummary || '(no project intelligence yet)'}
 
-ACTIVE COMMITMENTS (${commitments.filter((c: any) => c.current_state === 'active').length}):
+ACTIVE COMMITMENTS:
 ${activeCommitments || '(none verified active)'}
 
 TODAY'S CALENDAR:
@@ -880,11 +917,12 @@ FORMAT:
 6. **This Week** — what to be thinking about for the rest of the week
 
 RULES:
-- Be direct, not diplomatic
+- Build your narrative from VERIFIED FACTS as the skeleton
+- Add reasoning from entity/project intelligence but flag uncertainty
+- Before associating any person with a project, VERIFY the association exists in VERIFIED FACTS
+- NEVER contradict USER-VERIFIED CORRECTIONS
 - If something is fine, don't mention it (selective silence)
-- Every recommendation must reference specific evidence
-- If you're uncertain, say so — "I think X but I'm not sure because Y"
-- Never pad the briefing with filler — shorter is better
+- If you're uncertain, say so — "(inferred)" vs "(verified)"
 - Write for someone with ADHD who will skim this in 60 seconds
 
 Return the briefing as plain text (markdown OK). No JSON wrapper.`;

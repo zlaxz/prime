@@ -104,7 +104,7 @@ export function generateWorldModel(db: Database.Database): WorldModel {
 
     // Get projects
     const projects = db.prepare(`
-      SELECT DISTINCT k.project FROM knowledge k
+      SELECT DISTINCT k.project FROM knowledge_primary k
       JOIN entity_mentions em ON k.id = em.knowledge_item_id
       WHERE em.entity_id = ? AND k.project IS NOT NULL
     `).all(p.id) as any[];
@@ -117,7 +117,7 @@ export function generateWorldModel(db: Database.Database): WorldModel {
 
     // Get recent item IDs for citation
     const citations = db.prepare(`
-      SELECT k.id FROM knowledge k
+      SELECT k.id FROM knowledge_primary k
       JOIN entity_mentions em ON k.id = em.knowledge_item_id
       WHERE em.entity_id = ? ORDER BY k.source_date DESC LIMIT 3
     `).all(p.id) as any[];
@@ -145,7 +145,7 @@ export function generateWorldModel(db: Database.Database): WorldModel {
     SELECT project, COUNT(*) as item_count,
       MAX(source_date) as last_activity,
       GROUP_CONCAT(DISTINCT source) as sources
-    FROM knowledge
+    FROM knowledge_primary
     WHERE project IS NOT NULL AND project != ''
     GROUP BY project
     HAVING item_count >= 2
@@ -229,7 +229,7 @@ export function generateWorldModel(db: Database.Database): WorldModel {
   `).all() as any[];
 
   // ── STATS ──────────────────────────────────────────────
-  const totalItems = (db.prepare('SELECT COUNT(*) as cnt FROM knowledge').get() as any).cnt;
+  const totalItems = (db.prepare('SELECT COUNT(*) as cnt FROM knowledge_primary').get() as any).cnt;
   const totalEntities = (db.prepare('SELECT COUNT(*) as cnt FROM entities WHERE user_dismissed = 0').get() as any).cnt;
   const totalFacts = (db.prepare('SELECT COUNT(*) as cnt FROM facts WHERE valid_until IS NULL').get() as any).cnt;
 
@@ -352,7 +352,7 @@ export function isWorldModelStale(db: Database.Database): boolean {
     if (new Date() > new Date(world.stale_after)) return true;
 
     const newItems = (db.prepare(
-      'SELECT COUNT(*) as cnt FROM knowledge WHERE created_at > ?'
+      'SELECT COUNT(*) as cnt FROM knowledge_primary WHERE created_at > ?'
     ).get(world.generated_at) as any).cnt;
     if (newItems >= 10) return true;
 

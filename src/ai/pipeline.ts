@@ -36,7 +36,7 @@ export function analyzePipeline(db: Database.Database): PipelineAnalysis {
       COUNT(CASE WHEN source_date >= datetime('now', '-7 days') THEN 1 END) as recent_7d,
       COUNT(CASE WHEN source_date >= datetime('now', '-14 days') AND source_date < datetime('now', '-7 days') THEN 1 END) as prev_7d,
       GROUP_CONCAT(DISTINCT source) as sources
-    FROM knowledge
+    FROM knowledge_primary
     WHERE project IS NOT NULL AND project != ''
     GROUP BY project
     HAVING items >= 3
@@ -93,7 +93,7 @@ export function analyzePipeline(db: Database.Database): PipelineAnalysis {
   // Time allocation (proxy: count of items per project in last 14 days)
   const recentActivity = db.prepare(`
     SELECT project, COUNT(*) as items
-    FROM knowledge
+    FROM knowledge_primary
     WHERE project IS NOT NULL AND source_date >= datetime('now', '-14 days')
     GROUP BY project
     ORDER BY items DESC

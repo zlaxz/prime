@@ -140,7 +140,7 @@ export function searchArtifacts(db: Database.Database, query: string, limit: num
  */
 export async function migrateArtifactsFromKnowledge(db: Database.Database): Promise<{ migrated: number; skipped: number }> {
   const items = db.prepare(
-    "SELECT * FROM knowledge WHERE tags LIKE '%claude-artifact%' ORDER BY source_date ASC"
+    "SELECT * FROM knowledge_primary WHERE tags LIKE '%claude-artifact%' ORDER BY source_date ASC"
   ).all() as any[];
 
   let migrated = 0;

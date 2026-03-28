@@ -546,7 +546,7 @@ server.tool(
 
     // Search for artifacts matching the query
     const allArtifacts = db.prepare(
-      `SELECT * FROM knowledge
+      `SELECT * FROM knowledge_primary
        WHERE tags LIKE '%claude-artifact%'
        AND (title LIKE ? OR summary LIKE ? OR tags LIKE ?)
        ORDER BY source_date DESC`

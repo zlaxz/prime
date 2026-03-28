@@ -166,7 +166,7 @@ ${context}`,
   // ========================================================
   log('  ⏰ Checking for stale knowledge...');
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString();
-  const staleRows = db.prepare('SELECT id FROM knowledge WHERE source_date < ? AND importance != \'critical\' AND valid_until IS NULL').all(thirtyDaysAgo);
+  const staleRows = db.prepare('SELECT id FROM knowledge_primary WHERE source_date < ? AND importance != \'critical\' AND valid_until IS NULL').all(thirtyDaysAgo);
   stats.staleItems = staleRows.length;
   if (stats.staleItems > 0) {
     log(`  ⚠ ${stats.staleItems} items are 30+ days old (may need refresh)`);
@@ -254,7 +254,7 @@ ${context}`,
     // 8b. Archive stale knowledge items (>90 days, low importance, not critical)
     const ninetyDaysAgo = new Date(Date.now() - 90 * 86400000).toISOString();
     const archivable = db.prepare(
-      "SELECT id FROM knowledge WHERE source_date < ? AND importance = 'low' AND valid_until IS NULL"
+      "SELECT id FROM knowledge_primary WHERE source_date < ? AND importance = 'low' AND valid_until IS NULL"
     ).all(ninetyDaysAgo) as any[];
 
     for (const row of archivable) {

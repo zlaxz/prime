@@ -32,12 +32,12 @@ export async function generateBriefing(
   // ── 1. Gather recent knowledge items ──────────────────────
   const cutoffDate = new Date(now.getTime() - days * 86400000).toISOString();
   const recentItems = queryRows(db,
-    `SELECT * FROM knowledge WHERE source_date >= ? ORDER BY source_date DESC`,
+    `SELECT * FROM knowledge_primary WHERE source_date >= ? ORDER BY source_date DESC`,
     [cutoffDate]
   );
 
   // ── 2. All items (for contact/relationship analysis) ──────
-  const allItems = queryRows(db, `SELECT * FROM knowledge ORDER BY source_date DESC`, []);
+  const allItems = queryRows(db, `SELECT * FROM knowledge_primary ORDER BY source_date DESC`, []);
 
   // ── 3. Build contact map with mention counts + most recent date ──
   const contactMap = new Map<string, { count: number; lastDate: string | null }>();
@@ -121,7 +121,7 @@ export async function generateBriefing(
   const tomorrow = new Date(now.getTime() + 86400000);
   const tomorrowEnd = new Date(now.getTime() + 2 * 86400000);
   const calendarItems = queryRows(db,
-    `SELECT * FROM knowledge WHERE source = 'calendar' AND source_date >= ? AND source_date < ? ORDER BY source_date ASC`,
+    `SELECT * FROM knowledge_primary WHERE source = 'calendar' AND source_date >= ? AND source_date < ? ORDER BY source_date ASC`,
     [todayStr, tomorrowEnd.toISOString().split('T')[0]]
   );
 

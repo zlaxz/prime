@@ -194,7 +194,7 @@ async function loadEntityRegistry(): Promise<{ contacts: string[]; projects: str
     ).all() as any[]).map(r => r.canonical_name);
 
     const projects = (db.prepare(
-      "SELECT DISTINCT project FROM knowledge WHERE project IS NOT NULL AND project != '' GROUP BY project HAVING COUNT(*) >= 3 ORDER BY COUNT(*) DESC"
+      "SELECT DISTINCT project FROM knowledge_primary WHERE project IS NOT NULL AND project != '' GROUP BY project HAVING COUNT(*) >= 3 ORDER BY COUNT(*) DESC"
     ).all() as any[]).map(r => r.project);
 
     _cachedRegistry = { contacts, projects };

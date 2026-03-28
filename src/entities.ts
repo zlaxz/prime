@@ -403,7 +403,7 @@ export function getEntityProfile(db: Database.Database, nameOrEmail: string): an
 
   // Get projects (from knowledge items this entity appears in)
   const projects = db.prepare(`
-    SELECT DISTINCT k.project FROM knowledge k
+    SELECT DISTINCT k.project FROM knowledge_primary k
     JOIN entity_mentions em ON k.id = em.knowledge_item_id
     WHERE em.entity_id = ? AND k.project IS NOT NULL
   `).all(entity.id) as any[];
@@ -414,7 +414,7 @@ export function getEntityProfile(db: Database.Database, nameOrEmail: string): an
   // Get recent items
   const recentItems = db.prepare(`
     SELECT k.id, k.title, k.source, k.source_date
-    FROM knowledge k
+    FROM knowledge_primary k
     JOIN entity_mentions em ON k.id = em.knowledge_item_id
     WHERE em.entity_id = ?
     ORDER BY k.source_date DESC LIMIT 5
@@ -675,7 +675,7 @@ export function buildEntityUnderstanding(db: Database.Database, entityId: string
   const items = db.prepare(`
     SELECT k.id, k.title, k.summary, k.source, k.source_date, k.tags, k.metadata,
            em.direction, em.role
-    FROM knowledge k
+    FROM knowledge_primary k
     JOIN entity_mentions em ON k.id = em.knowledge_item_id
     WHERE em.entity_id = ?
     ORDER BY k.source_date ASC

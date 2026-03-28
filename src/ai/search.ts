@@ -146,7 +146,7 @@ function getTemporalRange(query: string): { since: string; label: string } {
 function findContactInQuery(query: string, db: Database.Database): string | null {
   // Get all unique contacts from knowledge base
   const rows = db.prepare(
-    "SELECT DISTINCT contacts FROM knowledge WHERE contacts IS NOT NULL AND contacts != '[]'"
+    "SELECT DISTINCT contacts FROM knowledge_primary WHERE contacts IS NOT NULL AND contacts != '[]'"
   ).all() as any[];
 
   const allContacts = new Set<string>();
@@ -184,7 +184,7 @@ function keywordSearch(
   limit: number,
 ): any[] {
   // Get all knowledge items for BM25 scoring
-  const items = db.prepare('SELECT * FROM knowledge').all() as any[];
+  const items = db.prepare('SELECT * FROM knowledge_primary').all() as any[];
   if (items.length === 0) return [];
 
   // Compute average document length
@@ -258,7 +258,7 @@ async function graphSearch(
       if (seenIds.has(connectedId)) continue;
       seenIds.add(connectedId);
 
-      const row = db.prepare('SELECT * FROM knowledge WHERE id = ?').get(connectedId) as any;
+      const row = db.prepare('SELECT * FROM knowledge_primary WHERE id = ?').get(connectedId) as any;
       if (row) {
         parseJsonFields(row);
         row.embedding = null;
@@ -289,7 +289,7 @@ function temporalSearch(
     : getTemporalRange(query);
 
   const rows = db.prepare(
-    `SELECT * FROM knowledge
+    `SELECT * FROM knowledge_primary
      WHERE source_date >= ?
      ORDER BY source_date DESC
      LIMIT ?`
@@ -406,7 +406,7 @@ async function hierarchicalSearch(
   }
 
   const placeholders = Array.from(itemIds).map(() => '?').join(',');
-  const rows = db.prepare(`SELECT * FROM knowledge WHERE id IN (${placeholders})`).all(...Array.from(itemIds)) as any[];
+  const rows = db.prepare(`SELECT * FROM knowledge_primary WHERE id IN (${placeholders})`).all(...Array.from(itemIds)) as any[];
 
   return rows.map(row => {
     parseJsonFields(row);
