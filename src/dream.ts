@@ -367,6 +367,152 @@ Return ONLY significant moments. If an item has nothing episodic, skip it. Quali
   }
 }
 
+// ── Task 14: Strategic Investigation ──────────────────────────
+// Designed by 5-agent debate: Architect, Simplicity, ADHD UX, Red Team, Explorer
+// Detects stalling projects and does DEEP investigation with full context.
+// Produces diagnosis + leverage point + drafted action.
+
+async function task14Investigation(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    const profilesRaw = (db.prepare(
+      "SELECT value FROM graph_state WHERE key = 'project_profiles'"
+    ).get() as any)?.value;
+    if (!profilesRaw) return { task: '14-investigation', status: 'skipped', duration_seconds: 0, output: { reason: 'no project profiles yet' } };
+
+    const profiles = JSON.parse(profilesRaw);
+    const stalling = profiles.filter((p: any) => ['stalling', 'stalled'].includes(p.status));
+    if (stalling.length === 0) return { task: '14-investigation', status: 'skipped', duration_seconds: 0, output: { reason: 'no stalling projects' } };
+
+    // Investigate the top stalling project
+    const project = stalling[0];
+    console.log(`    Investigating: ${project.project} [${project.status}]`);
+
+    // Pre-query ALL context (Red Team: workers can't access DB, CEO must pre-query)
+    const items = db.prepare(
+      'SELECT title, summary, source, source_date, contacts, commitments, decisions FROM knowledge_primary WHERE project = ? ORDER BY source_date DESC LIMIT 20'
+    ).all(project.project) as any[];
+
+    const entities = db.prepare(`
+      SELECT DISTINCT e.canonical_name, e.user_label, e.relationship_type
+      FROM entities e
+      JOIN entity_mentions em ON e.id = em.entity_id
+      JOIN knowledge_primary k ON em.knowledge_item_id = k.id
+      WHERE k.project = ? AND e.user_dismissed = 0 AND e.canonical_name NOT LIKE '%Zach%Stock%'
+    `).all(project.project) as any[];
+
+    const commitments = db.prepare(
+      "SELECT text, state, due_date, owner FROM commitments WHERE project = ? AND state IN ('active', 'overdue') ORDER BY due_date"
+    ).all(project.project) as any[];
+
+    const episodic = db.prepare(
+      'SELECT moment_type, what_happened, why_it_matters, consequence, enables FROM episodic_moments WHERE project = ? ORDER BY confidence DESC LIMIT 5'
+    ).all(project.project) as any[];
+
+    // Source retrieval — actual email/transcript content for this project
+    let deepContent = '';
+    try {
+      const sourceItems = db.prepare(
+        'SELECT title, source, source_ref, source_date, metadata FROM knowledge_primary WHERE project = ? ORDER BY source_date DESC LIMIT 5'
+      ).all(project.project) as any[];
+      deepContent = await retrieveDeepContext(db, sourceItems, 3);
+    } catch {}
+
+    const itemContext = items.map((i: any) => {
+      const c = JSON.parse(i.contacts || '[]');
+      const cm = JSON.parse(i.commitments || '[]');
+      return `${i.source_date?.slice(0,10)} | ${i.source} | ${i.title}\n  ${(i.summary || '').slice(0, 200)}${c.length ? '\n  People: ' + c.join(', ') : ''}${cm.length ? '\n  Commitments: ' + cm.slice(0,2).join('; ') : ''}`;
+    }).join('\n');
+
+    const entityContext = entities.map((e: any) => `${e.canonical_name} [${e.user_label || e.relationship_type || '?'}]`).join(', ');
+    const commitContext = commitments.map((c: any) => `- ${c.text} [${c.state}]${c.due_date ? ' due: ' + c.due_date : ''} (${c.owner || '?'})`).join('\n');
+    const episodicContext = episodic.map((m: any) => `[${m.moment_type}] ${m.what_happened}\n  WHY: ${m.why_it_matters}${m.enables ? '\n  ENABLES: ' + m.enables : ''}`).join('\n\n');
+
+    const prompt = `You are Prime, AI Chief of Staff for Zach Stock (Recapture Insurance MGA, ADHD founder).
+
+You are conducting a DEEP STRATEGIC INVESTIGATION into why "${project.project}" is stalling.
+
+PROJECT ANALYSIS (from earlier tonight):
+Status: ${project.status}
+Reasoning: ${project.status_reasoning}
+Risks: ${JSON.stringify(project.risks)}
+Next action identified: ${project.next_action}
+Critical person: ${project.critical_person}
+
+ALL PROJECT COMMUNICATIONS (last 20 items):
+${itemContext}
+
+${deepContent ? 'ACTUAL SOURCE MATERIAL (full emails/transcripts):\n' + deepContent : ''}
+
+KEY PEOPLE: ${entityContext || '(none identified)'}
+
+OPEN COMMITMENTS:
+${commitContext || '(none)'}
+
+EPISODIC UNDERSTANDING:
+${episodicContext || '(none)'}
+
+INVESTIGATE DEEPLY:
+1. WHY is this project stalling? Challenge the obvious answer. What's the REAL blocker?
+2. What is being AVOIDED? (ADHD avoidance pattern: the task that keeps getting deferred is usually the most important one)
+3. What is the SINGLE highest-leverage action that would unstall this? Not 5 things — ONE thing.
+4. Draft the SPECIFIC email, call agenda, or document that executes this action. Real names, real context.
+5. What would change your assessment? What evidence would you need?
+6. Is there a connection to ANOTHER project that's being missed?
+
+Return JSON:
+{
+  "diagnosis": "why it's REALLY stalling — be specific, cite evidence from the communications",
+  "avoidance_pattern": "what Zach is likely avoiding and why (null if not applicable)",
+  "leverage_point": "the ONE thing that would change everything",
+  "cross_project_connection": "connection to another project that creates leverage (null if none)",
+  "prepared_action": {"type": "email|calendar|document", "to": "recipient", "subject": "...", "body": "full draft text"},
+  "uncertainty": "what you're not sure about",
+  "confidence": 0.0-1.0
+}`;
+
+    const response = await callClaude(prompt, 180000);
+    const parsed = tryParseJSON(response);
+
+    let actionsCreated = 0;
+    if (parsed) {
+      db.prepare(
+        "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES (?, ?, datetime('now'))"
+      ).run(`investigation_${project.project}`, JSON.stringify(parsed));
+
+      // Create staged action if confidence > 0.7 (UX constraint from ADHD agent)
+      if (parsed.prepared_action && parsed.confidence > 0.7) {
+        const action = parsed.prepared_action;
+        db.prepare(
+          "INSERT INTO staged_actions (type, summary, payload, reasoning, project, source_task, expires_at) VALUES (?, ?, ?, ?, ?, 'investigation', datetime('now', '+72 hours'))"
+        ).run(
+          action.type || 'email',
+          action.subject || action.title || 'Investigation action',
+          JSON.stringify(action),
+          parsed.diagnosis?.slice(0, 300) || '',
+          project.project,
+        );
+        actionsCreated++;
+      }
+    }
+
+    return {
+      task: '14-investigation',
+      status: 'success',
+      duration_seconds: (Date.now() - start) / 1000,
+      output: {
+        project: project.project,
+        diagnosis: parsed?.diagnosis?.slice(0, 100),
+        leverage: parsed?.leverage_point?.slice(0, 100),
+        confidence: parsed?.confidence,
+        actions_created: actionsCreated,
+      },
+    };
+  } catch (err: any) {
+    return { task: '14-investigation', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
 async function task12MeetingPrep(db: Database.Database): Promise<TaskResult> {
   const start = Date.now();
   try {
@@ -1756,6 +1902,12 @@ export async function runDreamPipeline(
     const r07 = await task07ProjectUnderstanding(db);
     results.push(r07);
     console.log(`    ${r07.status === 'success' ? '✓' : r07.status === 'skipped' ? '○' : '✗'} ${r07.status} (${r07.duration_seconds.toFixed(1)}s)${r07.output ? ` — ${JSON.stringify(r07.output).slice(0, 150)}` : ''}`);
+
+    // Task 14: Strategic Investigation — deep dive on stalling projects
+    console.log('  Task 14: Strategic investigation (LLM)...');
+    const r14 = await task14Investigation(db);
+    results.push(r14);
+    console.log(`    ${r14.status === 'success' ? '✓' : r14.status === 'skipped' ? '○' : '✗'} ${r14.status} (${r14.duration_seconds.toFixed(1)}s)${r14.output ? ` — ${JSON.stringify(r14.output).slice(0, 150)}` : ''}`);
 
     // Task 08: Commitment Verification — WHAT's real vs stale
     console.log('  Task 08: Commitment verification (LLM)...');
