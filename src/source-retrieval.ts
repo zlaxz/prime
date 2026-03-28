@@ -27,12 +27,29 @@ async function getGmailClient(db: Database.Database) {
   const tokens = getConfig(db, 'gmail_tokens');
   if (!tokens) return null;
 
+  const parsed = typeof tokens === 'string' ? JSON.parse(tokens) : tokens;
+
   const oauth2 = new google.auth.OAuth2(
-    getConfig(db, 'google_client_id'),
-    getConfig(db, 'google_client_secret'),
+    process.env.GOOGLE_CLIENT_ID || getConfig(db, 'google_client_id') || '',
+    process.env.GOOGLE_CLIENT_SECRET || getConfig(db, 'google_client_secret') || '',
     'http://localhost:9876/callback'
   );
-  oauth2.setCredentials(typeof tokens === 'string' ? JSON.parse(tokens) : tokens);
+  oauth2.setCredentials(parsed);
+
+  // Auto-refresh expired tokens
+  if (parsed.expiry_date && Date.now() > parsed.expiry_date && parsed.refresh_token) {
+    try {
+      const { credentials } = await oauth2.refreshAccessToken();
+      oauth2.setCredentials(credentials);
+      // Persist refreshed tokens
+      const { setConfig } = await import('./db.js');
+      setConfig(db, 'gmail_tokens', credentials);
+    } catch (err: any) {
+      console.log(`  Token refresh failed: ${err.message?.slice(0, 80)}`);
+      return null;
+    }
+  }
+
   return google.gmail({ version: 'v1', auth: oauth2 });
 }
 
