@@ -222,6 +222,151 @@ Return ONLY this JSON (no other text):
 // Scans calendar for meetings in the next 48h.
 // For each meeting, builds a prep brief from entity history + source retrieval.
 
+// ── Task 13: Episodic Memory Extraction ──────────────────────
+// Adapted from December 2025 architecture (Obsidian/memoryplan).
+// Extracts EPISODIC MOMENTS from recent items — not summaries, but
+// understanding with temporal binding and business significance.
+// Uses claude -p (Opus 4.6, 1M context) instead of DeepSeek.
+
+async function task13EpisodicExtraction(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    // Get recent items that haven't had episodic extraction yet
+    const recentItems = db.prepare(`
+      SELECT k.id, k.title, k.summary, k.source, k.source_date, k.project,
+        k.contacts, k.commitments, k.decisions, k.action_items, k.source_ref
+      FROM knowledge_primary k
+      WHERE k.source_date >= datetime('now', '-7 days')
+        AND k.id NOT IN (SELECT source_item_id FROM episodic_moments WHERE source_item_id IS NOT NULL)
+        AND k.source NOT IN ('calendar')
+      ORDER BY k.source_date DESC LIMIT 30
+    `).all() as any[];
+
+    if (recentItems.length === 0) {
+      return { task: '13-episodic-extraction', status: 'skipped', duration_seconds: 0, output: { reason: 'no new items for episodic extraction' } };
+    }
+
+    // Retrieve deep content for the most important items
+    const itemsWithContent: string[] = [];
+    for (const item of recentItems.slice(0, 15)) {
+      let content = `[${item.source}] ${item.title}\n${item.summary}`;
+
+      // Try to get full source content for richer episodic extraction
+      try {
+        const stored = db.prepare('SELECT raw_content FROM knowledge WHERE id = ? AND raw_content IS NOT NULL').get(item.id) as any;
+        if (stored?.raw_content) {
+          content = `[${item.source}] ${item.title}\n\nFULL CONTENT:\n${stored.raw_content.slice(0, 5000)}`;
+        }
+      } catch {}
+
+      const contacts = JSON.parse(item.contacts || '[]');
+      const commits = JSON.parse(item.commitments || '[]');
+      const decisions = JSON.parse(item.decisions || '[]');
+
+      if (contacts.length) content += `\nPeople: ${contacts.join(', ')}`;
+      if (commits.length) content += `\nCommitments: ${commits.join('; ')}`;
+      if (decisions.length) content += `\nDecisions: ${decisions.join('; ')}`;
+      content += `\nProject: ${item.project || 'none'}`;
+      content += `\nDate: ${item.source_date?.slice(0, 10) || '?'}`;
+
+      itemsWithContent.push(content);
+    }
+
+    const prompt = `You are extracting EPISODIC MEMORIES from business communications for Zach Stock (Recapture Insurance MGA, ADHD founder).
+
+Extract experiences that shaped understanding, NOT technical details or generic summaries.
+
+## Extract ONLY these types (priority order):
+
+1. **Strategic Decisions**: What was decided + WHY + what alternatives were rejected
+2. **Commitments**: Specific promises made BY or TO Zach — who owes what to whom, with deadlines
+3. **Relationship Signals**: Trust gained/lost, power dynamics, enthusiasm/cooling detected
+4. **Risks Identified**: Something that could go wrong + why it matters + urgency
+5. **Opportunities**: Connections, deals, introductions that create business value
+6. **Breakthroughs**: Insights that reshape understanding of a deal/relationship/project
+
+## DO NOT Extract:
+- Generic email summaries ("discussed the project")
+- Technical details or file paths
+- Routine scheduling or logistics
+- Automated emails, newsletters, cold outreach
+
+## For each moment, include TEMPORAL BINDING:
+- preceded_by: What led to this moment
+- enables: What becomes possible because of it
+- cascade: What downstream effects it has on other projects/people
+
+ITEMS TO ANALYZE:
+${itemsWithContent.join('\n\n---\n\n')}
+
+Return JSON array:
+[{
+  "source_index": 0,
+  "moment_type": "strategic_decision|commitment|relationship_signal|risk_identified|opportunity|breakthrough",
+  "what_happened": "specific event with names and details",
+  "why_it_matters": "business significance — dollars, relationships, deadlines",
+  "consequence": "how this changes the situation going forward",
+  "preceded_by": "what led to this",
+  "enables": "what becomes possible",
+  "cascade": "downstream effects on other projects/people",
+  "project": "project name or null",
+  "entity_name": "primary person involved or null",
+  "confidence": 0.0-1.0,
+  "source_quote": "exact text from the source that supports this moment"
+}]
+
+Return ONLY significant moments. If an item has nothing episodic, skip it. Quality over quantity — 5 deep moments beats 20 shallow ones.`;
+
+    const response = await callClaude(prompt, 180000);
+    const parsed = tryParseJSON(response);
+
+    let stored = 0;
+    if (parsed && Array.isArray(parsed)) {
+      const { v4: uuid } = await import('uuid');
+
+      for (const moment of parsed) {
+        if (!moment.what_happened || !moment.why_it_matters) continue;
+
+        const sourceItem = recentItems[moment.source_index || 0];
+        const entityId = moment.entity_name ? (
+          db.prepare("SELECT id FROM entities WHERE canonical_name = ?").get(moment.entity_name) as any
+        )?.id : null;
+
+        db.prepare(`
+          INSERT INTO episodic_moments (id, source_item_id, entity_id, project, moment_type,
+            what_happened, why_it_matters, consequence, preceded_by, enables, cascade,
+            confidence, source_quote)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          uuid(),
+          sourceItem?.id || null,
+          entityId,
+          moment.project || sourceItem?.project || null,
+          moment.moment_type || 'breakthrough',
+          moment.what_happened,
+          moment.why_it_matters,
+          moment.consequence || null,
+          moment.preceded_by || null,
+          moment.enables || null,
+          moment.cascade || null,
+          moment.confidence || 0.8,
+          moment.source_quote || null,
+        );
+        stored++;
+      }
+    }
+
+    return {
+      task: '13-episodic-extraction',
+      status: 'success',
+      duration_seconds: (Date.now() - start) / 1000,
+      output: { items_analyzed: recentItems.length, moments_extracted: stored },
+    };
+  } catch (err: any) {
+    return { task: '13-episodic-extraction', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
 async function task12MeetingPrep(db: Database.Database): Promise<TaskResult> {
   const start = Date.now();
   try {
