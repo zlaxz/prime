@@ -764,11 +764,11 @@ server.tool(
     try {
       const { google } = await import('googleapis');
       const oauth2Client = new google.auth.OAuth2(
-        process.env.GOOGLE_CLIENT_ID || '',
-        process.env.GOOGLE_CLIENT_SECRET || '',
+        getConfig(db, 'google_client_id') || process.env.GOOGLE_CLIENT_ID || '',
+        getConfig(db, 'google_client_secret') || process.env.GOOGLE_CLIENT_SECRET || '',
         'http://localhost:9876/callback'
       );
-      oauth2Client.setCredentials(tokens);
+      oauth2Client.setCredentials(typeof tokens === 'string' ? JSON.parse(tokens) : tokens);
 
       const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
 
@@ -973,37 +973,47 @@ server.tool(
       let result = '';
 
       if (action.type === 'email' && payload.to) {
-        // Use existing Gmail send capability
-        const { getConfig } = await import('../db.js');
+        // Delegate to sendEmail from gmail.ts — handles token refresh, scope check, logging
+        const { sendEmail } = await import('../connectors/gmail.js');
+        const sendResult = await sendEmail(db, {
+          to: payload.to,
+          subject: payload.subject || 'Follow up',
+          body: payload.body || '',
+          cc: payload.cc,
+        });
+        if (sendResult.success) {
+          result = `✓ Email sent to ${payload.to}\nSubject: ${payload.subject}`;
+        } else {
+          throw new Error(sendResult.error || 'Email send failed');
+        }
+      } else if (action.type === 'calendar' && payload.title) {
+        // Actually create the calendar event via Google Calendar API
         const { google } = await import('googleapis');
-
         const tokens = getConfig(db, 'gmail_tokens');
-        const email = getConfig(db, 'gmail_email');
-        if (!tokens) throw new Error('Gmail not connected');
-
+        if (!tokens) throw new Error('Calendar not connected');
         const oauth2 = new google.auth.OAuth2(
-          getConfig(db, 'google_client_id'),
-          getConfig(db, 'google_client_secret'),
+          getConfig(db, 'google_client_id') || process.env.GOOGLE_CLIENT_ID || '',
+          getConfig(db, 'google_client_secret') || process.env.GOOGLE_CLIENT_SECRET || '',
           'http://localhost:9876/callback'
         );
         oauth2.setCredentials(typeof tokens === 'string' ? JSON.parse(tokens) : tokens);
-        const gmail = google.gmail({ version: 'v1', auth: oauth2 });
+        const calendar = google.calendar({ version: 'v3', auth: oauth2 });
 
-        const rawMessage = [
-          `From: ${email}`,
-          `To: ${payload.to}`,
-          payload.cc ? `Cc: ${payload.cc}` : '',
-          `Subject: ${payload.subject || 'Follow up'}`,
-          '',
-          payload.body || '',
-        ].filter(Boolean).join('\r\n');
+        const startTime = payload.start_time ? new Date(payload.start_time) : new Date(Date.now() + 24 * 3600000); // default: tomorrow
+        const duration = payload.duration_min || 30;
+        const endTime = new Date(startTime.getTime() + duration * 60000);
 
-        const encoded = Buffer.from(rawMessage).toString('base64url');
-        await gmail.users.messages.send({ userId: 'me', requestBody: { raw: encoded } });
-
-        result = `✓ Email sent to ${payload.to}\nSubject: ${payload.subject}`;
-      } else if (action.type === 'calendar' && payload.title) {
-        result = `✓ Calendar action noted: "${payload.title}"\n(Full calendar integration: use prime_schedule_meeting for detailed scheduling)`;
+        const event = await calendar.events.insert({
+          calendarId: 'primary',
+          requestBody: {
+            summary: payload.title,
+            description: payload.description || action.reasoning || '',
+            start: { dateTime: startTime.toISOString() },
+            end: { dateTime: endTime.toISOString() },
+            attendees: payload.attendees?.map((e: string) => ({ email: e })),
+          },
+        });
+        result = `✓ Calendar event created: "${payload.title}"\nWhen: ${startTime.toLocaleString()}\nDuration: ${duration} min${event.data.htmlLink ? '\nLink: ' + event.data.htmlLink : ''}`;
       } else if (action.type === 'reminder') {
         result = `✓ Reminder acknowledged: "${payload.text || action.summary}"`;
       } else {
