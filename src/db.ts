@@ -421,6 +421,33 @@ function initSchema(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_staged_actions_status ON staged_actions(status);
 
+    -- ============================================================
+    -- Episodic Moments — understanding, not summarization
+    -- Adapted from December 2025 memory architecture (Obsidian/memoryplan)
+    -- Captures WHY + temporal binding + consequence, not just WHAT
+    -- ============================================================
+    CREATE TABLE IF NOT EXISTS episodic_moments (
+      id TEXT PRIMARY KEY,
+      source_item_id TEXT,                     -- link to knowledge item that produced this moment
+      entity_id TEXT,                          -- entity this moment is about (if applicable)
+      project TEXT,                            -- project context
+      moment_type TEXT NOT NULL,               -- 'strategic_decision', 'commitment', 'relationship_signal', 'risk_identified', 'opportunity', 'user_correction', 'breakthrough'
+      what_happened TEXT NOT NULL,             -- specific event
+      why_it_matters TEXT NOT NULL,            -- business significance
+      consequence TEXT,                        -- how this changes the situation
+      preceded_by TEXT,                        -- temporal: what led to this
+      enables TEXT,                            -- temporal: what this makes possible
+      cascade TEXT,                            -- temporal: downstream effects
+      confidence REAL DEFAULT 0.8,
+      source_quote TEXT,                       -- exact quote from source (provenance)
+      created_at TEXT DEFAULT (datetime('now')),
+      expires_at TEXT                          -- some moments become stale
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_episodic_entity ON episodic_moments(entity_id);
+    CREATE INDEX IF NOT EXISTS idx_episodic_project ON episodic_moments(project);
+    CREATE INDEX IF NOT EXISTS idx_episodic_type ON episodic_moments(moment_type);
+
     -- Index on source for efficient view filtering
     CREATE INDEX IF NOT EXISTS idx_knowledge_source ON knowledge(source);
   `);
