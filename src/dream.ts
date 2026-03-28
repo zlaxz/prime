@@ -218,6 +218,119 @@ Return ONLY this JSON (no other text):
   }
 }
 
+// ── Task 12: Proactive Meeting Prep ──────────────────────────
+// Scans calendar for meetings in the next 48h.
+// For each meeting, builds a prep brief from entity history + source retrieval.
+
+async function task12MeetingPrep(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    const now = new Date();
+    const in48h = new Date(now.getTime() + 48 * 3600000);
+
+    // Find upcoming meetings from calendar items
+    const meetings = db.prepare(`
+      SELECT k.title, k.summary, k.contacts, k.source_date, k.source_ref, k.metadata
+      FROM knowledge_primary k
+      WHERE k.source = 'calendar'
+        AND k.source_date >= ? AND k.source_date <= ?
+      ORDER BY k.source_date ASC
+    `).all(now.toISOString(), in48h.toISOString()) as any[];
+
+    if (meetings.length === 0) {
+      return { task: '12-meeting-prep', status: 'skipped', duration_seconds: 0, output: { reason: 'no meetings in next 48h' } };
+    }
+
+    const preps: any[] = [];
+
+    for (const meeting of meetings.slice(0, 3)) { // max 3 meetings
+      const contacts = JSON.parse(meeting.contacts || '[]')
+        .filter((c: string) => !c.toLowerCase().includes('zach stock'));
+
+      if (contacts.length === 0) continue;
+
+      // For each attendee, pull their full entity context
+      const attendeeContexts = contacts.slice(0, 3).map((name: string) => {
+        const entity = db.prepare(`
+          SELECT e.id, e.canonical_name, e.user_label, e.relationship_type, e.email, e.domain
+          FROM entities e
+          LEFT JOIN entity_aliases ea ON e.id = ea.entity_id
+          WHERE e.canonical_name = ? OR ea.alias_normalized = ?
+          LIMIT 1
+        `).get(name, name.toLowerCase().replace(/[^a-z\s-]/g, '').trim()) as any;
+
+        if (!entity) return `${name}: no entity profile`;
+
+        const recentItems = db.prepare(`
+          SELECT k.title, k.source, k.source_date, k.summary
+          FROM knowledge_primary k
+          JOIN entity_mentions em ON k.id = em.knowledge_item_id
+          WHERE em.entity_id = ?
+          ORDER BY k.source_date DESC LIMIT 5
+        `).all(entity.id) as any[];
+
+        const commits = db.prepare(`
+          SELECT text, state, due_date FROM commitments
+          WHERE (owner LIKE ? OR assigned_to LIKE ?) AND state IN ('active', 'overdue')
+        `).all(`%${entity.canonical_name}%`, `%${entity.canonical_name}%`) as any[];
+
+        return `${entity.canonical_name} [${entity.user_label || entity.relationship_type || '?'}] @ ${entity.domain || '?'}
+  Recent: ${recentItems.map((i: any) => i.source_date?.slice(0, 10) + ' ' + i.title?.slice(0, 50)).join(' | ')}
+  Open commitments: ${commits.map((c: any) => c.text?.slice(0, 60)).join('; ') || 'none'}`;
+      }).join('\n\n');
+
+      const meetingTime = new Date(meeting.source_date);
+      const hoursUntil = Math.round((meetingTime.getTime() - now.getTime()) / 3600000);
+
+      const prepPrompt = `Generate a meeting prep brief for Zach Stock (Recapture Insurance MGA).
+
+MEETING: ${meeting.title}
+WHEN: ${meetingTime.toLocaleString()} (${hoursUntil} hours from now)
+ATTENDEES:
+${attendeeContexts}
+
+Based on the attendee history and relationship context:
+1. What is the likely PURPOSE of this meeting?
+2. What happened in the LAST interaction with each attendee?
+3. What COMMITMENTS are open between Zach and these people?
+4. What should Zach PREPARE or BRING to this meeting?
+5. What OUTCOME should Zach aim for?
+6. Any RISKS or sensitivities to be aware of?
+
+Be specific and actionable. This is a 60-second read before the meeting.
+Return plain text, not JSON.`;
+
+      try {
+        const brief = await callClaude(prepPrompt, 60000);
+        if (brief && brief.length > 50) {
+          preps.push({
+            meeting: meeting.title,
+            time: meeting.source_date,
+            attendees: contacts,
+            brief,
+          });
+        }
+      } catch {}
+    }
+
+    if (preps.length > 0) {
+      db.prepare(`
+        INSERT OR REPLACE INTO graph_state (key, value, updated_at)
+        VALUES ('meeting_preps', ?, datetime('now'))
+      `).run(JSON.stringify(preps));
+    }
+
+    return {
+      task: '12-meeting-prep',
+      status: 'success',
+      duration_seconds: (Date.now() - start) / 1000,
+      output: { meetings_found: meetings.length, preps_generated: preps.length },
+    };
+  } catch (err: any) {
+    return { task: '12-meeting-prep', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
 async function task03CommitmentCheck(db: Database.Database): Promise<TaskResult> {
   const start = Date.now();
   try {
