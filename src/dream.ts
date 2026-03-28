@@ -1715,6 +1715,12 @@ export async function runDreamPipeline(
   results.push(r12);
   console.log(`    ${r12.status === 'success' ? '✓' : r12.status === 'skipped' ? '○' : '✗'} ${r12.status} (${r12.duration_seconds.toFixed(1)}s)${r12.output ? ` — ${JSON.stringify(r12.output).slice(0, 100)}` : ''}`);
 
+  // Task 13: Episodic Memory Extraction (always runs — builds understanding, not summaries)
+  console.log('  Task 13: Episodic memory extraction (LLM)...');
+  const r13 = await task13EpisodicExtraction(db);
+  results.push(r13);
+  console.log(`    ${r13.status === 'success' ? '✓' : r13.status === 'skipped' ? '○' : '✗'} ${r13.status} (${r13.duration_seconds.toFixed(1)}s)${r13.output ? ` — ${JSON.stringify(r13.output).slice(0, 100)}` : ''}`);
+
   // ── INTELLIGENCE LAYER (LLM-powered, skip in quick mode) ──────
   if (!options.quick) {
     // Task 06: Entity Understanding — WHO matters and WHY
