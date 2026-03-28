@@ -40,7 +40,7 @@ async function callClaude(prompt: string, timeoutMs: number = 300000): Promise<s
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY; // Force Max subscription OAuth
 
-    const proc = spawn('claude', ['-p', '--model', 'sonnet'], {
+    const proc = spawn('claude', ['-p'], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
       timeout: timeoutMs,
@@ -522,6 +522,338 @@ Return ONLY this JSON array (no other text):
   }
 }
 
+// ── Task 07: Project Understanding ──────────────────────────
+// LLM evaluates each active project with full context: items, people, commitments, timeline
+
+async function task07ProjectUnderstanding(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    const projects = db.prepare(`
+      SELECT project, COUNT(*) as item_count, MAX(source_date) as last_activity,
+        GROUP_CONCAT(DISTINCT source) as sources
+      FROM knowledge
+      WHERE project IS NOT NULL AND project != ''
+      GROUP BY project HAVING item_count >= 3
+      ORDER BY MAX(source_date) DESC LIMIT 15
+    `).all() as any[];
+
+    if (projects.length === 0) {
+      return { task: '07-project-understanding', status: 'skipped', duration_seconds: 0, output: { reason: 'no active projects' } };
+    }
+
+    // Build context for all projects in one prompt
+    const projectContexts = projects.map((proj: any) => {
+      // Key people
+      const people = db.prepare(`
+        SELECT e.canonical_name, e.user_label, e.relationship_type, COUNT(*) as cnt
+        FROM entity_mentions em
+        JOIN knowledge k ON em.knowledge_item_id = k.id
+        JOIN entities e ON em.entity_id = e.id
+        WHERE k.project = ? AND e.type = 'person' AND e.user_dismissed = 0
+          AND e.canonical_name NOT LIKE '%Zach%Stock%'
+        GROUP BY e.id ORDER BY cnt DESC LIMIT 5
+      `).all(proj.project) as any[];
+
+      // Recent items
+      const items = db.prepare(`
+        SELECT title, source, source_date, summary FROM knowledge
+        WHERE project = ? ORDER BY source_date DESC LIMIT 10
+      `).all(proj.project) as any[];
+
+      // Open commitments
+      const commitments = db.prepare(`
+        SELECT text, state, due_date, owner FROM commitments
+        WHERE project = ? AND state IN ('active', 'overdue', 'detected')
+      `).all(proj.project) as any[];
+
+      const daysSince = Math.floor((Date.now() - new Date(proj.last_activity).getTime()) / 86400000);
+
+      return `
+PROJECT: ${proj.project}
+Items: ${proj.item_count} | Last activity: ${daysSince}d ago | Sources: ${proj.sources}
+Key people: ${people.map((p: any) => `${p.canonical_name} [${p.user_label || p.relationship_type || '?'}](${p.cnt})`).join(', ') || 'none'}
+Open commitments: ${commitments.length}
+${commitments.map((c: any) => `  - ${c.text} [${c.state}]${c.due_date ? ' due: ' + c.due_date : ''}`).join('\n') || '  (none)'}
+Recent activity:
+${items.slice(0, 8).map((i: any) => `  ${i.source_date?.slice(0, 10) || '?'} | ${i.source} | ${i.title}`).join('\n')}
+`;
+    }).join('\n---\n');
+
+    const prompt = `You are the AI Chief of Staff for Zach Stock, founder of Recapture Insurance (MGA). Analyze each project and provide a strategic assessment.
+
+For each project, determine:
+1. Current status and momentum (accelerating, steady, stalling, stalled, dead)
+2. What's the single most important next action?
+3. Key risks or blockers
+4. Who is the most critical person to this project right now?
+5. Is anything being neglected that shouldn't be?
+
+PROJECTS:
+${projectContexts}
+
+Return ONLY this JSON array:
+[{
+  "project": "name",
+  "status": "accelerating|steady|stalling|stalled|dead",
+  "status_reasoning": "one sentence why",
+  "next_action": "the single most important thing to do",
+  "risks": ["risk 1", "risk 2"],
+  "critical_person": "name or null",
+  "neglected_items": ["anything being dropped"],
+  "importance": "critical|high|medium|low",
+  "confidence": 0.0-1.0
+}]`;
+
+    const response = await callClaude(prompt, 180000);
+    const parsed = tryParseJSON(response);
+
+    if (parsed && Array.isArray(parsed)) {
+      // Store project profiles in graph_state
+      db.prepare(`
+        INSERT OR REPLACE INTO graph_state (key, value, updated_at)
+        VALUES ('project_profiles', ?, datetime('now'))
+      `).run(JSON.stringify(parsed));
+
+      return {
+        task: '07-project-understanding',
+        status: 'success',
+        duration_seconds: (Date.now() - start) / 1000,
+        output: { projects_evaluated: parsed.length, statuses: parsed.map((p: any) => `${p.project}: ${p.status}`).join(', ') },
+      };
+    }
+
+    return { task: '07-project-understanding', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: 'Could not parse response' };
+  } catch (err: any) {
+    return { task: '07-project-understanding', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
+// ── Task 08: Commitment Verification ────────────────────────
+// LLM reads actual email context to verify if commitments are real, fulfilled, or stale
+
+async function task08CommitmentVerification(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    const commitments = db.prepare(`
+      SELECT c.id, c.text, c.state, c.due_date, c.owner, c.assigned_to, c.project,
+        c.source_item_id
+      FROM commitments c
+      WHERE c.state IN ('active', 'overdue', 'detected')
+      ORDER BY c.due_date ASC LIMIT 30
+    `).all() as any[];
+
+    if (commitments.length === 0) {
+      return { task: '08-commitment-verify', status: 'skipped', duration_seconds: 0, output: { reason: 'no active commitments' } };
+    }
+
+    // For each commitment, get the source context + any recent activity
+    const commitmentContexts = commitments.map((c: any) => {
+      let sourceContext = '';
+      if (c.source_item_id) {
+        const item = db.prepare('SELECT title, summary, source, source_date FROM knowledge WHERE id = ?').get(c.source_item_id) as any;
+        if (item) sourceContext = `Source: ${item.source_date?.slice(0, 10)} | ${item.source} | ${item.title}\n  ${item.summary?.slice(0, 200)}`;
+      }
+
+      // Check for resolution evidence — newer items mentioning same people/project
+      let recentActivity = '';
+      if (c.project) {
+        const recent = db.prepare(`
+          SELECT title, source_date FROM knowledge
+          WHERE project = ? AND source_date > ? ORDER BY source_date DESC LIMIT 3
+        `).all(c.project, c.due_date || '2000-01-01') as any[];
+        if (recent.length > 0) {
+          recentActivity = 'Recent project activity:\n' + recent.map((r: any) => `  ${r.source_date?.slice(0, 10)} | ${r.title}`).join('\n');
+        }
+      }
+
+      return `COMMITMENT: "${c.text}"
+State: ${c.state} | Due: ${c.due_date || 'none'} | Owner: ${c.owner || '?'} | Assigned: ${c.assigned_to || '?'} | Project: ${c.project || '?'}
+${sourceContext}
+${recentActivity}`;
+    }).join('\n---\n');
+
+    const prompt = `Review these business commitments for Zach Stock (Recapture Insurance MGA). For each, determine if it's still valid, has been fulfilled, or should be dropped.
+
+COMMITMENTS:
+${commitmentContexts}
+
+For each commitment, assess:
+1. Is this still a real, active obligation?
+2. Has it likely been fulfilled (based on recent activity)?
+3. Is it stale (so old that following up would be weird)?
+4. What should Zach do about it?
+
+Return ONLY this JSON array:
+[{
+  "text": "commitment text (exact match)",
+  "current_state": "active|fulfilled|stale|invalid",
+  "reasoning": "why this assessment",
+  "recommended_action": "what to do or null",
+  "confidence": 0.0-1.0
+}]`;
+
+    const response = await callClaude(prompt, 180000);
+    const parsed = tryParseJSON(response);
+
+    if (parsed && Array.isArray(parsed)) {
+      let updated = 0;
+      for (const item of parsed) {
+        if (!item.text || !item.current_state) continue;
+
+        // Map to commitment states
+        const stateMap: Record<string, string> = {
+          'fulfilled': 'done', 'stale': 'abandoned', 'invalid': 'abandoned', 'active': 'active'
+        };
+        const newState = stateMap[item.current_state] || item.current_state;
+
+        if (newState !== 'active') {
+          // Find and update the commitment
+          const match = db.prepare(
+            "SELECT id FROM commitments WHERE text = ? AND state IN ('active', 'overdue', 'detected')"
+          ).get(item.text) as any;
+          if (match) {
+            db.prepare("UPDATE commitments SET state = ?, state_changed_at = datetime('now') WHERE id = ?")
+              .run(newState, match.id);
+            updated++;
+          }
+        }
+      }
+
+      // Store full verification results
+      db.prepare(`
+        INSERT OR REPLACE INTO graph_state (key, value, updated_at)
+        VALUES ('commitment_verification', ?, datetime('now'))
+      `).run(JSON.stringify(parsed));
+
+      return {
+        task: '08-commitment-verify',
+        status: 'success',
+        duration_seconds: (Date.now() - start) / 1000,
+        output: { verified: parsed.length, state_changes: updated },
+      };
+    }
+
+    return { task: '08-commitment-verify', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: 'Could not parse response' };
+  } catch (err: any) {
+    return { task: '08-commitment-verify', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
+// ── Task 09: World Narrative Synthesis ───────────────────────
+// LLM takes ALL the intelligence (entity profiles, project profiles, commitment
+// verdicts, alerts) and produces a narrative that tells the STORY of the business.
+// This replaces the SQL-generated world model with something that actually understands.
+
+async function task09WorldNarrative(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    // Gather all intelligence products
+    const entityProfiles = db.prepare(`
+      SELECT ep.*, e.canonical_name, e.email, e.domain
+      FROM entity_profiles ep
+      JOIN entities e ON ep.entity_id = e.id
+      WHERE ep.alert_verdict = 'surface'
+      ORDER BY ep.verdict_confidence DESC
+    `).all() as any[];
+
+    const projectProfiles = (db.prepare(
+      "SELECT value FROM graph_state WHERE key = 'project_profiles'"
+    ).get() as any)?.value;
+    const projects = projectProfiles ? JSON.parse(projectProfiles) : [];
+
+    const commitmentResults = (db.prepare(
+      "SELECT value FROM graph_state WHERE key = 'commitment_verification'"
+    ).get() as any)?.value;
+    const commitments = commitmentResults ? JSON.parse(commitmentResults) : [];
+
+    // Get today's calendar if available
+    const today = new Date().toISOString().slice(0, 10);
+    const calendarItems = db.prepare(`
+      SELECT title, summary, source_date FROM knowledge
+      WHERE source = 'calendar' AND source_date >= ? AND source_date < datetime(?, '+1 day')
+      ORDER BY source_date ASC
+    `).all(today, today) as any[];
+
+    const surfaceAlerts = entityProfiles.map((ep: any) =>
+      `${ep.canonical_name} [${ep.communication_nature}]: ${ep.verdict_reasoning} (${Math.round(ep.verdict_confidence * 100)}% confidence)`
+    ).join('\n');
+
+    const projectSummary = projects.map((p: any) =>
+      `${p.project} [${p.status}]: ${p.status_reasoning}${p.next_action ? ' Next: ' + p.next_action : ''}`
+    ).join('\n');
+
+    const activeCommitments = commitments
+      .filter((c: any) => c.current_state === 'active')
+      .map((c: any) => `- ${c.text}: ${c.reasoning}${c.recommended_action ? ' → ' + c.recommended_action : ''}`)
+      .join('\n');
+
+    const calendarSummary = calendarItems.map((c: any) =>
+      `${c.source_date?.slice(11, 16) || '?'} ${c.title}`
+    ).join('\n');
+
+    const prompt = `You are the AI Chief of Staff synthesizing a daily intelligence briefing for Zach Stock, founder of Recapture Insurance (MGA/insurtech).
+
+Write a concise narrative (not a data dump) that tells Zach what he needs to know TODAY. Write as if you are his most trusted advisor speaking directly to him. Be opinionated — prioritize, recommend, warn.
+
+INTELLIGENCE INPUTS:
+
+PEOPLE NEEDING ATTENTION (${entityProfiles.length}):
+${surfaceAlerts || '(none — all relationships healthy)'}
+
+PROJECTS (${projects.length}):
+${projectSummary || '(no project intelligence yet)'}
+
+ACTIVE COMMITMENTS (${commitments.filter((c: any) => c.current_state === 'active').length}):
+${activeCommitments || '(none verified active)'}
+
+TODAY'S CALENDAR:
+${calendarSummary || '(no calendar events)'}
+
+FORMAT:
+1. **The One Thing** — the single most important item today (if nothing urgent, say so)
+2. **People** — who needs attention and why (max 5, with specific recommended actions)
+3. **Projects** — 1-sentence status on each active project, flag anything stalling
+4. **Commitments** — only ones that are genuinely pending and matter
+5. **Today** — calendar context if relevant
+6. **This Week** — what to be thinking about for the rest of the week
+
+RULES:
+- Be direct, not diplomatic
+- If something is fine, don't mention it (selective silence)
+- Every recommendation must reference specific evidence
+- If you're uncertain, say so — "I think X but I'm not sure because Y"
+- Never pad the briefing with filler — shorter is better
+- Write for someone with ADHD who will skim this in 60 seconds
+
+Return the briefing as plain text (markdown OK). No JSON wrapper.`;
+
+    const narrative = await callClaude(prompt, 180000);
+
+    if (narrative && narrative.length > 100) {
+      // Save as world narrative
+      const narrativePath = join(homedir(), '.prime', 'world-narrative.md');
+      writeFileSync(narrativePath, `# Daily Intelligence Briefing\n_Generated: ${new Date().toLocaleString()}_\n\n${narrative}`);
+
+      // Also store in graph_state for programmatic access
+      db.prepare(`
+        INSERT OR REPLACE INTO graph_state (key, value, updated_at)
+        VALUES ('world_narrative', ?, datetime('now'))
+      `).run(narrative);
+
+      return {
+        task: '09-world-narrative',
+        status: 'success',
+        duration_seconds: (Date.now() - start) / 1000,
+        output: { length: narrative.length, saved_to: narrativePath },
+      };
+    }
+
+    return { task: '09-world-narrative', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: 'Empty narrative' };
+  } catch (err: any) {
+    return { task: '09-world-narrative', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
 // ── Pipeline Runner ─────────────────────────────────────────
 
 export async function runDreamPipeline(
@@ -557,22 +889,42 @@ export async function runDreamPipeline(
   results.push(r03);
   console.log(`    ${r03.status === 'success' ? '✓' : '✗'} ${r03.status} (${r03.duration_seconds.toFixed(1)}s)${r03.output ? ` — ${JSON.stringify(r03.output).slice(0, 100)}` : ''}`);
 
-  // Task 06: Entity Understanding (LLM-powered, skip in quick mode)
+  // ── INTELLIGENCE LAYER (LLM-powered, skip in quick mode) ──────
   if (!options.quick) {
+    // Task 06: Entity Understanding — WHO matters and WHY
     console.log('  Task 06: Entity understanding (LLM)...');
     const r06 = await task06EntityUnderstanding(db);
     results.push(r06);
     console.log(`    ${r06.status === 'success' ? '✓' : r06.status === 'skipped' ? '○' : '✗'} ${r06.status} (${r06.duration_seconds.toFixed(1)}s)${r06.output ? ` — ${JSON.stringify(r06.output).slice(0, 100)}` : ''}`);
+
+    // Task 07: Project Understanding — WHAT's happening and WHERE it's going
+    console.log('  Task 07: Project understanding (LLM)...');
+    const r07 = await task07ProjectUnderstanding(db);
+    results.push(r07);
+    console.log(`    ${r07.status === 'success' ? '✓' : r07.status === 'skipped' ? '○' : '✗'} ${r07.status} (${r07.duration_seconds.toFixed(1)}s)${r07.output ? ` — ${JSON.stringify(r07.output).slice(0, 150)}` : ''}`);
+
+    // Task 08: Commitment Verification — WHAT's real vs stale
+    console.log('  Task 08: Commitment verification (LLM)...');
+    const r08 = await task08CommitmentVerification(db);
+    results.push(r08);
+    console.log(`    ${r08.status === 'success' ? '✓' : r08.status === 'skipped' ? '○' : '✗'} ${r08.status} (${r08.duration_seconds.toFixed(1)}s)${r08.output ? ` — ${JSON.stringify(r08.output).slice(0, 100)}` : ''}`);
   }
 
-  // Task 04: World rebuild (AFTER entity understanding, so world model uses fresh profiles)
-  console.log('  Task 04: Rebuild world model...');
+  // Task 04: Structured world rebuild (SQL data model, used by programmatic consumers)
+  console.log('  Task 04: Rebuild structured world model...');
   const r04 = await task04WorldRebuild(db);
   results.push(r04);
   console.log(`    ${r04.status === 'success' ? '✓' : '✗'} ${r04.status} (${r04.duration_seconds.toFixed(1)}s)${r04.output ? ` — ${JSON.stringify(r04.output).slice(0, 100)}` : ''}`);
 
-  // Task 05: Self-audit (skip in quick mode)
+  // ── SYNTHESIS LAYER (LLM-powered, skip in quick mode) ──────
   if (!options.quick) {
+    // Task 09: World Narrative — the STORY, not the data
+    console.log('  Task 09: Synthesize world narrative (LLM)...');
+    const r09 = await task09WorldNarrative(db);
+    results.push(r09);
+    console.log(`    ${r09.status === 'success' ? '✓' : '✗'} ${r09.status} (${r09.duration_seconds.toFixed(1)}s)${r09.output ? ` — ${JSON.stringify(r09.output).slice(0, 100)}` : ''}`);
+
+    // Task 05: Self-audit — grade OUR OWN work
     console.log('  Task 05: Self-audit...');
     const r05 = await task05SelfAudit(db);
     results.push(r05);
