@@ -161,13 +161,39 @@ export async function retrieveSourceContent(
 ): Promise<RetrievedSource | null> {
   const meta = typeof item.metadata === 'string' ? JSON.parse(item.metadata) : (item.metadata || {});
 
+  // FIRST: Check if raw_content is already stored in the database
+  // This avoids API calls entirely — the content is already on the shelf
+  try {
+    const stored = db.prepare(
+      'SELECT raw_content FROM knowledge WHERE source_ref = ? AND raw_content IS NOT NULL'
+    ).get(item.source_ref) as any;
+    if (stored?.raw_content) {
+      const contentType = item.source === 'fireflies' ? 'meeting_transcript' :
+                          item.source === 'gmail' || item.source === 'gmail-sent' ? 'email_thread' :
+                          item.source === 'claude' || item.source === 'cowork' ? 'conversation' : 'unknown';
+      return {
+        source: item.source,
+        source_ref: item.source_ref,
+        content: stored.raw_content,
+        content_type: contentType as any,
+        retrieved_at: new Date().toISOString(),
+      };
+    }
+  } catch {}
+
+  // FALLBACK: Retrieve via API if raw_content not stored yet
   if (item.source === 'gmail' || item.source === 'gmail-sent') {
-    // source_ref format: "thread:{threadId}"
     const threadId = item.source_ref.replace('thread:', '');
     if (!threadId) return null;
 
     const content = await retrieveGmailThread(db, threadId);
     if (!content) return null;
+
+    // Store for next time (avoid future API calls)
+    try {
+      db.prepare('UPDATE knowledge SET raw_content = ? WHERE source_ref = ?')
+        .run(content, item.source_ref);
+    } catch {}
 
     return {
       source: item.source,

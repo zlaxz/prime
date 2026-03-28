@@ -58,6 +58,8 @@ function initSchema(db: Database.Database) {
       embedding BLOB,
       artifact_path TEXT,
       metadata TEXT DEFAULT '{}',
+      raw_content TEXT,                        -- FULL source content (email body, transcript, conversation)
+      extraction_version INTEGER DEFAULT 1,    -- 1=V1 metadata-only, 2=V2 with quotes, 3=V3 from raw_content
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
