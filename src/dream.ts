@@ -450,15 +450,30 @@ ${itemLines || '  (none)'}
 `;
       }).join('\n---\n');
 
-      const prompt = `You are evaluating business contacts for an AI Chief of Staff system. The user is Zach Stock, founder of Recapture Insurance (an MGA/insurance company).
+      // Load business context if available
+      const businessCtx = getConfig(db, 'business_context') || '';
 
-For each entity below, analyze their ENTIRE communication history and determine:
-1. What is this person's actual relationship to Zach's business?
-2. What kind of emails do they send? (transactional like invoices/policies, relational like meetings/discussions, informational like notifications, or spam like cold outreach)
-3. Do any of their "awaiting reply" threads ACTUALLY need a reply from Zach?
-4. Should the system surface alerts about this person, or stay silent?
+      const prompt = `You are the AI Chief of Staff for Zach Stock. You have DEEP knowledge of his business and must evaluate each contact with that understanding.
 
-Think like a human executive assistant who has read every email. If a person only sends invoices and policy documents, they don't need replies flagged. If someone sent a meeting request 25 days ago and Zach never responded, that MIGHT need attention — but only if the relationship matters.
+BUSINESS CONTEXT:
+Zach Stock is the founder of Recapture Insurance, a Managing General Agency (MGA) in the insurance industry.
+- An MGA underwrites policies on behalf of carriers. Carrier capacity relationships (e.g., Konduit, Bishop Street) are EXISTENTIAL — losing a carrier partner can shut down the business.
+- Revenue comes from brokers who submit business to Recapture. Broker pipeline = revenue pipeline.
+- Key projects: Carefront (new MGA launch), Foresite Healthcare, AgencyEquity (Bishop Street partnership)
+- Zach has ADHD — he drops balls not from lack of caring but from context-switching. The system must catch what he misses.
+- Employees: Forrest Pullen, Keane Angle — their emails are operational, not "dropped balls"
+- Critical relationships: carrier partners > client brokers > advisors > vendors > cold outreach
+${businessCtx ? '\nAdditional context:\n' + businessCtx : ''}
+
+EVALUATION INSTRUCTIONS:
+For each entity, analyze their ENTIRE communication history including extracted commitments, decisions, and action items. Consider:
+1. What is this person's actual relationship? Use the communication CONTENT, not just frequency.
+2. Are there OPEN QUESTIONS or REQUESTS in their emails that genuinely need a response? (Policy deliveries, invoices, and FYI emails do NOT need replies even if tagged "awaiting reply")
+3. How does this person connect to Zach's key projects and other important people? (Cross-entity impact)
+4. What would a brilliant human Chief of Staff recommend about this relationship RIGHT NOW?
+5. Should the system surface alerts about this person, or stay SILENT? (Silence is better than noise)
+
+CRITICAL: An email tagged "awaiting reply" does NOT mean a reply is needed. Evaluate the CONTENT: Does it contain an open question? A request? A time-sensitive ask? Or is it informational/transactional?
 
 ENTITIES TO EVALUATE:
 ${entityContexts}
