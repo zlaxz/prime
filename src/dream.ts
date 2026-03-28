@@ -820,6 +820,113 @@ Return ONLY this JSON array:
   }
 }
 
+// ── Task 10: Consistency Verification ────────────────────────
+// Cross-checks ALL derived data against primary sources.
+// Every table that stores a project/entity association is verified.
+// Mismatches are auto-corrected to match the source item.
+
+async function task10ConsistencyVerification(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    let fixes = { commitments: 0, total_checked: 0, mismatches: 0 };
+
+    // ── 1. Commitment-source project consistency ──────────────
+    // If commitment.project != source_item.project, auto-correct
+    const commitMismatches = db.prepare(`
+      SELECT c.id, c.text, c.project as commit_project,
+        k.project as source_project, k.title as source_title
+      FROM commitments c
+      JOIN knowledge k ON c.detected_from = k.id
+      WHERE c.project IS NOT NULL AND k.project IS NOT NULL
+        AND c.project != k.project
+        AND c.state IN ('active', 'overdue', 'detected')
+    `).all() as any[];
+
+    for (const m of commitMismatches) {
+      // Only auto-fix if names are genuinely different (not just case/variant)
+      const commitNorm = m.commit_project.toLowerCase().replace(/[^a-z]/g, '');
+      const sourceNorm = m.source_project.toLowerCase().replace(/[^a-z]/g, '');
+      if (commitNorm !== sourceNorm) {
+        db.prepare('UPDATE commitments SET project = ? WHERE id = ?')
+          .run(m.source_project, m.id);
+        fixes.commitments++;
+        fixes.mismatches++;
+      }
+    }
+    fixes.total_checked += commitMismatches.length;
+
+    // ── 2. Orphaned commitments (source item doesn't exist) ───
+    const orphanedCommits = db.prepare(`
+      SELECT c.id, c.text FROM commitments c
+      WHERE c.detected_from IS NOT NULL
+        AND c.detected_from NOT IN (SELECT id FROM knowledge)
+        AND c.state IN ('active', 'overdue', 'detected')
+    `).all() as any[];
+
+    for (const o of orphanedCommits) {
+      db.prepare("UPDATE commitments SET state = 'abandoned', state_changed_at = datetime('now') WHERE id = ?")
+        .run(o.id);
+      fixes.mismatches++;
+    }
+
+    // ── 3. Facts-source consistency ──────────────────────────
+    const factMismatches = db.prepare(`
+      SELECT f.id, f.project as fact_project,
+        k.project as source_project
+      FROM facts f
+      JOIN knowledge k ON f.source_item_id = k.id
+      WHERE f.project IS NOT NULL AND k.project IS NOT NULL
+        AND f.project != k.project
+    `).all() as any[];
+
+    let factFixes = 0;
+    for (const m of factMismatches) {
+      const fNorm = m.fact_project.toLowerCase().replace(/[^a-z]/g, '');
+      const sNorm = m.source_project.toLowerCase().replace(/[^a-z]/g, '');
+      if (fNorm !== sNorm) {
+        db.prepare('UPDATE facts SET project = ? WHERE id = ?').run(m.source_project, m.id);
+        factFixes++;
+      }
+    }
+    fixes.total_checked += factMismatches.length;
+
+    // ── 4. Build verified entity-project map ──────────────────
+    // This is the GROUND TRUTH for who is involved in what project.
+    // Stored in graph_state for task 09 to use.
+    const entityProjectMap = db.prepare(`
+      SELECT e.canonical_name, k.project, COUNT(*) as evidence_count
+      FROM entity_mentions em
+      JOIN knowledge_primary k ON em.knowledge_item_id = k.id
+      JOIN entities e ON em.entity_id = e.id
+      WHERE k.project IS NOT NULL AND k.project != ''
+        AND e.user_dismissed = 0 AND e.type = 'person'
+        AND e.canonical_name NOT LIKE '%Zach%Stock%'
+      GROUP BY e.canonical_name, k.project
+      HAVING evidence_count >= 2
+      ORDER BY e.canonical_name, evidence_count DESC
+    `).all() as any[];
+
+    db.prepare(`
+      INSERT OR REPLACE INTO graph_state (key, value, updated_at)
+      VALUES ('verified_entity_projects', ?, datetime('now'))
+    `).run(JSON.stringify(entityProjectMap));
+
+    return {
+      task: '10-consistency-verify',
+      status: 'success',
+      duration_seconds: (Date.now() - start) / 1000,
+      output: {
+        commitments_fixed: fixes.commitments,
+        facts_fixed: factFixes,
+        orphaned_commits: orphanedCommits.length,
+        entity_project_pairs: entityProjectMap.length,
+      },
+    };
+  } catch (err: any) {
+    return { task: '10-consistency-verify', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
 // ── Task 09: World Narrative Synthesis ───────────────────────
 // LLM takes ALL the intelligence (entity profiles, project profiles, commitment
 // verdicts, alerts) and produces a narrative that tells the STORY of the business.
@@ -854,6 +961,15 @@ async function task09WorldNarrative(db: Database.Database): Promise<TaskResult> 
       WHERE source = 'calendar' AND source_date >= ? AND source_date < datetime(?, '+1 day')
       ORDER BY source_date ASC
     `).all(today, today) as any[];
+
+    // Load verified entity-project map (from task 10 consistency verification)
+    const verifiedEPRaw = (db.prepare(
+      "SELECT value FROM graph_state WHERE key = 'verified_entity_projects'"
+    ).get() as any)?.value;
+    const verifiedEP = verifiedEPRaw ? JSON.parse(verifiedEPRaw) : [];
+    const entityProjectBlock = verifiedEP.map((ep: any) =>
+      `${ep.canonical_name} → ${ep.project} (${ep.evidence_count} items)`
+    ).join('\n');
 
     const surfaceAlerts = entityProfiles.map((ep: any) =>
       `${ep.canonical_name} [${ep.communication_nature}]: ${ep.verdict_reasoning} (${Math.round(ep.verdict_confidence * 100)}% confidence)`
@@ -896,13 +1012,17 @@ ${verifiedFacts.slice(0, 4000) || '(no world model available)'}
 USER-VERIFIED CORRECTIONS (ABSOLUTE — NEVER contradict these):
 ${correctionBlock || '(none)'}
 
+VERIFIED ENTITY-PROJECT ASSOCIATIONS (from primary sources — ONLY associate people with projects listed here):
+${entityProjectBlock || '(no verified associations)'}
+RULE: If a person does NOT appear next to a project in this list, do NOT associate them with that project. This is the ground truth.
+
 ENTITY INTELLIGENCE (from dream analysis — useful but flag uncertainty):
 ${surfaceAlerts || '(none — all relationships healthy)'}
 
 PROJECT INTELLIGENCE (from dream analysis):
 ${projectSummary || '(no project intelligence yet)'}
 
-ACTIVE COMMITMENTS:
+ACTIVE COMMITMENTS (verified against source items):
 ${activeCommitments || '(none verified active)'}
 
 TODAY'S CALENDAR:
@@ -1005,7 +1125,13 @@ export async function runDreamPipeline(
     console.log(`    ${r08.status === 'success' ? '✓' : r08.status === 'skipped' ? '○' : '✗'} ${r08.status} (${r08.duration_seconds.toFixed(1)}s)${r08.output ? ` — ${JSON.stringify(r08.output).slice(0, 100)}` : ''}`);
   }
 
-  // Task 04: Structured world rebuild (SQL data model, used by programmatic consumers)
+  // Task 10: Consistency verification (runs BEFORE world rebuild to fix derived data)
+  console.log('  Task 10: Consistency verification...');
+  const r10 = await task10ConsistencyVerification(db);
+  results.push(r10);
+  console.log(`    ${r10.status === 'success' ? '✓' : '✗'} ${r10.status} (${r10.duration_seconds.toFixed(1)}s)${r10.output ? ` — ${JSON.stringify(r10.output).slice(0, 150)}` : ''}`);
+
+  // Task 04: Structured world rebuild (SQL data model, uses verified data from task 10)
   console.log('  Task 04: Rebuild structured world model...');
   const r04 = await task04WorldRebuild(db);
   results.push(r04);
