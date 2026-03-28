@@ -2605,4 +2605,105 @@ program
     console.log('  ✓ Opened in browser\n');
   });
 
+// ============================================================
+// recall re-extract — re-extract V1 items with actual source content
+// ============================================================
+program
+  .command('re-extract')
+  .description('Re-extract V1 items using actual source content via APIs. Fixes hallucinated extractions.')
+  .option('--source <source>', 'Only re-extract items from this source (gmail, otter, etc.)')
+  .option('--limit <n>', 'Max items to process', '50')
+  .option('--dry-run', 'Show what would be re-extracted without changing anything')
+  .action(async (opts: any) => {
+    const { getDb, getConfig } = await import('./db.js');
+    const { retrieveGmailThread } = await import('./source-retrieval.js');
+    const { extractIntelligenceV2, toV1 } = await import('./ai/extract.js');
+    const { generateEmbedding } = await import('./embedding.js');
+    const db = getDb();
+    const apiKey = getConfig(db, 'openai_api_key');
+    const limit = parseInt(opts.limit) || 50;
+
+    // Find V1 items needing re-extraction
+    let sql = `SELECT id, title, source, source_ref, metadata FROM knowledge_primary
+      WHERE (extraction_version IS NULL OR extraction_version = 1)`;
+    if (opts.source) sql += ` AND source = '${opts.source}'`;
+    sql += ` ORDER BY source_date DESC LIMIT ${limit}`;
+
+    const items = db.prepare(sql).all() as any[];
+    console.log(`\n  Found ${items.length} V1 items to re-extract\n`);
+
+    if (opts.dryRun) {
+      for (const item of items) console.log(`  [${item.source}] ${item.title?.slice(0, 70)}`);
+      console.log(`\n  Dry run: ${items.length} items would be re-extracted\n`);
+      return;
+    }
+
+    let reExtracted = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    for (const item of items) {
+      try {
+        let fullContent: string | null = null;
+
+        // Retrieve actual source content via API
+        if (item.source === 'gmail' || item.source === 'gmail-sent') {
+          const threadId = item.source_ref?.replace('thread:', '');
+          if (threadId) {
+            fullContent = await retrieveGmailThread(db, threadId);
+          }
+        }
+        // TODO: Add Fireflies, Claude, Otter retrieval here
+
+        if (!fullContent) {
+          skipped++;
+          continue;
+        }
+
+        // Re-extract with V2 using actual content
+        const extV2 = await extractIntelligenceV2(fullContent, apiKey);
+        const ext = toV1(extV2);
+
+        // Generate new embedding from better summary
+        const embText = `${ext.title}\n${ext.summary}`;
+        const embedding = apiKey ? await generateEmbedding(embText, apiKey) : null;
+        const embBlob = embedding ? Buffer.from(new Float32Array(embedding).buffer) : null;
+
+        // Update the item
+        db.prepare(`UPDATE knowledge SET
+          title = ?, summary = ?, contacts = ?, organizations = ?,
+          decisions = ?, commitments = ?, action_items = ?, tags = ?,
+          project = ?, importance = ?, extraction_version = 3,
+          ${embBlob ? 'embedding = ?,' : ''} metadata = json_set(COALESCE(metadata, '{}'), '$.extraction_v2', ?),
+          updated_at = datetime('now')
+          WHERE id = ?`
+        ).run(
+          ext.title, ext.summary,
+          JSON.stringify(ext.contacts), JSON.stringify(ext.organizations),
+          JSON.stringify(ext.decisions), JSON.stringify(ext.commitments),
+          JSON.stringify(ext.action_items), JSON.stringify(ext.tags),
+          ext.project, ext.importance,
+          ...(embBlob ? [embBlob] : []),
+          JSON.stringify(extV2),
+          item.id,
+        );
+
+        reExtracted++;
+        process.stdout.write(`\r  Re-extracted: ${reExtracted}/${items.length} (${failed} failed, ${skipped} skipped)`);
+
+        // Small delay to avoid Gmail rate limits
+        await new Promise(r => setTimeout(r, 500));
+      } catch (err: any) {
+        failed++;
+      }
+    }
+
+    console.log(`\n\n  ✓ Re-extraction complete: ${reExtracted} updated, ${failed} failed, ${skipped} skipped\n`);
+
+    if (reExtracted > 0) {
+      console.log('  Run "recall build-entities" to rebuild the entity graph from clean extractions.');
+      console.log('  Run "recall dream" to regenerate the world model.\n');
+    }
+  });
+
 program.parse();
