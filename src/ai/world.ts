@@ -160,7 +160,7 @@ export function generateWorldModel(db: Database.Database): WorldModel {
     const projectPeople = db.prepare(`
       SELECT e.canonical_name, COUNT(*) as cnt
       FROM entity_mentions em
-      JOIN knowledge k ON em.knowledge_item_id = k.id
+      JOIN knowledge_primary k ON em.knowledge_item_id = k.id
       JOIN entities e ON em.entity_id = e.id
       WHERE k.project = ? AND e.type = 'person' AND e.user_dismissed = 0 AND e.canonical_name != 'Zach Stock'
       GROUP BY e.id ORDER BY cnt DESC LIMIT 5
@@ -219,7 +219,7 @@ export function generateWorldModel(db: Database.Database): WorldModel {
     SELECT e.canonical_name, GROUP_CONCAT(DISTINCT k.project) as projects, COUNT(DISTINCT k.project) as proj_count, COUNT(*) as total
     FROM entity_mentions em
     JOIN entities e ON em.entity_id = e.id
-    JOIN knowledge k ON em.knowledge_item_id = k.id
+    JOIN knowledge_primary k ON em.knowledge_item_id = k.id
     WHERE e.type = 'person' AND e.user_dismissed = 0 AND k.project IS NOT NULL
       AND e.canonical_name != 'Zach Stock'
     GROUP BY e.id
