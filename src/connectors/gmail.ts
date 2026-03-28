@@ -173,7 +173,8 @@ export async function scanGmail(
         const thread = await gmail.users.threads.get({
           userId: 'me',
           id: threadMeta.id!,
-          format: 'full',
+          format: 'metadata',
+          metadataHeaders: ['From', 'To', 'Subject', 'Date'],
         });
         const messages = thread.data.messages || [];
         if (messages.length === 0) return null;
@@ -186,42 +187,9 @@ export async function scanGmail(
         const lastDate = getHeader(last, 'Date');
         const snippet = last.snippet || '';
 
-        // Extract FULL email bodies for raw_content storage
-        const rawParts: string[] = [];
-        for (const msg of messages) {
-          const msgFrom = msg.payload?.headers?.find(h => h.name === 'From')?.value || '';
-          const msgDate = msg.payload?.headers?.find(h => h.name === 'Date')?.value || '';
-          let body = '';
-          if (msg.payload?.body?.data) {
-            body = Buffer.from(msg.payload.body.data, 'base64').toString('utf-8');
-          } else if (msg.payload?.parts) {
-            for (const part of msg.payload.parts) {
-              if (part.mimeType === 'text/plain' && part.body?.data) {
-                body = Buffer.from(part.body.data, 'base64').toString('utf-8');
-                break;
-              }
-            }
-            if (!body) {
-              for (const part of msg.payload.parts) {
-                if (part.mimeType === 'text/html' && part.body?.data) {
-                  body = Buffer.from(part.body.data, 'base64').toString('utf-8')
-                    .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-                  break;
-                }
-              }
-            }
-          }
-          rawParts.push(`--- ${msgFrom} (${msgDate}) ---\n${body.slice(0, 8000)}`);
-        }
-        const rawContent = rawParts.join('\n\n');
-
-        // Build extraction content from actual email bodies (not just metadata)
-        const contentForExtraction = `Email thread: "${subject}"\nFrom: ${from}\n${messages.length} messages\n\n${rawContent.slice(0, 12000)}`;
-
         return {
           id: threadMeta.id!,
-          content: contentForExtraction,
-          rawContent,
+          content: `Email thread: "${subject}"\nFrom: ${from}\n${messages.length} messages, last from ${lastFrom} on ${lastDate}\nLast message: ${snippet}`,
           subject, lastFrom, lastDate,
           messageCount: messages.length,
         };
@@ -301,11 +269,9 @@ export async function scanGmail(
 
       insertKnowledge(db, item);
 
-      // Store FULL raw content — the actual email bodies, never lossy
-      if (td.rawContent) {
-        db.prepare('UPDATE knowledge SET raw_content = ?, extraction_version = ? WHERE source_ref = ?')
-          .run(td.rawContent, extV2 ? 2 : 1, `thread:${td.id}`);
-      }
+      // Mark extraction version for future re-extraction tracking
+      db.prepare('UPDATE knowledge SET extraction_version = ? WHERE source_ref = ?')
+        .run(extV2 ? 2 : 1, `thread:${td.id}`);
       extracted++;
       if (extracted % 10 === 0 || extracted === threadData.length) {
         process.stdout.write(`\r  Extracted: ${extracted}/${threadData.length}`);
