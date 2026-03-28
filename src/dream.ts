@@ -755,6 +755,58 @@ Return ONLY this JSON array:
         VALUES ('project_profiles', ?, datetime('now'))
       `).run(JSON.stringify(parsed));
 
+      // CROSS-PROJECT SYNTHESIS: look for connections, conflicts, opportunities
+      try {
+        const crossProjectPrompt = `You have analyzed ${parsed.length} projects for Zach Stock (Recapture Insurance MGA). Now think ACROSS projects.
+
+PROJECT SUMMARIES:
+${parsed.map((p: any) => `${p.project} [${p.status}]: ${p.status_reasoning}\n  Next: ${p.next_action}\n  Critical: ${p.critical_person}\n  Risks: ${(p.risks || []).join('; ')}`).join('\n\n')}
+
+ENTITY-PROJECT MAP (who works across which projects):
+${(() => {
+  const verifiedEP = db.prepare("SELECT value FROM graph_state WHERE key = 'verified_entity_projects'").get() as any;
+  if (!verifiedEP) return '(not available)';
+  const data = JSON.parse(verifiedEP.value);
+  // Find people in 2+ projects
+  const personProjects = new Map<string, string[]>();
+  for (const ep of data) {
+    if (!personProjects.has(ep.canonical_name)) personProjects.set(ep.canonical_name, []);
+    personProjects.get(ep.canonical_name)!.push(ep.project);
+  }
+  return [...personProjects.entries()]
+    .filter(([_, projs]) => projs.length >= 2)
+    .map(([name, projs]) => `${name}: ${projs.join(', ')}`)
+    .join('\n');
+})()}
+
+Think like a strategic advisor. Identify:
+1. CONNECTIONS: People or resources in one project that could accelerate another
+2. CONFLICTS: Where projects compete for the same resource (time, person, capital)
+3. OPPORTUNITIES: Combinations of projects that create value neither has alone
+4. SEQUENCE: What should be done in what order given dependencies
+5. LEVERAGE: How success in one project creates leverage for another
+
+Return JSON:
+{
+  "connections": [{"from": "project A", "to": "project B", "through": "person/resource", "insight": "why this matters"}],
+  "conflicts": [{"projects": ["A", "B"], "resource": "what they compete for", "resolution": "how to handle"}],
+  "opportunities": [{"description": "the opportunity", "projects_involved": ["A", "B"], "action": "specific next step"}],
+  "recommended_sequence": ["do X first because it enables Y"],
+  "biggest_leverage": "the single most valuable cross-project insight"
+}`;
+
+        const crossResponse = await callClaude(crossProjectPrompt, 120000);
+        const crossParsed = tryParseJSON(crossResponse);
+        if (crossParsed) {
+          db.prepare(`
+            INSERT OR REPLACE INTO graph_state (key, value, updated_at)
+            VALUES ('cross_project_synthesis', ?, datetime('now'))
+          `).run(JSON.stringify(crossParsed));
+        }
+      } catch (err: any) {
+        console.log(`    Cross-project synthesis warning: ${err.message?.slice(0, 80)}`);
+      }
+
       return {
         task: '07-project-understanding',
         status: 'success',
