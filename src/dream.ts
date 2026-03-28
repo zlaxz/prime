@@ -1298,6 +1298,21 @@ ${surfaceAlerts || '(none — all relationships healthy)'}
 PROJECT INTELLIGENCE (from dream analysis):
 ${projectSummary || '(no project intelligence yet)'}
 
+CROSS-PROJECT CONNECTIONS (opportunities the user may not see):
+${(() => {
+  try {
+    const cross = db.prepare("SELECT value FROM graph_state WHERE key = 'cross_project_synthesis'").get() as any;
+    if (!cross) return '(not available)';
+    const data = JSON.parse(cross.value);
+    const parts: string[] = [];
+    if (data.biggest_leverage) parts.push('BIGGEST LEVERAGE: ' + data.biggest_leverage);
+    if (data.opportunities?.length) parts.push('OPPORTUNITIES:\n' + data.opportunities.map((o: any) => `- ${o.description} → ${o.action}`).join('\n'));
+    if (data.conflicts?.length) parts.push('CONFLICTS:\n' + data.conflicts.map((c: any) => `- ${c.projects.join(' vs ')}: ${c.resource} → ${c.resolution}`).join('\n'));
+    if (data.recommended_sequence?.length) parts.push('SEQUENCE:\n' + data.recommended_sequence.map((s: any, i: number) => `${i+1}. ${s}`).join('\n'));
+    return parts.join('\n\n') || '(none)';
+  } catch { return '(not available)'; }
+})()}
+
 ACTIVE COMMITMENTS (verified against source items):
 ${activeCommitments || '(none verified active)'}
 
