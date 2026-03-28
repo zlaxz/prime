@@ -528,7 +528,7 @@ export function analyzeEntityPattern(db: Database.Database, nameOrEmail: string)
   const mentions = db.prepare(`
     SELECT em.direction, em.mention_date, k.source, k.project
     FROM entity_mentions em
-    JOIN knowledge k ON em.knowledge_item_id = k.id
+    JOIN knowledge_primary k ON em.knowledge_item_id = k.id
     WHERE em.entity_id = ? AND em.mention_date IS NOT NULL
     ORDER BY em.mention_date ASC
   `).all(entity.id) as any[];
@@ -889,7 +889,7 @@ export function buildAllEntityProfiles(db: Database.Database): { profiled: numbe
   const entitiesWithOpenThreads = db.prepare(`
     SELECT DISTINCT em.entity_id
     FROM entity_mentions em
-    JOIN knowledge k ON em.knowledge_item_id = k.id
+    JOIN knowledge_primary k ON em.knowledge_item_id = k.id
     WHERE k.tags LIKE '%awaiting_reply%'
   `).all() as any[];
 

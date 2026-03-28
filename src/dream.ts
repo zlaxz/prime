@@ -666,7 +666,7 @@ async function task07ProjectUnderstanding(db: Database.Database): Promise<TaskRe
       const people = db.prepare(`
         SELECT e.canonical_name, e.user_label, e.relationship_type, COUNT(*) as cnt
         FROM entity_mentions em
-        JOIN knowledge k ON em.knowledge_item_id = k.id
+        JOIN knowledge_primary k ON em.knowledge_item_id = k.id
         JOIN entities e ON em.entity_id = e.id
         WHERE k.project = ? AND e.type = 'person' AND e.user_dismissed = 0
           AND e.canonical_name NOT LIKE '%Zach%Stock%'

@@ -8,7 +8,7 @@ const DB_PATH = join(PRIME_DIR, 'prime.db');
 
 // Belief System: Source classification
 // Derived sources are the system's OWN output — never feed entity graph, search, or world model
-export const DERIVED_SOURCES = ['agent-report', 'agent-notification', 'briefing', 'directive'] as const;
+export const DERIVED_SOURCES = ['agent-report', 'agent-notification', 'briefing', 'directive', 'training'] as const;
 
 let _db: Database.Database | null = null;
 
@@ -395,11 +395,11 @@ function initSchema(db: Database.Database) {
     -- ============================================================
     CREATE VIEW IF NOT EXISTS knowledge_primary AS
       SELECT * FROM knowledge
-      WHERE source NOT IN ('agent-report', 'agent-notification', 'briefing', 'directive');
+      WHERE source NOT IN ('agent-report', 'agent-notification', 'briefing', 'directive', 'training');
 
     CREATE VIEW IF NOT EXISTS knowledge_derived AS
       SELECT * FROM knowledge
-      WHERE source IN ('agent-report', 'agent-notification', 'briefing', 'directive');
+      WHERE source IN ('agent-report', 'agent-notification', 'briefing', 'directive', 'training');
 
     -- ============================================================
     -- Staged Actions — prepared by dream pipeline, approved by user
