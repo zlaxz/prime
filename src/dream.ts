@@ -954,6 +954,152 @@ async function task10ConsistencyVerification(db: Database.Database): Promise<Tas
   }
 }
 
+// ── Task 11: Claim Verification Loop ─────────────────────────
+// Before presenting ANY claim, verify it against primary sources.
+// Search Gmail for evidence that contradicts the claim.
+// This is the "self-doubt" mechanism — doubt every assertion, check reality.
+
+async function task11ClaimVerification(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    let verified = 0;
+    let invalidated = 0;
+    let checked = 0;
+
+    // ── 1. Verify overdue commitments ────────────────────────
+    // For each commitment marked overdue, search for fulfillment evidence
+    const overdueCommits = db.prepare(`
+      SELECT c.id, c.text, c.owner, c.assigned_to, c.project, c.detected_from
+      FROM commitments c
+      WHERE c.state = 'overdue'
+      LIMIT 15
+    `).all() as any[];
+
+    for (const commit of overdueCommits) {
+      checked++;
+
+      // Build a search query from the commitment
+      const owner = commit.owner || commit.assigned_to || '';
+      const keywords = commit.text
+        .replace(/committed to|will|should|needs to/gi, '')
+        .replace(/[^\w\s]/g, '')
+        .trim()
+        .split(/\s+/)
+        .filter((w: string) => w.length > 3)
+        .slice(0, 4)
+        .join(' ');
+
+      if (!keywords || keywords.length < 5) continue;
+
+      // Search knowledge base for fulfillment evidence
+      // Look for newer items from the same person mentioning the same topic
+      const evidence = db.prepare(`
+        SELECT k.id, k.title, k.summary, k.source_date
+        FROM knowledge_primary k
+        WHERE k.source_date > COALESCE(
+          (SELECT source_date FROM knowledge WHERE id = ?), '2000-01-01'
+        )
+        AND (k.title LIKE ? OR k.summary LIKE ?)
+        ORDER BY k.source_date DESC LIMIT 3
+      `).all(
+        commit.detected_from,
+        `%${keywords.split(' ')[0]}%`,
+        `%${keywords.split(' ')[0]}%`
+      ) as any[];
+
+      // If there's newer activity on this topic, send to LLM for verification
+      if (evidence.length > 0) {
+        const evidenceText = evidence.map((e: any) =>
+          `${e.source_date?.slice(0, 10)} | ${e.title} | ${e.summary?.slice(0, 150)}`
+        ).join('\n');
+
+        const prompt = `A commitment tracking system says this is OVERDUE:
+"${commit.text}" (assigned to: ${owner})
+
+But newer activity was found:
+${evidenceText}
+
+Based on this evidence, has the commitment been FULFILLED or is it still genuinely overdue?
+Return ONLY one word: FULFILLED or OVERDUE`;
+
+        try {
+          const response = await callClaude(prompt, 30000);
+          const verdict = response.trim().toUpperCase();
+
+          if (verdict.includes('FULFILLED')) {
+            db.prepare(`
+              UPDATE commitments SET state = 'done', state_changed_at = datetime('now'),
+                fulfilled_evidence = ? WHERE id = ?
+            `).run(
+              `Auto-verified: found evidence in ${evidence[0].title} (${evidence[0].source_date?.slice(0, 10)})`,
+              commit.id
+            );
+            invalidated++;
+          } else {
+            verified++; // Confirmed still overdue
+          }
+        } catch {
+          // LLM call failed — skip, don't block
+        }
+      } else {
+        verified++; // No contradicting evidence found — still overdue
+      }
+    }
+
+    // ── 2. Verify "awaiting reply" items ─────────────────────
+    // Check if items tagged awaiting_reply have actually been resolved
+    const awaitingItems = db.prepare(`
+      SELECT k.id, k.title, k.source_ref, k.contacts, k.source_date,
+        json_extract(k.metadata, '$.last_from') as last_from
+      FROM knowledge_primary k
+      WHERE k.tags LIKE '%awaiting_reply%'
+      ORDER BY k.source_date DESC LIMIT 20
+    `).all() as any[];
+
+    let replyFixed = 0;
+    for (const item of awaitingItems) {
+      // Check for a newer item in the same thread (sent mail scan)
+      if (item.source_ref?.startsWith('thread:')) {
+        const threadId = item.source_ref.replace('thread:', '');
+        const newerInThread = db.prepare(`
+          SELECT id FROM knowledge_primary
+          WHERE source_ref = ? AND source_date > ? AND source != 'gmail'
+        `).get(`thread:${threadId}`, item.source_date);
+
+        // Also check sent mail for same thread
+        const sentReply = db.prepare(`
+          SELECT id FROM knowledge_primary
+          WHERE source = 'gmail-sent' AND source_ref LIKE ? AND source_date > ?
+        `).get(`%${threadId}%`, item.source_date);
+
+        if (newerInThread || sentReply) {
+          // Remove awaiting_reply tag
+          const tags = JSON.parse(
+            (db.prepare('SELECT tags FROM knowledge WHERE id = ?').get(item.id) as any)?.tags || '[]'
+          ).filter((t: string) => t !== 'awaiting_reply');
+          db.prepare('UPDATE knowledge SET tags = ?, metadata = json_set(COALESCE(metadata, \'{}\'), \'$.user_replied\', true) WHERE id = ?')
+            .run(JSON.stringify(tags), item.id);
+          replyFixed++;
+        }
+      }
+    }
+
+    return {
+      task: '11-claim-verification',
+      status: 'success',
+      duration_seconds: (Date.now() - start) / 1000,
+      output: {
+        commitments_checked: checked,
+        commitments_still_overdue: verified,
+        commitments_fulfilled: invalidated,
+        replies_fixed: replyFixed,
+      },
+    };
+  } catch (err: any) {
+    return { task: '11-claim-verification', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
 // ── Task 09: World Narrative Synthesis ───────────────────────
 // LLM takes ALL the intelligence (entity profiles, project profiles, commitment
 // verdicts, alerts) and produces a narrative that tells the STORY of the business.
@@ -1158,7 +1304,13 @@ export async function runDreamPipeline(
   results.push(r10);
   console.log(`    ${r10.status === 'success' ? '✓' : '✗'} ${r10.status} (${r10.duration_seconds.toFixed(1)}s)${r10.output ? ` — ${JSON.stringify(r10.output).slice(0, 150)}` : ''}`);
 
-  // Task 04: Structured world rebuild (SQL data model, uses verified data from task 10)
+  // Task 11: Claim verification — doubt every assertion, check against reality
+  console.log('  Task 11: Claim verification (LLM + search)...');
+  const r11 = await task11ClaimVerification(db);
+  results.push(r11);
+  console.log(`    ${r11.status === 'success' ? '✓' : '✗'} ${r11.status} (${r11.duration_seconds.toFixed(1)}s)${r11.output ? ` — ${JSON.stringify(r11.output).slice(0, 150)}` : ''}`);
+
+  // Task 04: Structured world rebuild (AFTER all verification — data is now clean)
   console.log('  Task 04: Rebuild structured world model...');
   const r04 = await task04WorldRebuild(db);
   results.push(r04);
