@@ -471,25 +471,110 @@ Return JSON:
   "confidence": 0.0-1.0
 }`;
 
+    // Phase 1: Single deep investigation call
     const response = await callClaude(prompt, 180000);
-    const parsed = tryParseJSON(response);
+    const initialAnalysis = tryParseJSON(response);
+
+    // Phase 2: Bull/Bear Debate — spawn 3 parallel claude -p workers
+    // Only runs if initial analysis was successful (we need context for the debate)
+    let debateResult: any = null;
+    if (initialAnalysis && entities.length >= 2) {
+      console.log('    Spawning bull/bear debate (3 parallel workers)...');
+      try {
+        const sharedContext = `PROJECT: ${project.project}\nDIAGNOSIS: ${initialAnalysis.diagnosis}\nLEVERAGE: ${initialAnalysis.leverage_point}\nCROSS-PROJECT: ${initialAnalysis.cross_project_connection || 'none'}\n\nKEY PEOPLE: ${entityContext}\nCOMMITMENTS:\n${commitContext}\n\n${deepContent ? 'SOURCE MATERIAL:\n' + deepContent.slice(0, 8000) : ''}`;
+
+        const [bullResponse, bearResponse] = await Promise.all([
+          // BULL: Argue FOR aggressive action
+          callClaudeOnce(`You are the BULL ADVOCATE in a strategic debate about "${project.project}".
+
+${sharedContext}
+
+INITIAL ANALYSIS says the project is stalling because: ${initialAnalysis.diagnosis}
+
+YOUR JOB: Argue why this project should be PURSUED AGGRESSIVELY. What opportunity is being missed? What happens if Zach acts boldly NOW? Find the upside everyone is underweighting.
+
+Be specific. Cite evidence from the communications. Return JSON:
+{"argument": "your case for aggressive action", "opportunity_size": "what's at stake in dollars/relationships", "bold_move": "the specific aggressive action to take", "confidence": 0.0-1.0}`, 60000),
+
+          // BEAR: Argue FOR walking away or pausing
+          callClaudeOnce(`You are the BEAR ADVOCATE (Risk Analyst) in a strategic debate about "${project.project}".
+
+${sharedContext}
+
+INITIAL ANALYSIS says the project is stalling because: ${initialAnalysis.diagnosis}
+
+YOUR JOB: Argue why Zach should PAUSE, WALK AWAY, or DEPRIORITIZE this project. What risks are being ignored? What is this project costing in attention and opportunity cost? Where would Zach's time be better spent?
+
+Be specific. Cite evidence. Return JSON:
+{"argument": "your case for pausing/walking away", "hidden_risks": "risks not yet surfaced", "opportunity_cost": "what Zach is NOT doing because of this project", "walk_away_plan": "specific steps to cleanly disengage", "confidence": 0.0-1.0}`, 60000),
+        ]);
+
+        const bull = tryParseJSON(bullResponse);
+        const bear = tryParseJSON(bearResponse);
+
+        if (bull && bear) {
+          // CEO SYNTHESIS: Takes both arguments and makes the call
+          const ceoPrompt = `You are Prime, the CEO synthesizer. You've heard the bull and bear cases for "${project.project}".
+
+BULL CASE (pursue aggressively):
+${JSON.stringify(bull, null, 2)}
+
+BEAR CASE (pause/walk away):
+${JSON.stringify(bear, null, 2)}
+
+INITIAL INVESTIGATION:
+Diagnosis: ${initialAnalysis.diagnosis}
+Avoidance pattern: ${initialAnalysis.avoidance_pattern}
+Leverage point: ${initialAnalysis.leverage_point}
+Cross-project: ${initialAnalysis.cross_project_connection}
+
+DECIDE: Given both perspectives and the full context, what should Zach do?
+If Bull and Bear agree on something, it's high confidence. Where they disagree, explain the uncertainty.
+
+Return JSON:
+{
+  "verdict": "pursue|pause|pivot|walk_away",
+  "reasoning": "why this verdict, citing both bull and bear arguments",
+  "convergence": "what both sides agree on (high confidence)",
+  "divergence": "where they disagree (flag as uncertain)",
+  "final_action": {"type": "email|calendar|document", "to": "...", "subject": "...", "body": "full draft"},
+  "confidence": 0.0-1.0
+}`;
+
+          const ceoResponse = await callClaude(ceoPrompt, 120000);
+          debateResult = tryParseJSON(ceoResponse);
+        }
+      } catch (err: any) {
+        console.log(`    Debate warning: ${err.message?.slice(0, 80)}`);
+      }
+    }
+
+    // Use debate result if available, otherwise fall back to initial analysis
+    const finalResult = debateResult || initialAnalysis;
+    const parsed = finalResult;
 
     let actionsCreated = 0;
     if (parsed) {
+      // Store both the investigation and debate results
       db.prepare(
         "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES (?, ?, datetime('now'))"
-      ).run(`investigation_${project.project}`, JSON.stringify(parsed));
+      ).run(`investigation_${project.project}`, JSON.stringify({
+        ...initialAnalysis,
+        debate: debateResult ? { verdict: debateResult.verdict, convergence: debateResult.convergence, divergence: debateResult.divergence } : null,
+      }));
 
-      // Create staged action if confidence > 0.7 (UX constraint from ADHD agent)
-      if (parsed.prepared_action && parsed.confidence > 0.7) {
-        const action = parsed.prepared_action;
+      // Create staged action from the best available output
+      const action = debateResult?.final_action || initialAnalysis?.prepared_action;
+      const confidence = debateResult?.confidence || initialAnalysis?.confidence || 0;
+
+      if (action && confidence > 0.7) {
         db.prepare(
           "INSERT INTO staged_actions (type, summary, payload, reasoning, project, source_task, expires_at) VALUES (?, ?, ?, ?, ?, 'investigation', datetime('now', '+72 hours'))"
         ).run(
           action.type || 'email',
           action.subject || action.title || 'Investigation action',
           JSON.stringify(action),
-          parsed.diagnosis?.slice(0, 300) || '',
+          (debateResult?.reasoning || initialAnalysis?.diagnosis || '').slice(0, 300),
           project.project,
         );
         actionsCreated++;
