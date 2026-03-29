@@ -41,12 +41,20 @@ function ensureDirs() {
 
 // ── claude -p invocation ────────────────────────────────────
 
-async function callClaudeOnce(prompt: string, timeoutMs: number = 300000): Promise<string> {
+// Persistent session UUIDs — these workers accumulate context across runs
+const PERSISTENT_SESSIONS = {
+  dream: '00000000-0000-4000-a000-000000000001',      // Dream narrative worker
+  reflection: '00000000-0000-4000-a000-000000000002',  // Strategic reflection worker
+  investigation: '00000000-0000-4000-a000-000000000003', // Investigation worker
+};
+
+async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessionId?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY; // Force Max subscription OAuth
 
-    const proc = spawn('claude', ['-p'], {
+    const args = sessionId ? ['-p', '--resume', sessionId] : ['-p'];
+    const proc = spawn('claude', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
       timeout: timeoutMs,
@@ -68,14 +76,14 @@ async function callClaudeOnce(prompt: string, timeoutMs: number = 300000): Promi
   });
 }
 
-async function callClaude(prompt: string, timeoutMs: number = 300000): Promise<string> {
+async function callClaude(prompt: string, timeoutMs: number = 300000, sessionId?: string): Promise<string> {
   try {
-    return await callClaudeOnce(prompt, timeoutMs);
+    return await callClaudeOnce(prompt, timeoutMs, sessionId);
   } catch (err: any) {
     // One retry with 30s backoff
     console.log(`    Retry after error: ${err.message?.slice(0, 80)}`);
     await new Promise(r => setTimeout(r, 30000));
-    return await callClaudeOnce(prompt, timeoutMs);
+    return await callClaudeOnce(prompt, timeoutMs, sessionId);
   }
 }
 
@@ -1974,7 +1982,7 @@ Include 3-7 predictions. They MUST be:
 - IMPACTFUL (no trivial predictions like "email volume will be normal")
 - VARIED (mix of project, entity, commitment, deal domains)`;
 
-    const narrative = await callClaude(prompt, 180000);
+    const narrative = await callClaude(prompt, 180000, PERSISTENT_SESSIONS.dream);
 
     if (narrative && narrative.length > 100) {
       // Split narrative text from prepared actions JSON
