@@ -409,43 +409,47 @@ async function task14Investigation(db: Database.Database): Promise<TaskResult> {
       'SELECT moment_type, what_happened, why_it_matters, consequence, enables FROM episodic_moments WHERE project = ? ORDER BY confidence DESC LIMIT 5'
     ).all(project.project) as any[];
 
-    // Source retrieval — FULL EMAIL THREADS as conversations, not individual items
-    // The investigation must see the back-and-forth to understand where negotiations actually stand
+    // Source retrieval — COMPLETE NARRATIVE from ALL sources, ordered chronologically
+    // Email threads + meeting transcripts + Claude conversations + Cowork sessions
+    // The investigation must see the FULL STORY as it unfolded across every surface
     let deepContent = '';
     try {
-      // Get the most important Gmail threads for this project — read them as CONVERSATIONS
-      const threadItems = db.prepare(
-        "SELECT DISTINCT source_ref, title, source_date FROM knowledge_primary WHERE project = ? AND source IN ('gmail', 'gmail-sent') AND source_ref LIKE 'thread:%' ORDER BY source_date DESC LIMIT 5"
+      const allSourceItems = db.prepare(
+        "SELECT title, source, source_ref, source_date, summary, raw_content FROM knowledge_primary WHERE project = ? ORDER BY source_date DESC LIMIT 15"
       ).all(project.project) as any[];
 
-      const threadContents: string[] = [];
-      for (const item of threadItems.slice(0, 3)) {
-        const threadId = item.source_ref?.replace('thread:', '');
-        if (!threadId) continue;
-        try {
-          const { retrieveGmailThread } = await import('./source-retrieval.js');
-          const threadContent = await retrieveGmailThread(db, threadId);
-          if (threadContent) {
-            threadContents.push(`\n=== EMAIL THREAD: ${item.title} ===\n${threadContent}`);
+      const narrativeParts: string[] = [];
+
+      for (const item of allSourceItems.slice(0, 8)) {
+        // Try to get full content from each source type
+        if (item.raw_content) {
+          // Cached content available
+          narrativeParts.push(`\n=== [${item.source.toUpperCase()}] ${item.source_date?.slice(0,10)} — ${item.title} ===\n${item.raw_content.slice(0, 5000)}`);
+        } else if (item.source === 'gmail' || item.source === 'gmail-sent') {
+          const threadId = item.source_ref?.replace('thread:', '');
+          if (threadId) {
+            try {
+              const threadContent = await retrieveGmailThread(db, threadId);
+              if (threadContent) narrativeParts.push(`\n=== [EMAIL THREAD] ${item.source_date?.slice(0,10)} — ${item.title} ===\n${threadContent}`);
+            } catch {}
           }
-        } catch {}
-      }
-      deepContent = threadContents.join('\n\n');
-
-      // Also get Fireflies transcripts if available
-      const meetingItems = db.prepare(
-        "SELECT source_ref, title, source_date FROM knowledge_primary WHERE project = ? AND source = 'fireflies' ORDER BY source_date DESC LIMIT 2"
-      ).all(project.project) as any[];
-      for (const item of meetingItems) {
-        try {
-          const { retrieveFirefliesTranscript } = await import('./source-retrieval.js');
+        } else if (item.source === 'fireflies') {
           const meetingId = item.source_ref?.replace('fireflies:', '');
           if (meetingId) {
-            const transcript = await retrieveFirefliesTranscript(db, meetingId);
-            if (transcript) deepContent += `\n\n=== MEETING TRANSCRIPT: ${item.title} ===\n${transcript}`;
+            try {
+              const { retrieveFirefliesTranscript } = await import('./source-retrieval.js');
+              const transcript = await retrieveFirefliesTranscript(db, meetingId);
+              if (transcript) narrativeParts.push(`\n=== [MEETING TRANSCRIPT] ${item.source_date?.slice(0,10)} — ${item.title} ===\n${transcript}`);
+            } catch {}
           }
-        } catch {}
+        } else {
+          // Claude conversations, Cowork sessions, Otter transcripts, manual entries
+          // Include the summary + any available detail
+          narrativeParts.push(`\n=== [${item.source.toUpperCase()}] ${item.source_date?.slice(0,10)} — ${item.title} ===\n${item.summary}`);
+        }
       }
+
+      deepContent = narrativeParts.join('\n');
     } catch {}
 
     const itemContext = items.map((i: any) => {
@@ -472,9 +476,13 @@ Critical person: ${project.critical_person}
 ALL PROJECT COMMUNICATIONS (last 20 items):
 ${itemContext}
 
-${deepContent ? 'ACTUAL EMAIL THREADS AND TRANSCRIPTS (read these as CONVERSATIONS — trace who said what, when, and what the other person said in response):\n' + deepContent : ''}
+${deepContent ? 'COMPLETE PROJECT NARRATIVE (emails, meetings, Claude conversations, Cowork sessions — read as ONE STORY unfolding over time):\n' + deepContent : ''}
 
-CRITICAL: Before making ANY claim about whether someone responded or didn't respond, CHECK THE THREADS ABOVE. If Zach sent a reply, he responded. If the other person gave specific counter-points, that's NEGOTIATION not rejection. Read the actual back-and-forth.
+CRITICAL RULES FOR REASONING:
+1. READ THE FULL NARRATIVE ABOVE before making claims. If Zach sent a reply, he responded. If the other person gave counter-points, that's NEGOTIATION not rejection.
+2. Trace the conversation across ALL sources — an email thread may be followed by a Claude session where the response was drafted, then a meeting where it was discussed.
+3. Check the DATES — the most recent communication determines where things actually stand.
+4. Do NOT assume silence from stale extracted summaries. The narrative above is the truth.
 
 KEY PEOPLE: ${entityContext || '(none identified)'}
 
