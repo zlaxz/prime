@@ -126,6 +126,16 @@ export async function scanCalendar(
         location: event.location,
         html_link: event.htmlLink,
         is_upcoming: isUpcoming,
+        organizer: event.organizer?.email || event.organizer?.displayName,
+        attendee_details: (event.attendees || []).map(a => ({
+          name: a.displayName || a.email,
+          email: a.email,
+          status: a.responseStatus, // accepted, declined, tentative, needsAction
+          organizer: a.organizer || false,
+        })),
+        start_time: event.start?.dateTime,
+        end_time: event.end?.dateTime,
+        recurrence: event.recurrence,
       },
     };
 

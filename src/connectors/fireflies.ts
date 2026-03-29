@@ -136,6 +136,11 @@ export async function scanFireflies(
         speakers {
           name
         }
+        sentences {
+          text
+          speaker_name
+          start_time
+        }
       }
     }
   `);

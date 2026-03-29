@@ -174,7 +174,7 @@ export async function scanGmail(
           userId: 'me',
           id: threadMeta.id!,
           format: 'metadata',
-          metadataHeaders: ['From', 'To', 'Subject', 'Date'],
+          metadataHeaders: ['From', 'To', 'Cc', 'Bcc', 'Subject', 'Date', 'Reply-To'],
         });
         const messages = thread.data.messages || [];
         if (messages.length === 0) return null;
