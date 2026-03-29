@@ -432,8 +432,10 @@ export async function scanClaude(
   db: Database.Database,
   options: { days?: number; maxConversations?: number; orgId?: string } = {}
 ): Promise<{ conversations: number; items: number; artifacts: number; skipped: number }> {
-  const days = options.days || 90;
-  const maxConversations = options.maxConversations || 200;
+  // NO ARTIFICIAL LIMITS. Capture EVERYTHING. The search/retrieval layer decides relevance.
+  // The ingestion layer's job is completeness, not filtering.
+  const days = options.days || 365;  // Default: full year
+  const maxConversations = options.maxConversations || 10000;  // Effectively unlimited
 
   const sessionKey = getConfig(db, 'claude_session_key');
   const apiKey = getConfig(db, 'openai_api_key');
@@ -470,8 +472,12 @@ export async function scanClaude(
         `/organizations/${org.id}/chat_conversations`,
         sessionKey
       );
-      const filtered = allConvos.filter(c => new Date(c.updated_at) >= cutoff);
-      console.log(`  ${org.name}: ${allConvos.length} total, ${filtered.length} in last ${days} days`);
+      // Include ALL conversations, not just recent ones
+      // The dedup check (by source_ref) prevents re-processing already-indexed ones
+      const filtered = days >= 365
+        ? allConvos  // Full scan: no date filter
+        : allConvos.filter(c => new Date(c.updated_at) >= cutoff);
+      console.log(`  ${org.name}: ${allConvos.length} total, ${filtered.length} to process`);
       conversations.push(...filtered);
     } catch (err: any) {
       console.log(`  ${org.name}: skipped (${err.message?.slice(0, 50)})`);
