@@ -367,70 +367,220 @@ export async function scanSentMail(
   const getHeader = (msg: any, name: string) =>
     msg.payload?.headers?.find((h: any) => h.name === name)?.value || '';
 
-  // Process each sent thread
+  // ============================================================
+  // PHASE A: Fetch all sent thread metadata (parallel, fast)
+  // ============================================================
+  console.log('  Phase A: Fetching sent thread details...');
+
+  type SentThreadData = {
+    id: string;
+    subject: string;
+    to: string;
+    toEmails: string[];  // parsed email addresses from To/CC
+    firstFrom: string;
+    lastFrom: string;
+    lastDate: string;
+    snippet: string;
+    messageCount: number;
+    userSentFirst: boolean;
+    userSentLast: boolean;
+  };
+
+  const threadData: SentThreadData[] = [];
+
   for (let i = 0; i < sentThreads.length; i += 10) {
     const batch = sentThreads.slice(i, i + 10);
-    await Promise.all(batch.map(async (threadMeta) => {
+    const results = await Promise.all(batch.map(async (threadMeta) => {
       try {
-        stats.scanned++;
+        const thread = await gmail.users.threads.get({
+          userId: 'me',
+          id: threadMeta.id!,
+          format: 'metadata',
+          metadataHeaders: ['From', 'To', 'Cc', 'Subject', 'Date'],
+        });
+        const messages = thread.data.messages || [];
+        if (messages.length === 0) return null;
 
-        // Check if this thread already exists in knowledge base
-        const sourceRef = `thread:${threadMeta.id}`;
-        const existing = db.prepare('SELECT id, metadata, tags FROM knowledge WHERE source_ref = ?').get(sourceRef) as any;
+        const first = messages[0];
+        const last = messages[messages.length - 1];
+        const to = getHeader(first, 'To');
+        const cc = getHeader(first, 'Cc');
 
-        if (existing) {
-          // Thread exists — check if we need to correct it
-          const meta = typeof existing.metadata === 'string' ? JSON.parse(existing.metadata) : (existing.metadata || {});
-          const tags = typeof existing.tags === 'string' ? JSON.parse(existing.tags) : (existing.tags || []);
+        // Parse email addresses from To and CC
+        const emailRegex = /[\w.-]+@[\w.-]+\.\w+/g;
+        const toEmails = [...(to.match(emailRegex) || []), ...(cc.match(emailRegex) || [])]
+          .map(e => e.toLowerCase())
+          .filter(e => !e.includes(userEmail.toLowerCase()));
 
-          // Fetch thread to check if user sent the LAST message
-          const thread = await gmail.users.threads.get({
-            userId: 'me',
-            id: threadMeta.id!,
-            format: 'metadata',
-            metadataHeaders: ['From', 'Date'],
-          });
+        const firstFrom = getHeader(first, 'From');
+        const lastFrom = getHeader(last, 'From');
 
-          const messages = thread.data.messages || [];
-          if (messages.length === 0) return;
-
-          const lastMsg = messages[messages.length - 1];
-          const lastFrom = getHeader(lastMsg, 'From');
-          const lastDate = getHeader(lastMsg, 'Date');
-          const userSentLast = lastFrom.toLowerCase().includes(userEmail.toLowerCase());
-
-          if (userSentLast && (tags.includes('awaiting_reply') || meta.waiting_on_user)) {
-            // CORRECTION: User already replied — remove awaiting_reply
-            const newTags = tags.filter((t: string) => t !== 'awaiting_reply');
-            const newMeta = {
-              ...meta,
-              waiting_on_user: false,
-              user_replied: true,
-              replied_at: lastDate ? new Date(lastDate).toISOString() : new Date().toISOString(),
-              last_from: lastFrom,
-              days_since_last: Math.floor((Date.now() - new Date(lastDate).getTime()) / 86400000),
-            };
-
-            db.prepare(
-              'UPDATE knowledge SET tags = ?, metadata = ?, updated_at = datetime(\'now\') WHERE id = ?'
-            ).run(JSON.stringify(newTags), JSON.stringify(newMeta), existing.id);
-
-            stats.corrected++;
-          }
-        }
-        // Note: We intentionally do NOT create new items for sent-only threads in this phase.
-        // That would require LLM extraction (expensive). Sent-only threads will be captured
-        // in the dream pipeline (Phase 5) or during full entity building (Phase 2).
-      } catch {
-        // Skip failed threads
-      }
+        return {
+          id: threadMeta.id,
+          subject: getHeader(first, 'Subject'),
+          to,
+          toEmails,
+          firstFrom,
+          lastFrom,
+          lastDate: getHeader(last, 'Date'),
+          snippet: last.snippet || '',
+          messageCount: messages.length,
+          userSentFirst: firstFrom.toLowerCase().includes(userEmail.toLowerCase()),
+          userSentLast: lastFrom.toLowerCase().includes(userEmail.toLowerCase()),
+        };
+      } catch { return null; }
     }));
 
+    for (const r of results) {
+      if (r) threadData.push(r);
+    }
     if ((i + 10) % 50 === 0 || i + 10 >= sentThreads.length) {
-      process.stdout.write(`\r  Processed: ${Math.min(i + 10, sentThreads.length)}/${sentThreads.length} (${stats.corrected} corrected)`);
+      process.stdout.write(`\r  Fetched: ${Math.min(i + 10, sentThreads.length)}/${sentThreads.length}`);
     }
   }
-  console.log('');
+  console.log(`\n  ${threadData.length} sent threads with data`);
+
+  // ============================================================
+  // PHASE B: Record outbound entity mentions (CRITICAL, no LLM)
+  // This is the data that fixes solicitation detection.
+  // ============================================================
+  console.log('  Phase B: Recording outbound entity mentions...');
+  let outboundMentions = 0;
+
+  const findEntityByEmail = db.prepare(
+    'SELECT id FROM entities WHERE email = ? AND user_dismissed = 0'
+  );
+  const insertMention = db.prepare(`
+    INSERT OR IGNORE INTO entity_mentions (id, entity_id, knowledge_item_id, role, direction, mention_date)
+    VALUES (?, ?, ?, 'recipient', 'outbound', ?)
+  `);
+
+  for (const td of threadData) {
+    // Find knowledge item for this thread (if exists)
+    const sourceRef = `thread:${td.id}`;
+    const knowledgeItem = db.prepare('SELECT id FROM knowledge WHERE source_ref = ?').get(sourceRef) as any;
+
+    if (knowledgeItem) {
+      for (const email of td.toEmails) {
+        const entity = findEntityByEmail.get(email) as any;
+        if (entity) {
+          insertMention.run(uuid(), entity.id, knowledgeItem.id, td.lastDate ? new Date(td.lastDate).toISOString() : null);
+          outboundMentions++;
+        }
+      }
+    }
+  }
+  console.log(`  ${outboundMentions} outbound entity mentions recorded`);
+
+  // ============================================================
+  // PHASE C: Correct existing items (remove false "awaiting_reply")
+  // ============================================================
+  console.log('  Phase C: Correcting existing items...');
+
+  for (const td of threadData) {
+    const sourceRef = `thread:${td.id}`;
+    const existing = db.prepare('SELECT id, metadata, tags FROM knowledge WHERE source_ref = ?').get(sourceRef) as any;
+
+    if (existing && td.userSentLast) {
+      const meta = typeof existing.metadata === 'string' ? JSON.parse(existing.metadata) : (existing.metadata || {});
+      const tags = typeof existing.tags === 'string' ? JSON.parse(existing.tags) : (existing.tags || []);
+
+      if (tags.includes('awaiting_reply') || meta.waiting_on_user) {
+        const newTags = tags.filter((t: string) => t !== 'awaiting_reply');
+        const newMeta = {
+          ...meta,
+          waiting_on_user: false,
+          user_replied: true,
+          replied_at: td.lastDate ? new Date(td.lastDate).toISOString() : new Date().toISOString(),
+          last_from: td.lastFrom,
+          days_since_last: td.lastDate ? Math.floor((Date.now() - new Date(td.lastDate).getTime()) / 86400000) : 0,
+        };
+
+        db.prepare(
+          'UPDATE knowledge SET tags = ?, metadata = ?, updated_at = datetime(\'now\') WHERE id = ?'
+        ).run(JSON.stringify(newTags), JSON.stringify(newMeta), existing.id);
+
+        stats.corrected++;
+      }
+    }
+  }
+  console.log(`  ${stats.corrected} items corrected (awaiting_reply removed)`);
+
+  // ============================================================
+  // PHASE D: Create items for Zach-initiated threads (uses DeepSeek)
+  // ============================================================
+  const newThreads = threadData.filter(td => {
+    const sourceRef = `thread:${td.id}`;
+    const exists = db.prepare('SELECT 1 FROM knowledge WHERE source_ref = ?').get(sourceRef);
+    return !exists && td.userSentFirst;
+  });
+
+  if (newThreads.length > 0) {
+    console.log(`  Phase D: Creating ${newThreads.length} items for Zach-initiated threads...`);
+    const CONCURRENCY = 5;
+
+    for (let i = 0; i < newThreads.length; i += CONCURRENCY) {
+      const batch = newThreads.slice(i, i + CONCURRENCY);
+      await Promise.all(batch.map(async (td) => {
+        try {
+          const content = `Sent email thread: "${td.subject}"\nTo: ${td.to}\n${td.messageCount} messages, last from ${td.lastFrom} on ${td.lastDate}\nLast message: ${td.snippet}`;
+
+          const apiKey = getConfig(db, 'openai_api_key');
+          const extracted = await extractIntelligence(content, apiKey);
+          const embText = `${extracted.title}\n${extracted.summary}`;
+          const embedding = await generateEmbedding(embText, apiKey!);
+
+          const daysSince = td.lastDate ? Math.floor((Date.now() - new Date(td.lastDate).getTime()) / 86400000) : 0;
+
+          const item: KnowledgeItem = {
+            id: uuid(),
+            title: extracted.title || `Sent: ${td.subject}`,
+            summary: extracted.summary,
+            source: 'gmail-sent',
+            source_ref: `thread:${td.id}`,
+            source_date: td.lastDate ? new Date(td.lastDate).toISOString() : undefined,
+            contacts: extracted.contacts,
+            organizations: extracted.organizations,
+            decisions: extracted.decisions,
+            commitments: extracted.commitments,
+            action_items: extracted.action_items,
+            tags: [...extracted.tags, 'sent', 'user-initiated', ...(td.userSentLast ? [] : ['awaiting_reply_from_them'])],
+            project: extracted.project,
+            importance: extracted.importance,
+            embedding,
+            metadata: {
+              thread_id: td.id,
+              message_count: td.messageCount,
+              subject: td.subject,
+              to: td.to,
+              to_emails: td.toEmails,
+              last_from: td.lastFrom,
+              days_since_last: daysSince,
+              user_initiated: true,
+              waiting_on_them: !td.userSentLast,
+            },
+          };
+
+          insertKnowledge(db, item);
+          stats.newItems++;
+
+          // Also record outbound entity mentions for the new item
+          for (const email of td.toEmails) {
+            const entity = findEntityByEmail.get(email) as any;
+            if (entity) {
+              insertMention.run(uuid(), entity.id, item.id, td.lastDate ? new Date(td.lastDate).toISOString() : null);
+            }
+          }
+        } catch {}
+      }));
+
+      process.stdout.write(`\r  Extracted: ${Math.min(i + CONCURRENCY, newThreads.length)}/${newThreads.length}`);
+    }
+    console.log('');
+  }
+
+  stats.scanned = threadData.length;
+  console.log(`  Done: ${stats.scanned} scanned, ${stats.corrected} corrected, ${stats.newItems} new, ${outboundMentions} outbound mentions`);
 
   // Update sync state
   db.prepare(
