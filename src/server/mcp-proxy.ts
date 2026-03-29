@@ -339,6 +339,31 @@ server.tool(
   }
 );
 
+server.tool(
+  "prime_correct",
+  "Give feedback to Prime — dismiss an action, correct a classification, put something on hold. This teaches Prime to not make the same mistake again. Use when the user says something like 'that's not relevant' or 'I already handled that' or 'Brayden is on hold'.",
+  {
+    action_id: z.string().optional().describe("ID of the staged action to dismiss (from search results)"),
+    reason: z.enum(["already_handled", "on_hold", "wrong_person", "not_mine", "noise"]).describe("Why this is being dismissed"),
+    explanation: z.string().optional().describe("Additional context — helps Prime learn (e.g., 'We decided to pause this on Friday')"),
+    entity_name: z.string().optional().describe("Entity name to put on hold or dismiss"),
+  },
+  async ({ action_id, reason, explanation, entity_name }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpPost(`${srv}/api/dismiss-action`, {
+        id: action_id || `entity-${entity_name}`,
+        reason,
+        explanation: explanation || '',
+      }, 30000);
+      return { content: [{ type: "text" as const, text: `Correction saved. Prime will learn: ${result.correction_rule?.slice(0, 150)}` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
 // ============================================================
 // Start
 // ============================================================

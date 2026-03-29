@@ -565,6 +565,91 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── Dismiss action with feedback → creates correction rule ──
+  app.post('/api/dismiss-action', async (req, res) => {
+    try {
+      const { id, reason, explanation } = req.body;
+      if (!id || !reason) return res.status(400).json({ error: 'id and reason required' });
+
+      // Mark the staged action as dismissed
+      db.prepare("UPDATE staged_actions SET status = 'dismissed', acted_at = datetime('now') WHERE id = ? OR id = ?")
+        .run(id, String(id).replace('action-', ''));
+
+      // Get the action details for context
+      const action = db.prepare("SELECT summary, project, payload FROM staged_actions WHERE id = ? OR id = ?")
+        .get(id, String(id).replace('action-', '')) as any;
+
+      const payload = action?.payload ? (typeof action.payload === 'string' ? JSON.parse(action.payload) : action.payload) : {};
+      const entityName = payload.to?.split('@')[0] || action?.summary?.split(' ').slice(0, 3).join(' ') || 'unknown';
+
+      // Create a correction rule based on the reason
+      const ruleMap: Record<string, string> = {
+        'already_handled': `Do NOT generate follow-up actions for "${entityName}" — user confirmed this is already handled.${explanation ? ' Context: ' + explanation : ''}`,
+        'on_hold': `SUPPRESS all actions related to "${entityName}" or "${action?.project}" — user explicitly put this on hold.${explanation ? ' Reason: ' + explanation : ''} Do not resurface until user reactivates.`,
+        'wrong_person': `The action about "${action?.summary}" was associated with the wrong person or project. ${explanation || 'Verify entity associations before generating actions.'}`,
+        'not_mine': `"${action?.summary}" is not the user's responsibility. Do not generate actions for this.`,
+        'noise': `"${entityName}" is noise/spam. Dismiss this entity and never surface actions for them.`,
+      };
+
+      const correctionRule = ruleMap[reason] || `User dismissed: ${reason}. ${explanation || ''}`;
+
+      // Store as a strategic lesson
+      db.prepare(`
+        INSERT INTO strategic_lessons (id, lesson_date, lesson_type, lesson, domain, root_cause, severity, correction_rule)
+        VALUES (?, date('now'), 'user_correction', ?, 'entity', ?, 'medium', ?)
+      `).run(
+        uuid(),
+        `User dismissed "${action?.summary}" with reason: ${reason}`,
+        explanation || reason,
+        correctionRule
+      );
+
+      // Also save as a knowledge item so agents see it
+      const { insertKnowledge } = await import('../db.js');
+      insertKnowledge(db, {
+        id: uuid(),
+        title: `User correction: ${action?.summary?.slice(0, 60)}`,
+        summary: `Zach dismissed this action. Reason: ${reason}. ${explanation || ''}. The system should not resurface this.`,
+        source: 'user-feedback',
+        source_ref: `dismiss:${id}`,
+        source_date: new Date().toISOString(),
+        tags: ['user-correction', 'dismissal', reason],
+        project: action?.project,
+        importance: 'high', // User corrections are high importance — the system must learn
+      });
+
+      // If reason is 'noise', also dismiss the entity
+      if (reason === 'noise' && payload.to) {
+        db.prepare("UPDATE entities SET user_dismissed = 1 WHERE email = ?").run(payload.to);
+        db.prepare("INSERT OR IGNORE INTO dismissals (id, entity_id, reason) SELECT ?, id, ? FROM entities WHERE email = ?")
+          .run(uuid(), `User dismissed as noise: ${explanation || ''}`, payload.to);
+      }
+
+      // If reason is 'on_hold', update entity_signals
+      if (reason === 'on_hold') {
+        const entity = db.prepare("SELECT id FROM entities WHERE email = ? OR canonical_name LIKE ?")
+          .get(payload.to, `%${entityName}%`) as any;
+        if (entity) {
+          db.prepare("INSERT OR REPLACE INTO entity_signals (id, entity_id, signal_type, count, last_seen) VALUES (?, ?, 'on_hold', 1, datetime('now'))")
+            .run(uuid(), entity.id);
+        }
+      }
+
+      // Rebuild active correction rules in graph_state
+      const allRules = db.prepare(`
+        SELECT lesson_type, correction_rule, domain FROM strategic_lessons
+        WHERE correction_rule IS NOT NULL AND superseded_by IS NULL
+        ORDER BY lesson_date DESC LIMIT 50
+      `).all();
+      db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('active_correction_rules', ?, datetime('now'))")
+        .run(JSON.stringify(allRules));
+
+      res.json({ ok: true, reason, correction_rule: correctionRule });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Ambient Display (full-screen kiosk app) ────────────
   app.get('/ambient', (_req, res) => {
     res.send(getAmbientDisplayHTML());
