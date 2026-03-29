@@ -25,6 +25,7 @@ import { importClaudeConversations, connectClaude, scanClaude } from './connecto
 import { connectOtter, scanOtter } from './connectors/otter.js';
 import { connectFireflies, scanFireflies } from './connectors/fireflies.js';
 import { connectCowork, scanCowork } from './connectors/cowork.js';
+import { connectClaudeCode, scanClaudeCode } from './connectors/claude-code.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -489,6 +490,22 @@ program
       } else {
         console.log('  ✗ Failed to connect Cowork\n');
       }
+    } else if (source === 'claude-code') {
+      console.log('\n⚡ Connecting Claude Code...\n');
+      const success = await connectClaudeCode(db);
+
+      if (success) {
+        console.log('\n  Scanning Claude Code sessions (last 30 days)...\n');
+        const { sessions, memory, items, skipped } = await scanClaudeCode(db, { days: 30, maxSessions: 200 });
+
+        console.log(`\n  ✓ ${sessions} sessions + ${memory} memory files → ${items} knowledge items`);
+        if (skipped > 0) console.log(`    ${skipped} skipped (already indexed)`);
+
+        const stats = getStats(db);
+        console.log(`\n  Total knowledge: ${stats.total_items} items\n`);
+      } else {
+        console.log('  ✗ No Claude Code data found\n');
+      }
     } else if (source === 'fireflies') {
       console.log('\n⚡ Connecting Fireflies.ai...\n');
       const success = await connectFireflies(db, opts.sessionKey);
@@ -676,6 +693,15 @@ program
       } catch (err: any) {
         console.log(`  ⚠ Fireflies sync failed: ${err.message}`);
       }
+    }
+
+    // Claude Code (local sessions + memory files)
+    console.log('  Syncing Claude Code...');
+    try {
+      const { sessions, memory, items, skipped } = await scanClaudeCode(db, { days: 30, maxSessions: 100 });
+      console.log(`  ✓ Claude Code: ${sessions} sessions + ${memory} memory → ${items} items`);
+    } catch (err: any) {
+      console.log(`  ⚠ Claude Code sync failed: ${err.message}`);
     }
 
     const stats = getStats(db);
@@ -2076,6 +2102,17 @@ program
       }
     } catch {
       console.log('    ○ Cowork sessions not found');
+    }
+
+    // Claude Code
+    try {
+      const { connectClaudeCode: tryCC } = await import('./connectors/claude-code.js');
+      const ccOk = await tryCC(db);
+      if (ccOk) {
+        console.log('    ✓ Claude Code sessions detected');
+      }
+    } catch {
+      console.log('    ○ Claude Code not found');
     }
 
     // ── Step 3: Seeding interview ──
