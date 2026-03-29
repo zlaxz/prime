@@ -484,6 +484,13 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       else if (hasActions || priorities.length > 3) displayState = 'pulse';
       else if (narrativeAge < 1) displayState = 'briefing';
 
+      // Load detected gaps for display
+      let detectedGaps: any[] = [];
+      try {
+        const gapsRaw = db.prepare("SELECT value FROM graph_state WHERE key = 'detected_gaps'").get() as any;
+        if (gapsRaw) detectedGaps = JSON.parse(gapsRaw.value);
+      } catch {}
+
       res.json({
         display_state: displayState,
         one_thing: oneThing,
@@ -494,6 +501,12 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
           const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : e.metadata || {};
           return { title: e.title, time: meta.start_time || e.source_date };
         }),
+        detected_gaps: detectedGaps.slice(0, 10),
+        gaps_summary: detectedGaps.length > 0 ? {
+          total: detectedGaps.length,
+          critical: detectedGaps.filter((g: any) => g.severity === 'critical').length,
+          high: detectedGaps.filter((g: any) => g.severity === 'high').length,
+        } : null,
         prediction_accuracy: accuracy ? Math.round(accuracy.accuracy_rate * 100) : null,
         meta_insight: metaInsight,
         dream_age_hours: Math.round(dreamAge),
