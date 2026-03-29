@@ -505,6 +505,44 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── Worker Task Queue (autonomous multi-session coordination) ──
+  app.get('/api/v1/tasks', (_req, res) => {
+    try {
+      const status = (_req.query.status as string) || 'pending';
+      const tasks = db.prepare('SELECT * FROM worker_tasks WHERE status = ? ORDER BY priority ASC, created_at ASC').all(status);
+      res.json({ tasks });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/v1/tasks', async (req, res) => {
+    try {
+      const { v4: uuidv4 } = await import('uuid');
+      const { title, description, assigned_to, priority, created_by } = req.body;
+      const id = uuidv4();
+      db.prepare('INSERT INTO worker_tasks (id, title, description, assigned_to, priority, created_by) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(id, title, description || '', assigned_to || null, priority || 5, created_by || 'supervisor');
+      res.json({ id, status: 'pending' });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/v1/tasks/:id/claim', (req, res) => {
+    try {
+      const { worker } = req.body;
+      const result = db.prepare("UPDATE worker_tasks SET status = 'in_progress', assigned_to = ?, claimed_at = datetime('now') WHERE id = ? AND status = 'pending'")
+        .run(worker, req.params.id);
+      res.json({ claimed: (result as any).changes > 0 });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/v1/tasks/:id/complete', (req, res) => {
+    try {
+      const { result } = req.body;
+      db.prepare("UPDATE worker_tasks SET status = 'completed', result = ?, completed_at = datetime('now') WHERE id = ?")
+        .run(result || '', req.params.id);
+      res.json({ ok: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
   // ── Chat API (replaces Claude Desktop as primary interface) ──
   app.get('/api/v1/chat/sidebar', async (_req, res) => {
     try {
