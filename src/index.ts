@@ -763,6 +763,17 @@ program
     });
   });
 
+// ============================================================
+// recall listen — iMessage reply listener for staged action approval
+// ============================================================
+program
+  .command('listen')
+  .description('Start iMessage reply listener for staged action approval (Mac Mini daemon)')
+  .action(async () => {
+    const { startListener } = await import('./imessage-listener.js');
+    await startListener();
+  });
+
 // OLD re-extract removed — replaced by new version at bottom of file that uses source retrieval APIs
 // ============================================================
 // recall hierarchy (placeholder to maintain line numbering)

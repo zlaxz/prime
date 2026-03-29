@@ -16,6 +16,7 @@ import { extractIntelligence } from '../ai/extract.js';
 import { askWithSources } from '../ai/ask.js';
 import { generateBriefing } from '../ai/briefing.js';
 import { v4 as uuid } from 'uuid';
+import { executeAction } from '../actions.js';
 
 const MCP_SERVER_CONFIG = {
   name: "prime-recall",
@@ -969,72 +970,10 @@ srv.tool(
     id: z.number().describe("The staged action ID to approve"),
   },
   async ({ id }) => {
-    try {
-      const db = getDb();
-      const action = db.prepare("SELECT * FROM staged_actions WHERE id = ? AND status = 'pending'").get(id) as any;
-
-      if (!action) {
-        return { content: [{ type: "text" as const, text: `✗ Action ${id} not found or already processed.` }] };
-      }
-
-      const payload = JSON.parse(action.payload);
-      let result = '';
-
-      if (action.type === 'email' && payload.to) {
-        // Delegate to sendEmail from gmail.ts — handles token refresh, scope check, logging
-        const { sendEmail } = await import('../connectors/gmail.js');
-        const sendResult = await sendEmail(db, {
-          to: payload.to,
-          subject: payload.subject || 'Follow up',
-          body: payload.body || '',
-          cc: payload.cc,
-        });
-        if (sendResult.success) {
-          result = `✓ Email sent to ${payload.to}\nSubject: ${payload.subject}`;
-        } else {
-          throw new Error(sendResult.error || 'Email send failed');
-        }
-      } else if (action.type === 'calendar' && payload.title) {
-        // Actually create the calendar event via Google Calendar API
-        const { google } = await import('googleapis');
-        const tokens = getConfig(db, 'gmail_tokens');
-        if (!tokens) throw new Error('Calendar not connected');
-        const oauth2 = new google.auth.OAuth2(
-          getConfig(db, 'google_client_id') || process.env.GOOGLE_CLIENT_ID || '',
-          getConfig(db, 'google_client_secret') || process.env.GOOGLE_CLIENT_SECRET || '',
-          'http://localhost:9876/callback'
-        );
-        oauth2.setCredentials(typeof tokens === 'string' ? JSON.parse(tokens) : tokens);
-        const calendar = google.calendar({ version: 'v3', auth: oauth2 });
-
-        const startTime = payload.start_time ? new Date(payload.start_time) : new Date(Date.now() + 24 * 3600000); // default: tomorrow
-        const duration = payload.duration_min || 30;
-        const endTime = new Date(startTime.getTime() + duration * 60000);
-
-        const event = await calendar.events.insert({
-          calendarId: 'primary',
-          requestBody: {
-            summary: payload.title,
-            description: payload.description || action.reasoning || '',
-            start: { dateTime: startTime.toISOString() },
-            end: { dateTime: endTime.toISOString() },
-            attendees: payload.attendees?.map((e: string) => ({ email: e })),
-          },
-        });
-        result = `✓ Calendar event created: "${payload.title}"\nWhen: ${startTime.toLocaleString()}\nDuration: ${duration} min${event.data.htmlLink ? '\nLink: ' + event.data.htmlLink : ''}`;
-      } else if (action.type === 'reminder') {
-        result = `✓ Reminder acknowledged: "${payload.text || action.summary}"`;
-      } else {
-        result = `✓ Action approved: ${action.summary}`;
-      }
-
-      // Mark as executed
-      db.prepare("UPDATE staged_actions SET status = 'executed', acted_at = datetime('now') WHERE id = ?").run(id);
-
-      return { content: [{ type: "text" as const, text: result }] };
-    } catch (err: any) {
-      return { content: [{ type: "text" as const, text: `✗ Failed to execute action ${id}: ${err.message}` }] };
-    }
+    const db = getDb();
+    const result = await executeAction(db, id);
+    const prefix = result.success ? '✓' : '✗';
+    return { content: [{ type: "text" as const, text: `${prefix} ${result.message}` }] };
   }
 );
 

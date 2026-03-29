@@ -10,6 +10,7 @@ import { buildEntityGraph } from './entities.js';
 import { retrieveDeepContext } from './source-retrieval.js';
 import { notify } from './notify.js';
 import { generateBriefingDoc } from './briefing-doc.js';
+import { autoExecuteLowRisk } from './actions.js';
 
 // ============================================================
 // Dream State Pipeline — Phase 5 of v1.0 Brain Architecture
@@ -2129,7 +2130,21 @@ export async function runDreamPipeline(
     console.error(`  ✗ Briefing generation failed: ${err.message?.slice(0, 100)}`);
   }
 
-  // ── Push staged actions via iMessage ──────────────────
+  // ── Auto-execute low-risk actions (reminders, calendar blocks) ──
+  try {
+    const autoResults = await autoExecuteLowRisk(db);
+    if (autoResults.length > 0) {
+      const succeeded = autoResults.filter(r => r.success).length;
+      console.log(`  ✓ Auto-executed ${succeeded}/${autoResults.length} low-risk actions (reminders, calendar)`);
+      for (const r of autoResults) {
+        console.log(`    ${r.success ? '✓' : '✗'} ${r.message}`);
+      }
+    }
+  } catch (err: any) {
+    console.error(`  ✗ Auto-execute failed: ${err.message?.slice(0, 100)}`);
+  }
+
+  // ── Push remaining staged actions (emails) via iMessage ──
   try {
     const pendingActions = db.prepare(
       "SELECT id, type, summary, reasoning, project FROM staged_actions WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY id"
@@ -2140,7 +2155,7 @@ export async function runDreamPipeline(
         `${i + 1}. [${a.type}] ${a.summary}${a.project ? ` (${a.project})` : ''}`
       ).join('\n');
 
-      const body = `${pendingActions.length} action${pendingActions.length === 1 ? '' : 's'} ready:\n\n${actionLines}\n\nOpen Claude Desktop and use prime_staged_actions to review.`;
+      const body = `${pendingActions.length} action${pendingActions.length === 1 ? '' : 's'} need approval:\n\n${actionLines}\n\nReply YES to approve all, or # for specific.`;
 
       const result = await notify(db, {
         title: 'Prime Dream Complete',
