@@ -498,6 +498,8 @@ ${deepContent ? 'COMPLETE PROJECT NARRATIVE (emails, meetings, Claude conversati
 
 TODAY IS: ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })} at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}.
 
+${getCorrectionRules(db, 'project') || getCorrectionRules(db, 'deal') || getCorrectionRules(db) || ''}
+${getThreadContext(db, project.project) || ''}
 CRITICAL RULES FOR REASONING:
 1. READ THE FULL NARRATIVE ABOVE before making claims. If Zach sent a reply, he responded. If the other person gave counter-points, that's NEGOTIATION not rejection.
 2. Trace the conversation across ALL sources — an email thread may be followed by a Claude session where the response was drafted, then a meeting where it was discussed.
@@ -1083,6 +1085,8 @@ ${dismissedLines || '(none)'}
 
 IMPORTANT: Do NOT assume which projects a person is connected to. The data below shows exactly which projects each entity appears in. Trust the DATA, not assumptions. If an entity's communications are all about "Physician Cyber Program", they are NOT involved in "Carefront" even if both are insurance projects.
 
+${getCorrectionRules(db, 'entity') || getCorrectionRules(db, 'relationship') || ''}
+
 EVALUATION INSTRUCTIONS:
 For each entity, analyze their ENTIRE communication history including extracted commitments, decisions, and action items. Consider:
 1. What is this person's actual relationship? Use the communication CONTENT, not just frequency.
@@ -1283,6 +1287,8 @@ PROJECTS:
 ${projectContexts}
 ${deepProjectContext ? '\n--- ORIGINAL SOURCE MATERIAL (actual emails and meeting transcripts, not summaries) ---' + deepProjectContext : ''}
 
+${getCorrectionRules(db, 'project') || getCorrectionRules(db, 'deal') || ''}
+${getThreadContext(db) || ''}
 Think strategically. Don't just report status — identify the 2nd and 3rd order implications. What should Zach be setting up NOW that nobody is raising? What connections across projects exist?
 
 Return ONLY this JSON array:
@@ -1906,6 +1912,23 @@ ${(() => {
 
 ${feedbackBlock}
 
+${getCorrectionRules(db) || ''}
+${getThreadContext(db) || ''}
+${(() => {
+  try {
+    const acc = db.prepare("SELECT value FROM graph_state WHERE key = 'prediction_accuracy'").get() as any;
+    if (!acc) return '';
+    const data = JSON.parse(acc.value);
+    let block = `PREDICTION TRACK RECORD (use to calibrate confidence):\nOverall accuracy: ${Math.round(data.accuracy_rate * 100)}% (${data.total_verified} verified)`;
+    const errors = db.prepare("SELECT value FROM graph_state WHERE key = 'prediction_errors_latest'").get() as any;
+    if (errors) {
+      const errData = JSON.parse(errors.value).slice(0, 3);
+      if (errData.length > 0) block += '\nRecent errors:\n' + errData.map((e: any) => `- PREDICTED: "${e.prediction}" → WRONG: ${e.evidence}`).join('\n');
+    }
+    return block;
+  } catch { return ''; }
+})()}
+
 FORMAT:
 1. **The One Thing** — the single most important item today (if nothing urgent, say so)
 2. **People** — who needs attention and why (max 5, with specific recommended actions)
@@ -1934,7 +1957,22 @@ After the briefing text, include a PREPARED ACTIONS block as fenced JSON:
 ]}
 \`\`\`
 
-Include 2-5 prepared actions. Each should be a CONCRETE thing the user can approve with one click. Draft actual email bodies (not placeholders). Be specific.`;
+Include 2-5 prepared actions. Each should be a CONCRETE thing the user can approve with one click. Draft actual email bodies (not placeholders). Be specific.
+
+After the prepared actions, include a PREDICTIONS block:
+
+\`\`\`predictions
+{"predictions": [
+  {"domain": "project|entity|commitment|deal", "subject": "what this is about", "prediction": "specific falsifiable prediction", "confidence": 0.0-1.0, "check_by": "YYYY-MM-DD", "reasoning": "why, citing evidence"}
+]}
+\`\`\`
+
+Include 3-7 predictions. They MUST be:
+- SPECIFIC and FALSIFIABLE (not "things will be fine")
+- TIME-BOUND (check_by = when to verify, 1-7 days out)
+- CALIBRATED (use your track record above to adjust confidence — if you've been overconfident, lower your scores)
+- IMPACTFUL (no trivial predictions like "email volume will be normal")
+- VARIED (mix of project, entity, commitment, deal domains)`;
 
     const narrative = await callClaude(prompt, 180000);
 
@@ -1972,7 +2010,41 @@ Include 2-5 prepared actions. Each should be a CONCRETE thing the user can appro
         }
       }
 
-      // Save as world narrative (without the JSON block)
+      // Extract predictions block
+      let predictionsStored = 0;
+      const predMatch = narrative.match(/```predictions\s*([\s\S]*?)```/);
+      if (predMatch) {
+        narrativeText = narrativeText.replace(/```predictions[\s\S]*?```/, '').trim();
+        try {
+          const predParsed = JSON.parse(predMatch[1]);
+          const predictions = predParsed.predictions || predParsed;
+          if (Array.isArray(predictions)) {
+            const { v4: uuidv4 } = await import('uuid');
+            for (const pred of predictions) {
+              db.prepare(`
+                INSERT INTO predictions (id, prediction_date, check_by, domain, subject,
+                  prediction, confidence, reasoning, impact_weight, outcome, source_task, project)
+                VALUES (?, date('now'), ?, ?, ?, ?, ?, ?, ?, 'pending', 'dream-09', ?)
+              `).run(
+                uuidv4(),
+                pred.check_by || new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10),
+                pred.domain || 'project',
+                pred.subject || '',
+                pred.prediction || '',
+                pred.confidence || 0.5,
+                pred.reasoning || '',
+                pred.confidence >= 0.7 ? 0.8 : 0.5, // high-confidence = high-impact
+                pred.project || null,
+              );
+              predictionsStored++;
+            }
+          }
+        } catch (err: any) {
+          console.log(`    Predictions parse warning: ${err.message?.slice(0, 80)}`);
+        }
+      }
+
+      // Save as world narrative (without the JSON/prediction blocks)
       const narrativePath = join(homedir(), '.prime', 'world-narrative.md');
       writeFileSync(narrativePath, `# Daily Intelligence Briefing\n_Generated: ${new Date().toLocaleString()}_\n\n${narrativeText}`);
 
@@ -1986,7 +2058,7 @@ Include 2-5 prepared actions. Each should be a CONCRETE thing the user can appro
         task: '09-world-narrative',
         status: 'success',
         duration_seconds: (Date.now() - start) / 1000,
-        output: { length: narrativeText.length, actions_staged: actionsStored, saved_to: narrativePath },
+        output: { length: narrativeText.length, actions_staged: actionsStored, predictions_stored: predictionsStored, saved_to: narrativePath },
       };
     }
 
