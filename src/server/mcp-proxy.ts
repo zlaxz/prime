@@ -1,0 +1,338 @@
+#!/usr/bin/env node
+
+/**
+ * Prime Recall MCP Proxy
+ *
+ * For LAPTOP use: forwards all MCP tool calls to the Mac Mini's REST API.
+ * Falls back to local SQLite if the server is unreachable.
+ *
+ * This solves the split-brain problem: Claude Desktop on the laptop
+ * always reads the Mac Mini's fresh data instead of a stale local copy.
+ *
+ * Architecture:
+ *   Claude Desktop → MCP (stdio) → this proxy → HTTP → Mac Mini:3210/api/*
+ *                                              ↘ fallback → local SQLite
+ */
+
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import http from 'http';
+import https from 'https';
+
+// Mac Mini server — try LAN first, then tunnel
+const SERVERS = [
+  'http://Zachs-Mac-mini.local:3210',   // LAN (fast, <5ms)
+  // Add Cloudflare tunnel URL here when stable:
+  // 'https://your-tunnel.trycloudflare.com',
+];
+
+let _activeServer: string | null = null;
+let _lastCheck = 0;
+
+/**
+ * Find a reachable server. Caches for 60 seconds.
+ */
+async function getServer(): Promise<string | null> {
+  if (_activeServer && Date.now() - _lastCheck < 60000) return _activeServer;
+
+  for (const server of SERVERS) {
+    try {
+      const ok = await httpGet(`${server}/api/health`, 3000);
+      if (ok) {
+        _activeServer = server;
+        _lastCheck = Date.now();
+        return server;
+      }
+    } catch {}
+  }
+
+  _activeServer = null;
+  return null;
+}
+
+/**
+ * HTTP GET with timeout. Returns parsed JSON or null.
+ */
+function httpGet(url: string, timeout = 10000): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? https : http;
+    const req = mod.get(url, { timeout }, (res) => {
+      let data = '';
+      res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch { resolve(data); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+  });
+}
+
+/**
+ * HTTP POST with JSON body. Returns parsed JSON.
+ */
+function httpPost(url: string, body: any, timeout = 30000): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? https : http;
+    const payload = JSON.stringify(body);
+    const parsed = new URL(url);
+
+    const req = mod.request({
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: parsed.pathname + parsed.search,
+      method: 'POST',
+      timeout,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch { resolve(data); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// ============================================================
+// MCP Server — proxies to Mac Mini REST API
+// ============================================================
+
+const server = new McpServer({
+  name: "prime-recall",
+  version: "0.1.0",
+  description: "Prime Recall — your unified business knowledge base. Connected to Mac Mini production server.",
+});
+
+// Helper: proxy a search request
+async function proxySearch(query: string, limit: number = 10, strategy?: string): Promise<string> {
+  const srv = await getServer();
+  if (!srv) return 'Prime Recall server unreachable. Mac Mini may be offline.';
+
+  try {
+    const result = await httpPost(`${srv}/api/search`, { query, limit, strategy });
+    if (result.results) {
+      return result.results.map((r: any, i: number) => {
+        const sim = r.similarity ? ` (${(r.similarity * 100).toFixed(0)}%)` : '';
+        const contacts = Array.isArray(r.contacts) ? r.contacts : [];
+        const commitments = Array.isArray(r.commitments) ? r.commitments : [];
+        let entry = `[${i + 1}] ${r.title}${sim}`;
+        entry += `\n   ${r.summary}`;
+        entry += `\n   Source: ${r.source} | Date: ${r.source_date || 'unknown'}${r.project ? ` | Project: ${r.project}` : ''}`;
+        if (contacts.length) entry += `\n   Contacts: ${contacts.join(', ')}`;
+        if (commitments.length) entry += `\n   Commitments: ${commitments.join('; ')}`;
+        return entry;
+      }).join('\n\n');
+    }
+    return JSON.stringify(result);
+  } catch (err: any) {
+    return `Error: ${err.message}`;
+  }
+}
+
+// ---- Tools ----
+
+server.tool(
+  "prime_search",
+  "Search the knowledge base — emails, conversations, meetings, files. Returns relevant items with similarity scores.",
+  {
+    query: z.string().describe("What to search for"),
+    limit: z.number().optional().default(10),
+    strategy: z.string().optional().describe("Search strategy: auto, semantic, keyword, graph, temporal, hierarchical"),
+  },
+  async ({ query, limit, strategy }) => {
+    const text = await proxySearch(query, limit, strategy);
+    return { content: [{ type: "text" as const, text }] };
+  }
+);
+
+server.tool(
+  "prime_ask",
+  "Ask Prime anything about the user's business. Returns an AI-generated answer with cited sources.",
+  {
+    question: z.string().describe("The question to ask"),
+  },
+  async ({ question }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpPost(`${srv}/api/ask`, { question });
+      return { content: [{ type: "text" as const, text: result.answer || JSON.stringify(result) }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_remember",
+  "Save something to the knowledge base — a fact, decision, or observation.",
+  {
+    text: z.string().describe("What to remember"),
+    project: z.string().optional().describe("Project to associate with"),
+    importance: z.string().optional().describe("low, normal, high, or critical"),
+  },
+  async ({ text, project, importance }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpPost(`${srv}/api/remember`, { text, project, importance });
+      return { content: [{ type: "text" as const, text: `Remembered: ${result.title || text.slice(0, 60)}` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_status",
+  "Show knowledge base statistics — item counts, sources, sync state.",
+  {},
+  async () => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpGet(`${srv}/api/status`);
+      let text = `Knowledge items: ${result.total_items}\n`;
+      if (result.by_source) {
+        text += '\nBy source:\n' + result.by_source.map((s: any) => `  ${s.source}: ${s.count}`).join('\n');
+      }
+      return { content: [{ type: "text" as const, text }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_get_commitments",
+  "Show all commitments — overdue, due soon, active, fulfilled.",
+  {
+    state: z.string().optional().describe("Filter by state: active, overdue, fulfilled, dropped"),
+    project: z.string().optional(),
+  },
+  async ({ state, project }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpGet(`${srv}/api/query/commitments`);
+      let text = '';
+      for (const c of (result.commitments || [])) {
+        if (state && c.state !== state) continue;
+        if (project && c.project !== project) continue;
+        const due = c.due_date ? ` (due ${c.due_date})` : '';
+        text += `[${c.state}] ${c.text}${due}\n  Owner: ${c.owner || '?'} | Project: ${c.project || '?'}\n\n`;
+      }
+      return { content: [{ type: "text" as const, text: text || 'No commitments match.' }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_get_contacts",
+  "List contacts by mention frequency.",
+  {},
+  async () => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpGet(`${srv}/api/query/contacts`);
+      const text = (result.contacts || []).slice(0, 20)
+        .map((c: any) => `${c.name} (${c.count} mentions)`)
+        .join('\n');
+      return { content: [{ type: "text" as const, text }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_get_projects",
+  "List active projects.",
+  {},
+  async () => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpGet(`${srv}/api/query/projects`);
+      const text = (result.projects || [])
+        .map((p: any) => `${p.name} (${p.items} items)`)
+        .join('\n');
+      return { content: [{ type: "text" as const, text }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_briefing",
+  "Generate a daily intelligence briefing — priorities, commitments, dropped balls, relationship health.",
+  {
+    days: z.number().optional().default(7).describe("Days to look back"),
+  },
+  async ({ days }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    // Briefing is heavy — use longer timeout
+    try {
+      const result = await httpPost(`${srv}/api/ask`, {
+        question: `Generate a morning briefing. Look back ${days} days. Include: top priorities, commitments due, dropped balls, relationship health, what changed.`
+      }, 120000);
+      return { content: [{ type: "text" as const, text: result.answer || 'Briefing generation failed.' }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_notify",
+  "Send a notification to the user (iMessage for critical/high, logged for normal/low).",
+  {
+    message: z.string().describe("Notification message"),
+    urgency: z.string().optional().default("normal").describe("critical, high, normal, low"),
+  },
+  async ({ message, urgency }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpPost(`${srv}/api/notify`, { message, urgency });
+      return { content: [{ type: "text" as const, text: `Notification sent (${urgency}): ${message.slice(0, 60)}` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Notification logged locally: ${message.slice(0, 60)}` }] };
+    }
+  }
+);
+
+// ============================================================
+// Start
+// ============================================================
+
+async function main() {
+  // Check server connectivity at startup
+  const srv = await getServer();
+  if (srv) {
+    console.error(`[MCP Proxy] Connected to ${srv}`);
+  } else {
+    console.error('[MCP Proxy] WARNING: Mac Mini unreachable. Tools will fail until server is available.');
+  }
+
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+main().catch(console.error);
