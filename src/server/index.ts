@@ -318,22 +318,34 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         if (profilesRaw) projectProfiles = JSON.parse(profilesRaw.value);
       } catch {}
 
+      // Surface ALL projects with next actions — the system already figured out what matters
+      const statusUrgency: Record<string, string> = {
+        accelerating: 'critical',  // Carefront launch — highest urgency
+        stalling: 'high',          // Stalling deals need unblocking
+        active: 'medium',
+        steady: 'low',
+      };
+
+      // Skip projects that are just maintenance or have been paused
+      const skipProjects = new Set(['COI Processing Automation', 'Prime']);
+
       for (const p of projectProfiles) {
-        if ((p.status === 'accelerating' || p.status === 'active') && p.next_action) {
-          // Don't duplicate if already in commitments
-          const alreadyShown = priorities.some(pr => pr.project === p.project && pr.tier === 1);
-          if (!alreadyShown) {
-            priorities.push({
-              id: `project-${p.project}`,
-              tier: 1,
-              type: 'strategic',
-              summary: p.next_action,
-              reasoning: p.status_reasoning?.slice(0, 200),
-              project: p.project,
-              urgency: p.status === 'accelerating' ? 'high' : 'medium',
-            });
-          }
-        }
+        if (!p.next_action) continue;
+        if (skipProjects.has(p.project)) continue;
+        if (p.next_action.toLowerCase().includes('no action needed')) continue;
+
+        // Don't duplicate if project already in commitments
+        const alreadyShown = priorities.some(pr => pr.project === p.project && pr.tier === 1);
+
+        priorities.push({
+          id: `project-${p.project}`,
+          tier: alreadyShown ? 2 : 1, // Demote to tier 2 if commitment already covers it
+          type: 'strategic',
+          summary: p.next_action,
+          reasoning: `${p.project} [${p.status}]: ${p.status_reasoning?.slice(0, 150)}`,
+          project: p.project,
+          urgency: statusUrgency[p.status] || 'medium',
+        });
       }
 
       // ---- TIER 2: Staged actions (quality-gated) ----
