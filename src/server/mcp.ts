@@ -995,6 +995,115 @@ srv.tool(
   }
 );
 
+// ── Sampling-powered investigation (uses Claude Desktop's own LLM) ────
+
+srv.tool(
+  "prime_deep_investigate",
+  "Deep investigation that uses Claude's own reasoning to analyze Prime's data. Retrieves full source material (emails, transcripts, documents), builds a complete narrative, then asks Claude to reason about it. Use this when you need deep analysis of a relationship, project, or thread — not just data retrieval.",
+  {
+    topic: z.string().describe("What to investigate (person name, project, deal, or question)"),
+    depth: z.enum(["quick", "deep"]).optional().default("deep").describe("quick = search only, deep = full source retrieval + reasoning"),
+  },
+  async ({ topic, depth }, extra) => {
+    const db = getDb();
+
+    // Step 1: Search for relevant items
+    const { search } = await import('../ai/search.js');
+    const results = await search(db, topic, { limit: 10, strategy: 'auto', rerank: true });
+    const items = results.items;
+
+    if (items.length === 0) {
+      return { content: [{ type: "text" as const, text: `No data found for "${topic}".` }] };
+    }
+
+    // Step 2: Get deep source content
+    let deepContent = '';
+    if (depth === 'deep' && items.length > 0) {
+      try {
+        const { retrieveDeepContext } = await import('../source-retrieval.js');
+        deepContent = await retrieveDeepContext(db, items.slice(0, 5), 5) || '';
+      } catch {}
+    }
+
+    // Step 3: Get thread context
+    const threads = db.prepare(
+      "SELECT title, current_state, next_action, narrative_md FROM narrative_threads WHERE status = 'active' AND (title LIKE ? OR project LIKE ?) LIMIT 3"
+    ).all(`%${topic}%`, `%${topic}%`) as any[];
+
+    // Step 4: Get entity context
+    const entities = db.prepare(`
+      SELECT e.canonical_name, e.user_label, ep.communication_nature, ep.alert_verdict
+      FROM entities e LEFT JOIN entity_profiles ep ON e.id = ep.entity_id
+      WHERE e.canonical_name LIKE ? AND e.user_dismissed = 0 LIMIT 5
+    `).all(`%${topic}%`) as any[];
+
+    // Step 5: Get predictions about this topic
+    const predictions = db.prepare(
+      "SELECT prediction, confidence, outcome FROM predictions WHERE (subject LIKE ? OR project LIKE ?) ORDER BY prediction_date DESC LIMIT 5"
+    ).all(`%${topic}%`, `%${topic}%`) as any[];
+
+    // Step 6: Get correction rules
+    const rules = db.prepare(
+      "SELECT correction_rule, domain FROM strategic_lessons WHERE superseded_by IS NULL AND correction_rule IS NOT NULL LIMIT 5"
+    ).all() as any[];
+
+    // Build the context package
+    const contextParts = [
+      `TOPIC: ${topic}`,
+      `\nSEARCH RESULTS (${items.length} items):`,
+      items.map((i: any) => `[${i.source}] ${i.source_date?.slice(0,10)} — ${i.title}\n  ${i.summary}`).join('\n'),
+    ];
+
+    if (deepContent) contextParts.push(`\nFULL SOURCE MATERIAL:\n${deepContent}`);
+
+    if (threads.length > 0) {
+      contextParts.push('\nNARRATIVE THREADS:');
+      threads.forEach((t: any) => {
+        contextParts.push(`Thread: ${t.title}\nState: ${t.current_state}\nNext: ${t.next_action}`);
+        if (t.narrative_md) contextParts.push(t.narrative_md.slice(0, 2000));
+      });
+    }
+
+    if (entities.length > 0) {
+      contextParts.push('\nENTITY PROFILES:');
+      entities.forEach((e: any) => contextParts.push(`${e.canonical_name}: ${e.user_label || 'unknown'}, ${e.communication_nature || ''}, ${e.alert_verdict || ''}`));
+    }
+
+    if (predictions.length > 0) {
+      contextParts.push('\nPREDICTIONS:');
+      predictions.forEach((p: any) => contextParts.push(`"${p.prediction}" (${Math.round(p.confidence*100)}% confidence) → ${p.outcome}`));
+    }
+
+    if (rules.length > 0) {
+      contextParts.push('\nCORRECTION RULES (from past errors):');
+      rules.forEach((r: any) => contextParts.push(`[${r.domain}] ${r.correction_rule}`));
+    }
+
+    const fullContext = contextParts.join('\n');
+
+    // Step 7: Try MCP sampling (ask Claude Desktop to reason)
+    try {
+      const samplingResult = await srv.server.createMessage({
+        messages: [{
+          role: 'user',
+          content: { type: 'text', text: `You are Prime, an AI Chief of Staff. Based on this intelligence, provide a thorough analysis of "${topic}".\n\n${fullContext}\n\nAnalyze: What's the current state? What should Zach do? What risks exist? What's the recommended next action?` },
+        }],
+        maxTokens: 2000,
+      });
+
+      const sampledText = typeof samplingResult.content === 'string'
+        ? samplingResult.content
+        : samplingResult.content.type === 'text' ? samplingResult.content.text : JSON.stringify(samplingResult.content);
+
+      return { content: [{ type: "text" as const, text: `**Deep Investigation: ${topic}**\n\n${sampledText}\n\n---\n*Based on ${items.length} sources, ${threads.length} threads, ${entities.length} entities, ${predictions.length} predictions*` }] };
+
+    } catch (samplingErr: any) {
+      // Sampling not supported or failed — return raw context instead
+      return { content: [{ type: "text" as const, text: `**Investigation: ${topic}** (raw context — sampling unavailable)\n\n${fullContext.slice(0, 8000)}` }] };
+    }
+  }
+);
+
 } // end registerPrimeTools
 
 // ── Stdio mode (Claude Desktop local) ────────────────────
