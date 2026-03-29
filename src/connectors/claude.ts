@@ -26,6 +26,7 @@ interface ClaudeConversation {
   is_starred?: boolean;
   project_uuid?: string;
   chat_messages?: ClaudeMessage[];
+  _org_id?: string;  // Added during listing to track which org this conversation belongs to
 }
 
 interface ClaudeMessage {
@@ -472,6 +473,8 @@ export async function scanClaude(
         `/organizations/${org.id}/chat_conversations`,
         sessionKey
       );
+      // Tag each conversation with its org ID for detail fetching
+      for (const c of allConvos) c._org_id = org.id;
       // Include ALL conversations, not just recent ones
       // The dedup check (by source_ref) prevents re-processing already-indexed ones
       const filtered = days >= 365
@@ -527,13 +530,17 @@ export async function scanClaude(
 
   const fetchWithTimeout = async (convoMeta: ClaudeConversation): Promise<ClaudeConversation | null> => {
     try {
-      return await Promise.race([
+      const oid = convoMeta._org_id || orgIds[0]?.id;
+      if (!oid) return null;
+      const result = await Promise.race([
         claudeApiGet<ClaudeConversation>(
-          `/organizations/${orgId}/chat_conversations/${convoMeta.uuid}`,
+          `/organizations/${oid}/chat_conversations/${convoMeta.uuid}`,
           sessionKey
         ),
         new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), FETCH_TIMEOUT)),
       ]);
+      if (result) result._org_id = oid;
+      return result;
     } catch {
       return null;
     }

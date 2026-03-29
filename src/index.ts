@@ -441,7 +441,7 @@ program
       if (success) {
         console.log('\n  Scanning your Claude conversations...\n');
 
-        const { conversations, items, artifacts, skipped } = await scanClaude(db, { days: 90, maxConversations: 200 });
+        const { conversations, items, artifacts, skipped } = await scanClaude(db, { days: 365, maxConversations: 10000 });
 
         console.log(`\n  ✓ ${conversations} conversations → ${items} knowledge items (${artifacts} artifacts)`);
         if (skipped > 0) console.log(`    ${skipped} conversations skipped (already indexed or too short)`);
