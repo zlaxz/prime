@@ -402,6 +402,10 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         sessionIdGenerator: undefined, // stateless
       });
 
+      transport.onerror = (err) => {
+        console.error('[MCP transport error]', err.message);
+      };
+
       await mcpServer.connect(transport);
       await transport.handleRequest(req, res, req.body);
 
@@ -410,7 +414,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         mcpServer.close();
       });
     } catch (error: any) {
-      console.error('MCP request error:', error);
+      console.error('[MCP handler error]', error.message || error);
       if (!res.headersSent) {
         res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
       }
