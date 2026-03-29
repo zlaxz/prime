@@ -12,6 +12,7 @@ import { v4 as uuid } from 'uuid';
 import { processOtterMeeting } from '../connectors/otter.js';
 import { startScheduler } from '../scheduler.js';
 import { registerPrimeTools, MCP_SERVER_CONFIG } from './mcp.js';
+import { getAmbientDisplayHTML } from './ambient-display.js';
 
 export async function startServer(port: number = 3210, options: { sync?: boolean; syncInterval?: number } = {}) {
   const app = express();
@@ -238,7 +239,111 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     });
   });
 
-  // ── Dashboard ────────────────────────────────────────────
+  // ── Ambient State API (powers all display surfaces) ─────
+  app.get('/api/ambient', (_req, res) => {
+    try {
+      // Staged actions pending
+      const actions = db.prepare(
+        "SELECT id, type, summary, reasoning, project FROM staged_actions WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY id"
+      ).all() as any[];
+
+      // World narrative freshness
+      const narrativeState = db.prepare("SELECT value, updated_at FROM graph_state WHERE key = 'world_narrative'").get() as any;
+      const narrativeAge = narrativeState ? (Date.now() - new Date(narrativeState.updated_at).getTime()) / 3600000 : 999;
+
+      // Prediction accuracy
+      const predAccuracy = db.prepare("SELECT value FROM graph_state WHERE key = 'prediction_accuracy'").get() as any;
+      const accuracy = predAccuracy ? JSON.parse(predAccuracy.value) : null;
+
+      // Active threads
+      const threads = db.prepare(
+        "SELECT title, current_state, next_action, project, source_count, item_count FROM narrative_threads WHERE status = 'active' ORDER BY latest_source_date DESC LIMIT 5"
+      ).all() as any[];
+
+      // Recent strategic reflection
+      const reflection = db.prepare("SELECT value FROM graph_state WHERE key = 'strategic_reflection_latest'").get() as any;
+      const metaInsight = reflection ? JSON.parse(reflection.value)?.meta_insight : null;
+
+      // Last dream run
+      const lastDream = (db.prepare("SELECT value FROM graph_state WHERE key = 'last_dream_run'").get() as any)?.value;
+      const dreamAge = lastDream ? (Date.now() - new Date(lastDream).getTime()) / 3600000 : 999;
+
+      // Calendar today
+      const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+      const todayEnd = new Date(); todayEnd.setHours(23,59,59,999);
+      const todayEvents = db.prepare(`
+        SELECT title, source_date, metadata FROM knowledge_primary
+        WHERE source = 'calendar' AND source_date >= ? AND source_date <= ?
+        ORDER BY source_date ASC LIMIT 5
+      `).all(todayStart.toISOString(), todayEnd.toISOString()) as any[];
+
+      // Entity health (from entity profiles)
+      const entityHealth = db.prepare(`
+        SELECT e.canonical_name, ep.communication_nature, ep.alert_verdict
+        FROM entity_profiles ep JOIN entities e ON ep.entity_id = e.id
+        WHERE ep.alert_verdict IN ('genuine_concern', 'worth_monitoring')
+        ORDER BY ep.last_verified_at DESC LIMIT 5
+      `).all() as any[];
+
+      // Determine display state
+      const criticalActions = actions.filter((a: any) => a.type === 'email');
+      let displayState: string;
+      if (criticalActions.length >= 3) displayState = 'crisis';
+      else if (actions.length > 0) displayState = 'pulse';
+      else if (narrativeAge < 1) displayState = 'briefing';
+      else displayState = 'ambient';
+
+      // The one thing
+      const oneThingRaw = db.prepare("SELECT value FROM graph_state WHERE key = 'world_narrative'").get() as any;
+      let oneThing = 'All systems nominal.';
+      if (oneThingRaw) {
+        const match = oneThingRaw.value?.match(/\*\*The One Thing\*\*[:\s—-]*(.*?)(?:\n|$)/);
+        if (match) oneThing = match[1].trim();
+      }
+
+      const stats = getStats(db);
+
+      res.json({
+        display_state: displayState,
+        one_thing: oneThing,
+        actions_pending: actions.length,
+        actions: actions.map((a: any) => ({ id: a.id, type: a.type, summary: a.summary, project: a.project })),
+        threads: threads.map((t: any) => ({ title: t.title, state: t.current_state, next: t.next_action, items: t.item_count })),
+        entity_alerts: entityHealth.map((e: any) => ({ name: e.canonical_name, verdict: e.alert_verdict })),
+        calendar_today: todayEvents.map((e: any) => {
+          const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : e.metadata || {};
+          return { title: e.title, time: meta.start_time || e.source_date };
+        }),
+        prediction_accuracy: accuracy ? Math.round(accuracy.accuracy_rate * 100) : null,
+        meta_insight: metaInsight,
+        dream_age_hours: Math.round(dreamAge),
+        knowledge_items: stats.total_items,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Action approval (for ambient display + API clients) ──
+  app.post('/api/approve-action', async (req, res) => {
+    try {
+      const { id } = req.body;
+      if (!id) return res.status(400).json({ error: 'id required' });
+      const { executeAction } = await import('../actions.js');
+      const result = await executeAction(db, id);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Ambient Display (full-screen kiosk app) ────────────
+  app.get('/ambient', (_req, res) => {
+    res.send(getAmbientDisplayHTML());
+  });
+
+  // ── Legacy Dashboard ───────────────────────────────────
   app.get('/dashboard', async (_req, res) => {
     const stats = getStats(db);
 
