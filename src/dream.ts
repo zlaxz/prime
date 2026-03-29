@@ -51,9 +51,25 @@ const PERSISTENT_SESSIONS = {
 async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessionId?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const env = { ...process.env };
-    delete env.ANTHROPIC_API_KEY; // Force Max subscription OAuth
 
-    const args = sessionId ? ['-p', '--resume', sessionId] : ['-p'];
+    // If oauth-token.txt exists (Mac Mini), read it and use --bare mode
+    // This bypasses the keychain which is inaccessible from SSH/cron/launchd
+    let useBare = false;
+    try {
+      const tokenPath = join(homedir(), '.claude', 'oauth-token.txt');
+      if (existsSync(tokenPath)) {
+        const tokenData = JSON.parse(readFileSync(tokenPath, 'utf-8'));
+        env.ANTHROPIC_API_KEY = tokenData.claudeAiOauth?.accessToken || '';
+        useBare = true;
+      } else {
+        delete env.ANTHROPIC_API_KEY; // Force Max subscription OAuth on laptop
+      }
+    } catch {
+      delete env.ANTHROPIC_API_KEY;
+    }
+
+    const baseArgs = useBare ? ['-p', '--bare'] : ['-p'];
+    const args = sessionId ? [...baseArgs, '--resume', sessionId] : baseArgs;
     const proc = spawn('claude', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
