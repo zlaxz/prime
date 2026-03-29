@@ -437,37 +437,62 @@ export async function scanClaude(
 
   const sessionKey = getConfig(db, 'claude_session_key');
   const apiKey = getConfig(db, 'openai_api_key');
-  const orgId = options.orgId || getConfig(db, 'claude_active_org');
 
   if (!sessionKey) throw new Error('Claude not connected. Run: recall connect claude');
   if (!apiKey) throw new Error('No API key. Run: recall init');
-  if (!orgId) throw new Error('No active organization. Run: recall connect claude');
 
   const stats = { conversations: 0, items: 0, artifacts: 0, skipped: 0 };
 
-  // Fetch conversation list
-  const allConversations = await claudeApiGet<ClaudeConversation[]>(
-    `/organizations/${orgId}/chat_conversations`,
-    sessionKey
-  );
+  // Determine which orgs to scan — ALL chat-capable orgs, not just one
+  let orgIds: { id: string; name: string }[] = [];
+  if (options.orgId) {
+    orgIds = [{ id: options.orgId, name: 'specified' }];
+  } else {
+    const savedOrgs = getConfig(db, 'claude_organizations') || [];
+    orgIds = savedOrgs
+      .filter((o: any) => o.capabilities?.includes('chat'))
+      .map((o: any) => ({ id: o.uuid, name: o.name }));
+    if (orgIds.length === 0) {
+      const activeOrg = getConfig(db, 'claude_active_org');
+      if (activeOrg) orgIds = [{ id: activeOrg, name: 'active' }];
+    }
+  }
 
-  // Filter by date
+  if (orgIds.length === 0) throw new Error('No active organization. Run: recall connect claude');
+
+  // Fetch conversations from ALL orgs
   const cutoff = new Date(Date.now() - days * 86400000);
-  const conversations = allConversations
-    .filter(c => new Date(c.updated_at) >= cutoff)
-    .slice(0, maxConversations);
+  let conversations: ClaudeConversation[] = [];
 
-  console.log(`  Found ${allConversations.length} total, ${conversations.length} in last ${days} days`);
+  for (const org of orgIds) {
+    try {
+      const allConvos = await claudeApiGet<ClaudeConversation[]>(
+        `/organizations/${org.id}/chat_conversations`,
+        sessionKey
+      );
+      const filtered = allConvos.filter(c => new Date(c.updated_at) >= cutoff);
+      console.log(`  ${org.name}: ${allConvos.length} total, ${filtered.length} in last ${days} days`);
+      conversations.push(...filtered);
+    } catch (err: any) {
+      console.log(`  ${org.name}: skipped (${err.message?.slice(0, 50)})`);
+    }
+  }
 
-  // Fetch projects for enrichment
+  conversations = conversations.slice(0, maxConversations);
+  console.log(`  Combined: ${conversations.length} conversations to process`);
+
+  // Fetch projects from all orgs for enrichment
   let projects: ClaudeProject[] = [];
-  try {
-    projects = await claudeApiGet<ClaudeProject[]>(
-      `/organizations/${orgId}/projects`,
-      sessionKey
-    );
-  } catch {
-    // Non-fatal
+  for (const org of orgIds) {
+    try {
+      const orgProjects = await claudeApiGet<ClaudeProject[]>(
+        `/organizations/${org.id}/projects`,
+        sessionKey
+      );
+      projects.push(...orgProjects);
+    } catch {
+      // Non-fatal
+    }
   }
 
   const projectMap = new Map(projects.map(p => [p.uuid, p.name]));
