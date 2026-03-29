@@ -1903,8 +1903,8 @@ Return ONLY one word: FULFILLED or OVERDUE`;
 async function task09WorldNarrative(db: Database.Database): Promise<TaskResult> {
   const start = Date.now();
   try {
-    // Expire previous staged actions (replaced by this run's fresh recommendations)
-    db.prepare("UPDATE staged_actions SET status = 'expired', acted_at = datetime('now') WHERE status = 'pending'").run();
+    // Expire previous Task 09 staged actions (but NOT Task 18 strategic actions or Task 14 investigation actions)
+    db.prepare("UPDATE staged_actions SET status = 'expired', acted_at = datetime('now') WHERE status = 'pending' AND source_task = 'world-narrative'").run();
 
     // Load yesterday's staged action outcomes for feedback loop
     const yesterdayOutcomes = db.prepare(`
