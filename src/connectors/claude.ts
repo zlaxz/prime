@@ -618,7 +618,7 @@ export async function scanClaude(
   for (let ei = 0; ei < embeddingIndex.length; ei++) {
     const entry = embeddingIndex[ei];
     const embedding = allEmbeddings[ei];
-    const { convo, extracted, artifacts, projectName } = processedConversations[entry.idx];
+    const { convo, extracted, artifacts, projectName, conversationText } = processedConversations[entry.idx];
 
     if (entry.type === 'conversation') {
       const item: KnowledgeItem = {
