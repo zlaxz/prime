@@ -431,6 +431,19 @@ async function task14Investigation(db: Database.Database): Promise<TaskResult> {
             try {
               const threadContent = await retrieveGmailThread(db, threadId);
               if (threadContent) narrativeParts.push(`\n=== [EMAIL THREAD] ${item.source_date?.slice(0,10)} — ${item.title} ===\n${threadContent}`);
+
+              // Also retrieve ATTACHMENTS (Word docs, PDFs, etc.) — the actual documents matter
+              try {
+                const meta = typeof item.metadata === 'string' ? JSON.parse(item.metadata) : (item.metadata || {});
+                // Find message IDs in this thread that might have attachments
+                const { retrieveGmailAttachments } = await import('./source-retrieval.js');
+                // Use the thread's first message ID from source_ref or metadata
+                const msgId = meta.message_id || threadId;
+                const attachments = await retrieveGmailAttachments(db, msgId);
+                for (const att of attachments) {
+                  narrativeParts.push(`\n=== [ATTACHED DOCUMENT] ${att.filename} ===\n${att.content}`);
+                }
+              } catch {}
             } catch {}
           }
         } else if (item.source === 'fireflies') {

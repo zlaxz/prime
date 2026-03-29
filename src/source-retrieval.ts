@@ -170,6 +170,98 @@ export async function retrieveFirefliesTranscript(db: Database.Database, meeting
   }
 }
 
+// ── Gmail Attachment Retrieval ──────────────────────────────
+
+export async function retrieveGmailAttachments(
+  db: Database.Database,
+  messageId: string
+): Promise<Array<{ filename: string; content: string; mimeType: string }>> {
+  const gmail = await getGmailClient(db);
+  if (!gmail) return [];
+
+  try {
+    const msg = await gmail.users.messages.get({
+      userId: 'me',
+      id: messageId,
+      format: 'full',
+    });
+
+    const attachments: Array<{ filename: string; content: string; mimeType: string }> = [];
+    const parts = msg.data.payload?.parts || [];
+
+    for (const part of parts) {
+      if (!part.filename || !part.body?.attachmentId) continue;
+
+      // Only process readable document types
+      const readable = ['.docx', '.doc', '.txt', '.pdf', '.md', '.csv', '.xlsx'];
+      const ext = part.filename.toLowerCase();
+      if (!readable.some(r => ext.endsWith(r))) continue;
+
+      try {
+        const attachment = await gmail.users.messages.attachments.get({
+          userId: 'me',
+          messageId,
+          id: part.body.attachmentId,
+        });
+
+        const buffer = Buffer.from(attachment.data.data!, 'base64');
+        let text = '';
+
+        if (ext.endsWith('.txt') || ext.endsWith('.md') || ext.endsWith('.csv')) {
+          text = buffer.toString('utf-8');
+        } else if (ext.endsWith('.docx') || ext.endsWith('.doc')) {
+          // macOS textutil converts Word docs to text
+          const { execSync } = await import('child_process');
+          const { writeFileSync, unlinkSync } = await import('fs');
+          const tmpPath = `/tmp/prime_attachment_${Date.now()}.docx`;
+          writeFileSync(tmpPath, buffer);
+          try {
+            text = execSync(`textutil -convert txt -stdout "${tmpPath}" 2>/dev/null`).toString();
+          } catch {
+            text = `[Could not extract text from ${part.filename}]`;
+          }
+          try { unlinkSync(tmpPath); } catch {}
+        } else if (ext.endsWith('.pdf')) {
+          // macOS has built-in PDF text extraction
+          const { execSync } = await import('child_process');
+          const { writeFileSync, unlinkSync } = await import('fs');
+          const tmpPath = `/tmp/prime_attachment_${Date.now()}.pdf`;
+          writeFileSync(tmpPath, buffer);
+          try {
+            // Try mdls + textutil, or python pdftotext
+            text = execSync(`python3 -c "
+import sys
+try:
+    import fitz  # PyMuPDF
+    doc = fitz.open('${tmpPath}')
+    text = '\\n'.join(page.get_text() for page in doc)
+    print(text[:10000])
+except:
+    print('[PDF extraction requires PyMuPDF: pip install pymupdf]')
+" 2>/dev/null`).toString();
+          } catch {
+            text = `[Could not extract text from ${part.filename}]`;
+          }
+          try { unlinkSync(tmpPath); } catch {}
+        }
+
+        if (text && text.length > 10) {
+          attachments.push({
+            filename: part.filename,
+            content: text.slice(0, 15000), // Cap at 15K chars per document
+            mimeType: part.mimeType || 'unknown',
+          });
+        }
+      } catch {}
+    }
+
+    return attachments;
+  } catch (err: any) {
+    console.log(`  Warning: Could not retrieve attachments for ${messageId}: ${err.message?.slice(0, 80)}`);
+    return [];
+  }
+}
+
 // ── Master retrieval: Given a knowledge item, get the full source ──
 
 export async function retrieveSourceContent(
