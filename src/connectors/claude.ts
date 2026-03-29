@@ -546,12 +546,16 @@ export async function scanClaude(
         const conversationText = messages
           .map(m => `${m.sender}: ${stripArtifacts(m.text)}`)
           .join('\n\n')
-          .slice(0, 8000);
+          .slice(0, 20000); // Increased from 8000 — capture full research conversations
 
         // Extract artifacts from ALL messages (assistant text + attachments)
         const artifacts = extractArtifacts(messages);
 
-        const extracted = await extractIntelligence(conversationText, apiKey);
+        // For conversations, request a DETAILED summary — these are research sessions, not single emails
+        const extracted = await extractIntelligence(
+          `[CONVERSATION - provide a DETAILED summary of 500-1000 words covering ALL key findings, recommendations, and decisions. Do not compress to a few sentences.]\n\n${conversationText}`,
+          apiKey
+        );
         const projectName = convo.project_uuid ? (projectMap.get(convo.project_uuid) ?? null) : null;
 
         return { convo, extracted, artifacts, projectName, conversationText };
@@ -648,6 +652,8 @@ export async function scanClaude(
           artifact_titles: artifacts.map(a => a.title),
           is_starred: convo.is_starred,
           platform: 'claude.ai',
+          // Store full conversation text so agents can access the detail
+          conversation_text: conversationText,
         },
       };
 

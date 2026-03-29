@@ -307,7 +307,16 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         display_state: displayState,
         one_thing: oneThing,
         actions_pending: actions.length,
-        actions: actions.map((a: any) => ({ id: a.id, type: a.type, summary: a.summary, project: a.project })),
+        actions: actions.map((a: any) => {
+          let payload: any = {};
+          try { payload = JSON.parse(a.payload || '{}'); } catch {}
+          return {
+            id: a.id, type: a.type, summary: a.summary, project: a.project,
+            reasoning: a.reasoning,
+            to: payload.to, subject: payload.subject, body: payload.body,
+            title: payload.title, text: payload.text,
+          };
+        }),
         threads: threads.map((t: any) => ({ title: t.title, state: t.current_state, next: t.next_action, items: t.item_count })),
         entity_alerts: entityHealth.map((e: any) => ({ name: e.canonical_name, verdict: e.alert_verdict })),
         calendar_today: todayEvents.map((e: any) => {
