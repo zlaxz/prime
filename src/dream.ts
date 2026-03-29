@@ -380,6 +380,149 @@ Return ONLY significant moments. If an item has nothing episodic, skip it. Quali
   }
 }
 
+// ── Task 18: Strategic Action Generator ──────────────────────
+// Generates PROACTIVE work items for ALL active projects.
+// Unlike Task 14 (stalling investigation), this asks:
+// "What WORK should Zach create/complete to move the business forward?"
+// Produces deliverable-focused staged actions, not reply-focused ones.
+// Uses DeepSeek Reasoner (cheap bulk work).
+
+async function task18StrategicActions(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    const profilesRaw = (db.prepare(
+      "SELECT value FROM graph_state WHERE key = 'project_profiles'"
+    ).get() as any)?.value;
+    if (!profilesRaw) return { task: '18-strategic-actions', status: 'skipped', duration_seconds: 0, output: { reason: 'no project profiles' } };
+
+    const profiles = JSON.parse(profilesRaw);
+
+    // Focus on projects that need WORK, not just stalling ones
+    const activeProjects = profiles.filter((p: any) =>
+      ['accelerating', 'active', 'stalling'].includes(p.status)
+      && p.next_action
+      && !p.next_action.toLowerCase().includes('no action needed')
+    );
+
+    if (activeProjects.length === 0) {
+      return { task: '18-strategic-actions', status: 'skipped', duration_seconds: 0, output: { reason: 'no active projects needing work' } };
+    }
+
+    // Expire old staged actions (72h max)
+    db.prepare("UPDATE staged_actions SET status = 'expired' WHERE status = 'pending' AND created_at < datetime('now', '-72 hours')").run();
+
+    // Build context for DeepSeek
+    const projectContext = activeProjects.map((p: any) => {
+      // Get recent items for this project
+      const items = db.prepare(
+        "SELECT title, source, source_date FROM knowledge WHERE project = ? AND importance != 'noise' ORDER BY source_date DESC LIMIT 5"
+      ).all(p.project) as any[];
+
+      const commitments = db.prepare(
+        "SELECT text, state, due_date, owner FROM commitments WHERE project = ? AND state IN ('active', 'overdue') ORDER BY due_date ASC LIMIT 3"
+      ).all(p.project) as any[];
+
+      return `## ${p.project} [${p.status}]
+Status: ${p.status_reasoning?.slice(0, 200)}
+Next action (from project profile): ${p.next_action}
+Recent activity: ${items.map((i: any) => `${i.source_date?.slice(0, 10)} ${i.source}: ${i.title}`).join('; ')}
+Open commitments: ${commitments.map((c: any) => `${c.text} [${c.state}]${c.due_date ? ' due:' + c.due_date : ''}`).join('; ') || 'none'}`;
+    }).join('\n\n');
+
+    const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+    // Use DeepSeek Reasoner for this (bulk work, cheap)
+    const { getBulkProvider } = await import('./ai/providers.js');
+    const provider = await getBulkProvider(getConfig(db, 'openai_api_key') || undefined);
+
+    const response = await provider.chat(
+      [
+        {
+          role: 'system',
+          content: `You are a strategic business analyst for a solo insurance entrepreneur with ADHD. Today is ${today}.
+
+Given these active projects, generate 3-5 SPECIFIC, ACTIONABLE work items that Zach should do in the next 48 hours.
+
+RULES:
+1. Work items must be DELIVERABLES, not "follow up with X" or "reply to Y"
+   Good: "Draft broker outreach email template for the top 10 retail agents"
+   Good: "Finalize Gallagher co-branded marketing PDF — send to Garry for review"
+   Bad: "Follow up with Brayden" (too vague, might be stale)
+   Bad: "Reply to Peter Fine" (might be a solicitation)
+
+2. Each work item must be tied to a specific project and have a clear completion state.
+
+3. Prioritize REVENUE-GENERATING and DEADLINE-DRIVEN items over relationship maintenance.
+
+4. For email actions: include the exact recipient email if you know it, subject line, and draft body.
+
+5. For document actions: describe what the document should contain.
+
+6. Maximum 2 items per project. Focus on the highest-leverage actions.
+
+Return JSON:
+{
+  "actions": [
+    {
+      "type": "email|document|calendar|task",
+      "summary": "One line description",
+      "project": "Project Name",
+      "reasoning": "Why this matters NOW — cite specific evidence",
+      "to": "email@address (for emails) or null",
+      "subject": "Email subject (for emails) or null",
+      "body": "Full draft text (for emails) or document outline (for documents) or null",
+      "urgency": "critical|high|medium"
+    }
+  ]
+}`,
+        },
+        { role: 'user', content: projectContext },
+      ],
+      { temperature: 0.2, max_tokens: 4000, json: true }
+    );
+
+    const result = tryParseJSON(response);
+    if (!result?.actions?.length) {
+      return { task: '18-strategic-actions', status: 'success', duration_seconds: (Date.now() - start) / 1000, output: { actions: 0, reason: 'no actions generated' } };
+    }
+
+    // Store as staged actions
+    let created = 0;
+    for (const action of result.actions.slice(0, 5)) {
+      // Quality check: skip if no clear deliverable
+      if (!action.summary || action.summary.length < 10) continue;
+
+      db.prepare(`
+        INSERT INTO staged_actions (type, summary, reasoning, project, payload, source_task, status, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, 'task-18-strategic', 'pending', datetime('now'), datetime('now', '+72 hours'))
+      `).run(
+        action.type || 'task',
+        action.summary,
+        action.reasoning || '',
+        action.project || '',
+        JSON.stringify({
+          type: action.type,
+          to: action.to || null,
+          subject: action.subject || null,
+          body: action.body || null,
+        })
+      );
+      created++;
+    }
+
+    console.log(`    Generated ${created} strategic actions for ${activeProjects.length} projects`);
+
+    return {
+      task: '18-strategic-actions',
+      status: 'success',
+      duration_seconds: (Date.now() - start) / 1000,
+      output: { actions: created, projects: activeProjects.length },
+    };
+  } catch (err: any) {
+    return { task: '18-strategic-actions', status: 'failed', duration_seconds: (Date.now() - start) / 1000, output: { error: err.message?.slice(0, 200) } };
+  }
+}
+
 // ── Task 14: Strategic Investigation ──────────────────────────
 // Designed by 5-agent debate: Architect, Simplicity, ADHD UX, Red Team, Explorer
 // Detects stalling projects and does DEEP investigation with full context.
@@ -2154,6 +2297,14 @@ export async function runDreamPipeline(
     const r14 = await task14Investigation(db);
     results.push(r14);
     console.log(`    ${r14.status === 'success' ? '✓' : r14.status === 'skipped' ? '○' : '✗'} ${r14.status} (${r14.duration_seconds.toFixed(1)}s)${r14.output ? ` — ${JSON.stringify(r14.output).slice(0, 150)}` : ''}`);
+
+    // Task 18: Strategic Action Generator — what WORK should Zach do?
+    // Unlike Task 14 (stalling investigation), this generates PROACTIVE work items
+    // for ALL active projects: deliverables, outreach, documents, prep work.
+    console.log('  Task 18: Strategic action generation (DeepSeek)...');
+    const r18 = await task18StrategicActions(db);
+    results.push(r18);
+    console.log(`    ${r18.status === 'success' ? '✓' : r18.status === 'skipped' ? '○' : '✗'} ${r18.status} (${r18.duration_seconds.toFixed(1)}s)${r18.output ? ` — ${JSON.stringify(r18.output).slice(0, 150)}` : ''}`);
 
     // Task 08: Commitment Verification — WHAT's real vs stale
     console.log('  Task 08: Commitment verification (LLM)...');
