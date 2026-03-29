@@ -450,6 +450,104 @@ function initSchema(db: Database.Database) {
 
     -- Index on source for efficient view filtering
     CREATE INDEX IF NOT EXISTS idx_knowledge_source ON knowledge(source);
+
+    -- ============================================================
+    -- PREDICTIONS — Recursive Intelligence Loop
+    -- Track system predictions, verify outcomes, learn from errors
+    -- ============================================================
+    CREATE TABLE IF NOT EXISTS predictions (
+      id TEXT PRIMARY KEY,
+      prediction_date TEXT NOT NULL,
+      check_by TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      prediction TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      reasoning TEXT NOT NULL,
+      basis_data TEXT DEFAULT '{}',
+      outcome TEXT DEFAULT 'pending',
+      outcome_evidence TEXT,
+      outcome_date TEXT,
+      error_analysis TEXT,
+      impact_weight REAL DEFAULT 0.5,
+      source_task TEXT DEFAULT 'dream-09',
+      project TEXT,
+      thread_id TEXT,
+      entity_id TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_predictions_outcome ON predictions(outcome);
+    CREATE INDEX IF NOT EXISTS idx_predictions_check_by ON predictions(check_by);
+    CREATE INDEX IF NOT EXISTS idx_predictions_domain ON predictions(domain);
+
+    -- ============================================================
+    -- STRATEGIC LESSONS — Learn from prediction errors
+    -- ============================================================
+    CREATE TABLE IF NOT EXISTS strategic_lessons (
+      id TEXT PRIMARY KEY,
+      lesson_date TEXT NOT NULL,
+      lesson_type TEXT NOT NULL,
+      lesson TEXT NOT NULL,
+      domain TEXT NOT NULL,
+      original_claim TEXT,
+      reality TEXT,
+      root_cause TEXT,
+      severity TEXT DEFAULT 'medium',
+      affected_predictions TEXT DEFAULT '[]',
+      affected_projects TEXT DEFAULT '[]',
+      correction_rule TEXT,
+      applied INTEGER DEFAULT 0,
+      applied_at TEXT,
+      superseded_by TEXT,
+      expires_at TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_lessons_type ON strategic_lessons(lesson_type);
+    CREATE INDEX IF NOT EXISTS idx_lessons_active ON strategic_lessons(superseded_by) WHERE superseded_by IS NULL;
+
+    -- ============================================================
+    -- NARRATIVE THREADS — Cross-source topic continuity
+    -- Groups related knowledge items into chronological narratives
+    -- ============================================================
+    CREATE TABLE IF NOT EXISTS narrative_threads (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      summary TEXT,
+      status TEXT DEFAULT 'active',
+      project TEXT,
+      entity_ids TEXT DEFAULT '[]',
+      primary_entity_id TEXT,
+      latest_source_date TEXT,
+      earliest_source_date TEXT,
+      source_count INTEGER DEFAULT 0,
+      item_count INTEGER DEFAULT 0,
+      narrative_md TEXT,
+      current_state TEXT,
+      next_action TEXT,
+      confidence REAL DEFAULT 0.0,
+      merged_into TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS thread_items (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES narrative_threads(id) ON DELETE CASCADE,
+      knowledge_item_id TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      role TEXT DEFAULT 'continuation',
+      added_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(thread_id, knowledge_item_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_threads_project ON narrative_threads(project);
+    CREATE INDEX IF NOT EXISTS idx_threads_status ON narrative_threads(status);
+    CREATE INDEX IF NOT EXISTS idx_threads_latest ON narrative_threads(latest_source_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_thread_items_thread ON thread_items(thread_id, position);
+    CREATE INDEX IF NOT EXISTS idx_thread_items_item ON thread_items(knowledge_item_id);
   `);
 }
 
