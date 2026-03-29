@@ -65,8 +65,8 @@ function sendReply(phone: string, text: string): boolean {
       .replace(/\n/g, '\\n');
 
     execSync(
-      `osascript -e 'tell application "Messages" to send "${escaped}" to buddy "${phone}"'`,
-      { timeout: 10000 }
+      `/usr/bin/osascript <<'APPLESCRIPT'\ntell application "Messages" to send "${escaped}" to buddy "${phone}"\nAPPLESCRIPT`,
+      { timeout: 30000, shell: '/bin/bash' }
     );
     return true;
   } catch (err: any) {
