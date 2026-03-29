@@ -1,10 +1,9 @@
 import express from 'express';
-import { randomUUID } from 'crypto';
 import { readdirSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { getDb, searchByText, searchByEmbedding, insertKnowledge, getStats, getConfig, type KnowledgeItem } from '../db.js';
 import { generateEmbedding } from '../embedding.js';
 import { extractIntelligence } from '../ai/extract.js';
@@ -391,42 +390,50 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
 </html>`);
   });
 
-  // ── MCP over HTTP (for remote Claude Desktop) ──────────
-  // Stateless pattern: new server+transport per request (single user, no sessions needed)
-  app.post('/mcp', async (req, res) => {
+  // ── MCP over SSE (for remote Claude Desktop) ───────────
+  // GET /mcp establishes SSE stream, POST /mcp/messages sends JSON-RPC
+  const mcpTransports = new Map<string, SSEServerTransport>();
+
+  app.get('/mcp', async (req, res) => {
     try {
-      const mcpServer = new McpServer(MCP_SERVER_CONFIG);
-      registerPrimeTools(mcpServer);
+      const transport = new SSEServerTransport('/mcp/messages', res);
+      const sessionId = transport.sessionId;
+      mcpTransports.set(sessionId, transport);
 
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined, // stateless
-      });
-
-      transport.onerror = (err) => {
-        console.error('[MCP transport error]', err.message);
+      transport.onclose = () => {
+        mcpTransports.delete(sessionId);
       };
 
+      const mcpServer = new McpServer(MCP_SERVER_CONFIG);
+      registerPrimeTools(mcpServer);
       await mcpServer.connect(transport);
-      await transport.handleRequest(req, res, req.body);
 
-      res.on('close', () => {
-        transport.close();
-        mcpServer.close();
-      });
+      console.log(`[MCP] SSE session established: ${sessionId}`);
     } catch (error: any) {
-      console.error('[MCP handler error]', error.message || error);
-      if (!res.headersSent) {
-        res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
-      }
+      console.error('[MCP] SSE error:', error.message);
+      if (!res.headersSent) res.status(500).send('Error establishing SSE stream');
     }
   });
 
-  app.get('/mcp', (_req, res) => {
-    res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed. Use POST.' }, id: null });
-  });
+  app.post('/mcp/messages', async (req, res) => {
+    const sessionId = req.query.sessionId as string;
+    if (!sessionId) {
+      res.status(400).send('Missing sessionId parameter');
+      return;
+    }
 
-  app.delete('/mcp', (_req, res) => {
-    res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null });
+    const transport = mcpTransports.get(sessionId);
+    if (!transport) {
+      res.status(404).send('Session not found');
+      return;
+    }
+
+    try {
+      await transport.handlePostMessage(req, res, req.body);
+    } catch (error: any) {
+      console.error('[MCP] Message error:', error.message);
+      if (!res.headersSent) res.status(500).send('Error handling request');
+    }
   });
 
   app.listen(port, '0.0.0.0', () => {
