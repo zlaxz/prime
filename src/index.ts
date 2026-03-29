@@ -2450,6 +2450,28 @@ program
   });
 
 // ============================================================
+// recall deep-session — run a deep strategic work session
+// ============================================================
+program
+  .command('deep-session <topic>')
+  .description('Run a deep strategic work session — reads everything, researches, produces finished work')
+  .option('--project <project>', 'Project context')
+  .action(async (topic: string, opts: any) => {
+    const { runDeepSession } = await import('./deep-session.js');
+    const db = getDb();
+    try {
+      const result = await runDeepSession(db, topic, 'manual', opts.project);
+      console.log(`\nSession complete: ${result.title}`);
+      console.log(`  ${result.deliverables.length} deliverables, ${result.actions_created} actions`);
+      console.log(`  ${result.duration_seconds.toFixed(0)}s, ${result.turns_used} turns`);
+      console.log(`  Files: ${result.output_dir}`);
+    } catch (e: any) {
+      console.error(`Deep session failed: ${e.message}`);
+      process.exit(1);
+    }
+  });
+
+// ============================================================
 // recall artifacts — list all artifacts
 // ============================================================
 program

@@ -1052,6 +1052,68 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── Deep Session endpoints ──
+
+  app.post('/api/deep-session', async (req, res) => {
+    try {
+      const { topic, project } = req.body;
+      if (!topic) {
+        res.status(400).json({ error: 'topic is required' });
+        return;
+      }
+      const { runDeepSession } = await import('../deep-session.js');
+      const result = await runDeepSession(db, topic, 'api', project);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/deep-session/:id', (req, res) => {
+    try {
+      const session = db.prepare('SELECT * FROM deep_sessions WHERE id = ?').get(req.params.id);
+      if (!session) {
+        res.status(404).json({ error: 'Session not found' });
+        return;
+      }
+      res.json(session);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/deep-session/:id/files/:filename', (req, res) => {
+    try {
+      const session: any = db.prepare('SELECT output_dir FROM deep_sessions WHERE id = ?').get(req.params.id);
+      if (!session?.output_dir) {
+        res.status(404).json({ error: 'Session not found' });
+        return;
+      }
+      const fs = require('fs');
+      const path = require('path');
+      const safeName = path.basename(req.params.filename); // prevent path traversal
+      const filePath = path.join(session.output_dir, safeName);
+      if (!fs.existsSync(filePath)) {
+        res.status(404).json({ error: 'File not found' });
+        return;
+      }
+      res.type('text/markdown').send(fs.readFileSync(filePath, 'utf-8'));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/deep-sessions', (req, res) => {
+    try {
+      const sessions = db.prepare(
+        'SELECT id, title, project, status, duration_seconds, actions_created, turns_used, created_at, completed_at FROM deep_sessions ORDER BY created_at DESC LIMIT 20'
+      ).all();
+      res.json({ sessions });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.listen(port, '0.0.0.0', () => {
     const stats = getStats(db);
     console.log(`\n⚡ Prime server running on http://0.0.0.0:${port}`);

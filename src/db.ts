@@ -420,6 +420,21 @@ function initSchema(db: Database.Database) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_staged_actions_status ON staged_actions(status);
+  `);
+
+  // Add deep session columns to staged_actions (safe to run multiple times)
+  const stagedCols = db.pragma('table_info(staged_actions)').map((c: any) => c.name);
+  if (!stagedCols.includes('deep_session_id')) {
+    db.exec(`ALTER TABLE staged_actions ADD COLUMN deep_session_id TEXT`);
+  }
+  if (!stagedCols.includes('sequence_order')) {
+    db.exec(`ALTER TABLE staged_actions ADD COLUMN sequence_order INTEGER`);
+  }
+  if (!stagedCols.includes('theme')) {
+    db.exec(`ALTER TABLE staged_actions ADD COLUMN theme TEXT`);
+  }
+
+  db.exec(`
 
     -- ============================================================
     -- Episodic Moments — understanding, not summarization
@@ -593,6 +608,32 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated ON chat_sessions(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, created_at ASC);
     CREATE INDEX IF NOT EXISTS idx_chat_session_threads ON chat_session_threads(thread_id);
+
+    -- ============================================================
+    -- Deep Sessions — strategic work sessions that SOLVE problems
+    -- Single claude -p call with all tools, produces finished work
+    -- ============================================================
+    CREATE TABLE IF NOT EXISTS deep_sessions (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      project TEXT,
+      trigger_source TEXT NOT NULL,      -- 'manual', 'dream', 'mcp'
+      status TEXT DEFAULT 'running',     -- 'running', 'completed', 'failed'
+      context_assembled TEXT,            -- what was fed to Claude (JSON)
+      claude_output TEXT,                -- raw output from the single call
+      deliverables TEXT,                 -- parsed structured output (JSON)
+      output_dir TEXT,                   -- path to deliverable files on disk
+      duration_seconds REAL DEFAULT 0.0,
+      actions_created INTEGER DEFAULT 0,
+      turns_used INTEGER DEFAULT 0,
+      user_rating INTEGER,
+      user_feedback TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      completed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_deep_sessions_status ON deep_sessions(status);
+    CREATE INDEX IF NOT EXISTS idx_deep_sessions_project ON deep_sessions(project);
   `);
 }
 

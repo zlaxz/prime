@@ -368,6 +368,34 @@ server.tool(
 // Start
 // ============================================================
 
+server.tool(
+  "prime_deep_session",
+  "Run a deep strategic work session. This reads everything in Prime about a topic, researches externally, generates creative strategy, and produces FINISHED deliverables (full email drafts, plans, documents). Takes 10-15 minutes. Use when the user needs a comprehensive strategy or plan for a business problem.",
+  {
+    topic: z.string().describe("The problem to solve (e.g., 'Carefront broker outreach strategy')"),
+    project: z.string().optional().describe("Project context if applicable"),
+  },
+  async ({ topic, project }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpPost(`${srv}/api/deep-session`, { topic, project }, 3600000);
+      if (result.error) {
+        return { content: [{ type: "text" as const, text: `Deep session failed: ${result.error}` }] };
+      }
+      const summary = [
+        `Deep Session Complete: ${result.title}`,
+        `${result.deliverables?.length || 0} deliverables, ${result.actions_created} actions`,
+        `${result.duration_seconds?.toFixed(0)}s, ${result.turns_used} turns`,
+        `Files: ${result.output_dir}`,
+      ].join('\n');
+      return { content: [{ type: "text" as const, text: summary }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Deep session error: ${err.message}` }] };
+    }
+  }
+);
+
 async function main() {
   // Check server connectivity at startup
   const srv = await getServer();
