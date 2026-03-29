@@ -1795,6 +1795,54 @@ interface DetectedGap {
   days_stale: number;
 }
 
+// ── Task 20: Deep Session Trigger ─────────────────────────────
+// Scans for projects stalling 14+ days. Triggers max 1 deep session per run.
+async function task20DeepSessionTrigger(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    // Find projects stalling for 14+ days
+    const stalling = db.prepare(`
+      SELECT project, status, days_stale, confidence
+      FROM entity_profiles
+      WHERE status IN ('stalling', 'stalled')
+        AND days_stale >= 14
+        AND project IS NOT NULL
+      ORDER BY days_stale DESC
+      LIMIT 5
+    `).all() as any[];
+
+    if (stalling.length === 0) {
+      return { task: '20-deep-session-trigger', status: 'skipped', duration_seconds: (Date.now() - start) / 1000, output: { reason: 'no stalling projects' } };
+    }
+
+    // Check if we already ran a deep session for the top project recently (7 days)
+    const topProject = stalling[0].project;
+    const recent = db.prepare(`
+      SELECT id FROM deep_sessions
+      WHERE project = ? AND created_at > datetime('now', '-7 days')
+      LIMIT 1
+    `).get(topProject);
+
+    if (recent) {
+      return { task: '20-deep-session-trigger', status: 'skipped', duration_seconds: (Date.now() - start) / 1000, output: { reason: `recent session exists for ${topProject}` } };
+    }
+
+    // Trigger deep session
+    console.log(`    Triggering deep session for stalling project: ${topProject} (${stalling[0].days_stale} days)`);
+    const { runDeepSession } = await import('./deep-session.js');
+    const result = await runDeepSession(db, `${topProject} — project stalling for ${stalling[0].days_stale} days, needs strategic intervention`, 'dream', topProject);
+
+    return {
+      task: '20-deep-session-trigger',
+      status: 'success',
+      duration_seconds: (Date.now() - start) / 1000,
+      output: { project: topProject, session_id: result.id, deliverables: result.deliverables.length, actions: result.actions_created },
+    };
+  } catch (err: any) {
+    return { task: '20-deep-session-trigger', status: 'failed', duration_seconds: (Date.now() - start) / 1000, output: { error: err.message?.slice(0, 200) } };
+  }
+}
+
 async function task19GapDetection(db: Database.Database): Promise<TaskResult> {
   const start = Date.now();
   try {
@@ -2320,8 +2368,8 @@ ${(() => {
     const gapsList = JSON.parse(gapsRaw.value) as any[];
     if (gapsList.length === 0) return '(no gaps — everything is covered)';
     return gapsList.slice(0, 15).map((g: any) =>
-      \`[\${g.severity.toUpperCase()}] \${g.type}: \${g.description}\`
-    ).join('\\n');
+      '[' + g.severity.toUpperCase() + '] ' + g.type + ': ' + g.description
+    ).join('\n');
   } catch { return '(gap data not available)'; }
 })()}
 RULE: If there are critical or high-severity gaps, they MUST appear in the briefing. These are dropped balls — the whole point of this system.
@@ -2628,6 +2676,14 @@ export async function runDreamPipeline(
     const r05 = await task05SelfAudit(db);
     results.push(r05);
     console.log(`    ${r05.status === 'success' ? '✓' : r05.status === 'skipped' ? '○' : '✗'} ${r05.status} (${r05.duration_seconds.toFixed(1)}s)${r05.output?.overall_accuracy !== undefined ? ` — accuracy: ${(r05.output.overall_accuracy * 100).toFixed(0)}%` : ''}`);
+  }
+
+  // Task 20: Deep Session Trigger — auto-launch deep sessions for stalling projects
+  if (!options.quick) {
+    console.log('  Task 20: Deep session trigger...');
+    const r20 = await task20DeepSessionTrigger(db);
+    results.push(r20);
+    console.log(`    ${r20.status === 'success' ? '✓' : r20.status === 'skipped' ? '○' : '✗'} ${r20.status} (${r20.duration_seconds.toFixed(1)}s)${r20.output ? ` — ${JSON.stringify(r20.output).slice(0, 150)}` : ''}`);
   }
 
   // Update last dream run timestamp
