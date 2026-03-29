@@ -116,6 +116,70 @@ function tryParseJSON(text: string): any {
   return null;
 }
 
+// ── Correction Propagation ───────────────────────────────────
+
+async function propagatePendingCorrections(db: Database.Database): Promise<{ propagated: number; failed: number }> {
+  let propagated = 0;
+  let failed = 0;
+
+  const pending = db.prepare(
+    `SELECT id, original_claim, corrected_claim, correction_type, affected_entity_id, affected_project
+     FROM brain_corrections WHERE propagation_status = 'pending'`
+  ).all() as any[];
+
+  for (const corr of pending) {
+    try {
+      if (corr.correction_type === 'entity_label' && corr.affected_entity_id) {
+        // Extract the new label from corrected_claim (e.g. "EntityName is employee")
+        const labelMatch = corr.corrected_claim.match(/is\s+(\w+)/i);
+        if (labelMatch) {
+          db.prepare(
+            `UPDATE entities SET user_label = ?, relationship_type = ?, updated_at = datetime('now')
+             WHERE id = ?`
+          ).run(labelMatch[1], labelMatch[1], corr.affected_entity_id);
+        }
+      } else if (corr.correction_type === 'entity_project' && corr.affected_entity_id) {
+        // Update entity_mentions project association
+        if (corr.affected_project) {
+          db.prepare(
+            `UPDATE entity_mentions SET role = 'corrected'
+             WHERE entity_id = ? AND knowledge_item_id IN (
+               SELECT id FROM knowledge WHERE project = ?
+             )`
+          ).run(corr.affected_entity_id, corr.affected_project);
+        }
+      } else if (corr.correction_type === 'fact') {
+        // Insert correction as knowledge item with source='correction'
+        const { v4: uuidv4 } = await import('uuid');
+        db.prepare(
+          `INSERT OR IGNORE INTO knowledge (id, title, summary, source, source_ref, source_date, project, importance, metadata)
+           VALUES (?, ?, ?, 'correction', ?, datetime('now'), ?, 'high', ?)`
+        ).run(
+          uuidv4(),
+          `Correction: ${corr.corrected_claim.slice(0, 80)}`,
+          corr.corrected_claim,
+          `correction:${corr.id}`,
+          corr.affected_project || null,
+          JSON.stringify({ original: corr.original_claim, correction_id: corr.id })
+        );
+      }
+
+      db.prepare(
+        `UPDATE brain_corrections SET propagation_status = 'propagated', propagated_at = datetime('now') WHERE id = ?`
+      ).run(corr.id);
+      propagated++;
+    } catch (err: any) {
+      console.error(`    ✗ Failed to propagate correction ${corr.id}: ${err.message}`);
+      db.prepare(
+        `UPDATE brain_corrections SET propagation_status = 'failed' WHERE id = ?`
+      ).run(corr.id);
+      failed++;
+    }
+  }
+
+  return { propagated, failed };
+}
+
 // ── Dream Tasks ─────────────────────────────────────────────
 
 async function task01Consolidate(db: Database.Database): Promise<TaskResult> {
@@ -2651,6 +2715,15 @@ export async function runDreamPipeline(
   if (!existsSync(resultsDir)) mkdirSync(resultsDir, { recursive: true });
 
   console.log(`\n⚡ DREAM PIPELINE — ${new Date().toLocaleString()}\n`);
+
+  // ── CORRECTION PROPAGATION (runs first, before anything else) ──
+  console.log('  Corrections: Propagating pending corrections...');
+  const corrResult = await propagatePendingCorrections(db);
+  if (corrResult.propagated > 0 || corrResult.failed > 0) {
+    console.log(`    ✓ Propagated ${corrResult.propagated}, failed ${corrResult.failed}`);
+  } else {
+    console.log(`    ○ No pending corrections`);
+  }
 
   // ── RECURSIVE INTELLIGENCE LOOP (runs first, before data changes) ──
   console.log('  Task 15: Prediction verification (DeepSeek)...');

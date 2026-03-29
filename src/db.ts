@@ -433,6 +433,15 @@ function initSchema(db: Database.Database) {
   if (!stagedCols.includes('theme')) {
     db.exec(`ALTER TABLE staged_actions ADD COLUMN theme TEXT`);
   }
+  if (!stagedCols.includes('escalation_level')) {
+    db.exec(`ALTER TABLE staged_actions ADD COLUMN escalation_level INTEGER DEFAULT 0`);
+  }
+  if (!stagedCols.includes('last_escalated_at')) {
+    db.exec(`ALTER TABLE staged_actions ADD COLUMN last_escalated_at TEXT`);
+  }
+  if (!stagedCols.includes('auto_execute_eligible')) {
+    db.exec(`ALTER TABLE staged_actions ADD COLUMN auto_execute_eligible INTEGER DEFAULT 0`);
+  }
 
   db.exec(`
 
@@ -655,6 +664,26 @@ function initSchema(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_prime_questions_status ON prime_questions(status);
     CREATE INDEX IF NOT EXISTS idx_prime_questions_category ON prime_questions(category);
+
+    -- ============================================================
+    -- BRAIN CORRECTIONS — Track user corrections across sessions
+    -- Inserted by prime_correct MCP tool, propagated by dream pipeline
+    -- ============================================================
+    CREATE TABLE IF NOT EXISTS brain_corrections (
+      id TEXT PRIMARY KEY,
+      original_claim TEXT NOT NULL,
+      corrected_claim TEXT NOT NULL,
+      correction_type TEXT NOT NULL,       -- 'entity_label', 'entity_project', 'fact', 'prediction'
+      affected_entity_id TEXT,
+      affected_project TEXT,
+      timestamp TEXT DEFAULT (datetime('now')),
+      propagation_status TEXT DEFAULT 'pending',  -- 'pending', 'propagated', 'failed'
+      propagated_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_corrections_status ON brain_corrections(propagation_status);
+    CREATE INDEX IF NOT EXISTS idx_corrections_type ON brain_corrections(correction_type);
+    CREATE INDEX IF NOT EXISTS idx_corrections_timestamp ON brain_corrections(timestamp DESC);
   `);
 }
 

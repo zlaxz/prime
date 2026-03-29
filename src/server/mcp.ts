@@ -645,30 +645,44 @@ srv.tool(
   },
   async ({ action, entity_name, label, merge_with, note, reason }) => {
     const db = getDb();
+    const { getEntity } = await import('../entities.js');
+    const entity = getEntity(db, entity_name);
+
+    // Helper: record correction for propagation tracking
+    const recordCorrection = (original: string, corrected: string, type: string) => {
+      const corrId = uuid();
+      db.prepare(
+        `INSERT INTO brain_corrections (id, original_claim, corrected_claim, correction_type, affected_entity_id, affected_project, propagation_status)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending')`
+      ).run(corrId, original, corrected, type, entity?.id || null, entity?.properties ? JSON.parse(entity.properties)?.project || null : null);
+    };
 
     if (action === 'label' && label) {
       const { labelEntity } = await import('../entities.js');
+      const oldLabel = entity?.user_label || entity?.relationship_type || 'unknown';
       const ok = labelEntity(db, entity_name, label);
+      if (ok) recordCorrection(`${entity_name} is ${oldLabel}`, `${entity_name} is ${label}`, 'entity_label');
       return { content: [{ type: "text" as const, text: ok ? `✓ ${entity_name} labeled as ${label}` : `Entity "${entity_name}" not found` }] };
     }
 
     if (action === 'dismiss') {
       const { dismissEntity } = await import('../entities.js');
       const ok = dismissEntity(db, entity_name, reason);
+      if (ok) recordCorrection(`${entity_name} is relevant`, `${entity_name} dismissed: ${reason || 'no reason'}`, 'entity_label');
       return { content: [{ type: "text" as const, text: ok ? `✓ ${entity_name} dismissed permanently` : `Entity "${entity_name}" not found` }] };
     }
 
     if (action === 'merge' && merge_with) {
       const { mergeEntities } = await import('../entities.js');
       const ok = mergeEntities(db, entity_name, merge_with);
+      if (ok) recordCorrection(`${entity_name} and ${merge_with} are separate entities`, `${entity_name} merged into ${merge_with}`, 'entity_label');
       return { content: [{ type: "text" as const, text: ok ? `✓ Merged "${entity_name}" into "${merge_with}"` : `One or both entities not found` }] };
     }
 
     if (action === 'note' && note) {
-      const { getEntity } = await import('../entities.js');
-      const entity = getEntity(db, entity_name);
       if (!entity) return { content: [{ type: "text" as const, text: `Entity "${entity_name}" not found` }] };
       db.prepare('UPDATE entities SET user_notes = ?, updated_at = datetime(\'now\') WHERE id = ?').run(note, entity.id);
+      recordCorrection(`No note for ${entity_name}`, `Note: ${note}`, 'fact');
       return { content: [{ type: "text" as const, text: `✓ Note saved for ${entity_name}` }] };
     }
 
