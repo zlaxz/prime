@@ -166,7 +166,7 @@ server.tool(
     const srv = await getServer();
     if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
     try {
-      const result = await httpPost(`${srv}/api/ask`, { question });
+      const result = await httpPost(`${srv}/api/ask`, { question }, 120000); // 2 min — Claude reasoning takes time
       return { content: [{ type: "text" as const, text: result.answer || JSON.stringify(result) }] };
     } catch (err: any) {
       return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
@@ -186,7 +186,7 @@ server.tool(
     const srv = await getServer();
     if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
     try {
-      const result = await httpPost(`${srv}/api/remember`, { text, project, importance });
+      const result = await httpPost(`${srv}/api/remember`, { text, project, importance }, 120000); // 2 min — extraction + embedding takes time
       return { content: [{ type: "text" as const, text: `Remembered: ${result.title || text.slice(0, 60)}` }] };
     } catch (err: any) {
       return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
