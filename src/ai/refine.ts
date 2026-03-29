@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { searchByText, getConfig, setConfig, insertKnowledge, type KnowledgeItem } from '../db.js';
 import { learnBusinessContext } from './learn.js';
-import { getDefaultProvider } from './providers.js';
+import { getBulkProvider } from './providers.js';
 import { buildHierarchy } from './hierarchy.js';
 import { buildConnections } from './connections.js';
 import { extractCommitments, updateCommitmentStates } from './commitments.js';
@@ -30,7 +30,7 @@ export async function refineKnowledgeBase(
   hierarchy: { episodes: number; semantics: number; themes: number; merged: number; split: number };
 }> {
   const apiKey = getConfig(db, 'openai_api_key');
-  const provider = await getDefaultProvider(apiKey || undefined);
+  const provider = await getBulkProvider(apiKey || undefined);
   const log = options.verbose ? console.log : () => {};
 
   const stats = { contextUpdated: false, duplicatesMerged: 0, reclassified: 0, connectionsCreated: 0, staleItems: 0, commitments: { extracted: 0, skipped: 0, newOverdue: 0, newFulfilled: 0, newDropped: 0 }, hierarchy: { episodes: 0, semantics: 0, themes: 0, merged: 0, split: 0 } };

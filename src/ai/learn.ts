@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { searchByText, getConfig, setConfig } from '../db.js';
 import { setBusinessContext } from './extract.js';
-import { getDefaultProvider } from './providers.js';
+import { getBulkProvider } from './providers.js';
 
 /**
  * Auto-learn business context from ingested knowledge.
@@ -13,7 +13,7 @@ import { getDefaultProvider } from './providers.js';
  */
 export async function learnBusinessContext(db: Database.Database): Promise<string> {
   const apiKey = getConfig(db, 'openai_api_key');
-  const provider = await getDefaultProvider(apiKey || undefined);
+  const provider = await getBulkProvider(apiKey || undefined);
 
   // Get all knowledge items
   const items = searchByText(db, '', 500);

@@ -1,4 +1,4 @@
-import { getDefaultProvider } from './providers.js';
+import { getBulkProvider } from './providers.js';
 
 export async function summarizeThreads(
   threads: { id: string; subject: string; from: string; lastFrom: string; lastDate: string; snippet: string; messageCount: number }[],
@@ -10,7 +10,7 @@ export async function summarizeThreads(
   commitments: { text: string; threadId: string }[];
   summary: string;
 }> {
-  const provider = await getDefaultProvider(apiKey || undefined);
+  const provider = await getBulkProvider(apiKey || undefined);
 
   const threadSummaries = threads.map(t => {
     const daysSince = Math.floor((Date.now() - new Date(t.lastDate).getTime()) / 86400000);

@@ -156,23 +156,56 @@ export function createProvider(config: {
   throw new Error(`Unknown provider: ${provider}. Supported: claude-code, openai, deepseek, openrouter`);
 }
 
+// Cached provider instances
+let _claudeProvider: LLMProvider | null = null;
+let _deepseekProvider: LLMProvider | null = null;
+
 /**
- * Get the default reasoning provider.
- * Checks if Claude Code CLI is available, falls back to API.
+ * Get the Claude provider for user-facing work.
+ * Used for: ask, briefing, COS narrative, investigation, Bull/Bear debate.
+ * Cost: Free on Max subscription (~5-10 calls/day).
  */
 export async function getDefaultProvider(apiKey?: string): Promise<LLMProvider> {
+  if (_claudeProvider) return _claudeProvider;
+
   // Try Claude Code first (free)
   try {
     const { stdout } = await execFileAsync('claude', ['--version'], { timeout: 5000 });
     if (stdout.includes('Claude Code')) {
-      return createClaudeCodeProvider();
+      _claudeProvider = createClaudeCodeProvider();
+      return _claudeProvider;
     }
   } catch {}
 
   // Fall back to API
   if (apiKey) {
-    return createAPIProvider({ model: 'gpt-4.1-nano', apiKey });
+    _claudeProvider = createAPIProvider({ model: 'gpt-4.1-nano', apiKey });
+    return _claudeProvider;
   }
 
   throw new Error('No LLM provider available. Install Claude Code CLI or provide an API key.');
+}
+
+/**
+ * Get the DeepSeek Reasoner provider for bulk work.
+ * Used for: extraction, entity classification, dream pipeline, sync.
+ * Cost: ~$3-5/day. Quality matches Claude. 2x faster.
+ *
+ * Falls back to Claude if DEEPSEEK_API_KEY not set.
+ */
+export async function getBulkProvider(apiKey?: string): Promise<LLMProvider> {
+  if (_deepseekProvider) return _deepseekProvider;
+
+  const deepseekKey = process.env.DEEPSEEK_API_KEY;
+  if (deepseekKey) {
+    _deepseekProvider = createAPIProvider({
+      model: 'deepseek-reasoner',
+      apiKey: deepseekKey,
+      baseUrl: 'https://api.deepseek.com',
+    });
+    return _deepseekProvider;
+  }
+
+  // No DeepSeek key — fall back to Claude (still works, just uses Max allocation)
+  return getDefaultProvider(apiKey);
 }

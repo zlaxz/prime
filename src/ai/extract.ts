@@ -72,7 +72,9 @@ Rules:
 
 async function getProvider(apiKey?: string): Promise<LLMProvider> {
   if (_cachedProvider) return _cachedProvider;
-  _cachedProvider = await getDefaultProvider(apiKey);
+  // Use DeepSeek Reasoner for bulk extraction — same quality, doesn't burn Max allocation
+  const { getBulkProvider } = await import('./providers.js');
+  _cachedProvider = await getBulkProvider(apiKey);
   return _cachedProvider;
 }
 

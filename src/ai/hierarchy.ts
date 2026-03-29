@@ -14,7 +14,7 @@ import {
   type Theme,
 } from '../db.js';
 import { generateEmbedding, generateEmbeddings } from '../embedding.js';
-import { getDefaultProvider } from './providers.js';
+import { getBulkProvider } from './providers.js';
 
 // ============================================================
 // Episode Detection
@@ -187,7 +187,7 @@ export async function buildHierarchy(
   options: { verbose?: boolean } = {}
 ): Promise<{ episodes: number; semantics: number; themes: number; merged: number; split: number }> {
   const apiKey = getConfig(db, 'openai_api_key');
-  const provider = await getDefaultProvider(apiKey || undefined);
+  const provider = await getBulkProvider(apiKey || undefined);
   const log = options.verbose ? console.log : () => {};
 
   const stats = { episodes: 0, semantics: 0, themes: 0, merged: 0, split: 0 };

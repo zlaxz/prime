@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { v4 as uuid } from 'uuid';
 import { getAllKnowledge, getCommitments, insertCommitment, updateCommitmentState, getConfig, searchByText } from '../db.js';
-import { getDefaultProvider } from './providers.js';
+import { getBulkProvider } from './providers.js';
 
 /**
  * Simple string similarity (Dice coefficient) for deduplication.
@@ -38,7 +38,7 @@ export async function extractCommitments(
 ): Promise<{ extracted: number; skipped: number; errors: number }> {
   const log = options.verbose ? console.log : () => {};
   const apiKey = getConfig(db, 'openai_api_key');
-  const provider = await getDefaultProvider(apiKey || undefined);
+  const provider = await getBulkProvider(apiKey || undefined);
 
   const items = getAllKnowledge(db);
   const existingCommitments = getCommitments(db);
@@ -144,7 +144,7 @@ export async function updateCommitmentStates(
 ): Promise<{ newOverdue: number; newDropped: number; newFulfilled: number }> {
   const log = options.verbose ? console.log : () => {};
   const apiKey = getConfig(db, 'openai_api_key');
-  const provider = await getDefaultProvider(apiKey || undefined);
+  const provider = await getBulkProvider(apiKey || undefined);
 
   const now = new Date();
   const nowISO = now.toISOString();

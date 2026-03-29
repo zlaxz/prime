@@ -9,7 +9,7 @@ import {
   getConnectionsForItem,
   getConnectionStats,
 } from '../db.js';
-import { getDefaultProvider } from './providers.js';
+import { getBulkProvider } from './providers.js';
 
 // ============================================================
 // Types
@@ -329,7 +329,7 @@ export async function buildConnections(
 
     try {
       const apiKey = getConfig(db, 'openai_api_key');
-      const provider = await getDefaultProvider(apiKey || undefined);
+      const provider = await getBulkProvider(apiKey || undefined);
 
       // Batch pairs into a single Claude call
       const pairText = topPairs.map((p, idx) =>
