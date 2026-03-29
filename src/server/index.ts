@@ -187,8 +187,18 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         res.status(400).json({ error: 'source_ref required' });
         return;
       }
+      // Look up the knowledge item to get source + metadata
+      const item = db.prepare('SELECT source, source_ref, metadata FROM knowledge WHERE source_ref = ?').get(source_ref) as any;
+      if (!item) {
+        res.json({ content: null, error: `No knowledge item found for source_ref: ${source_ref}` });
+        return;
+      }
       const { retrieveSourceContent } = await import('../source-retrieval.js');
-      const result = await retrieveSourceContent(db, source_ref);
+      const result = await retrieveSourceContent(db, {
+        source: item.source,
+        source_ref: item.source_ref,
+        metadata: typeof item.metadata === 'string' ? JSON.parse(item.metadata) : item.metadata,
+      });
       if (result) {
         res.json({ content: result.content, content_type: result.content_type, source: result.source });
       } else {
