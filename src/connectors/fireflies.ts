@@ -186,7 +186,22 @@ export async function scanFireflies(
         const participants = meeting.participants || [];
         const durationMin = Math.round((meeting.duration || 0) / 60);
 
-        // Build content for extraction
+        // Build FULL content for extraction — include transcript if available
+        const sentences = meeting.sentences || [];
+        let transcriptText = '';
+        if (sentences.length > 0) {
+          let currentSpeaker = '';
+          const parts: string[] = [];
+          for (const s of sentences) {
+            if (s.speaker_name !== currentSpeaker) {
+              currentSpeaker = s.speaker_name;
+              parts.push(`\n[${currentSpeaker}]`);
+            }
+            parts.push(s.text);
+          }
+          transcriptText = parts.join('\n').slice(0, 12000); // Rich transcript for extraction
+        }
+
         const content = [
           `Meeting: ${meeting.title}`,
           `Date: ${meeting.date}`,
@@ -196,6 +211,7 @@ export async function scanFireflies(
           summary.overview ? `\nSummary: ${summary.overview}` : '',
           summary.shorthand_bullet ? `\nKey Points:\n${Array.isArray(summary.shorthand_bullet) ? summary.shorthand_bullet.join('\n') : summary.shorthand_bullet}` : '',
           summary.action_items ? `\nAction Items:\n${Array.isArray(summary.action_items) ? summary.action_items.join('\n') : summary.action_items}` : '',
+          transcriptText ? `\nFull Transcript:\n${transcriptText}` : '',
         ].filter(Boolean).join('\n');
 
         // Extract intelligence
@@ -240,6 +256,13 @@ export async function scanFireflies(
         };
 
         insertKnowledge(db, item);
+
+        // Cache the full transcript as raw_content for source retrieval
+        if (transcriptText) {
+          db.prepare('UPDATE knowledge SET raw_content = ?, extraction_version = 3 WHERE source_ref = ?')
+            .run(transcriptText, `fireflies:${meeting.id}`);
+        }
+
         stats.items++;
         stats.meetings++;
       } catch (err: any) {

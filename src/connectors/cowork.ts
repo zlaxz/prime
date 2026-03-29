@@ -153,7 +153,7 @@ function extractConversationText(session: CoworkSession): string {
                 ? item.content.filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
                 : '';
             if (resultText && resultText.length > 20) {
-              parts.push(`tool_result: ${resultText.slice(0, 500)}`);
+              parts.push(`tool_result: ${resultText.slice(0, 3000)}`);
             }
           }
         }
