@@ -93,11 +93,15 @@ export async function notify(db: Database.Database, options: NotifyOptions): Pro
         const escaped = message
           .replace(/\\/g, '\\\\')
           .replace(/"/g, '\\"')
+          .replace(/'/g, "'")
+          .replace(/\(/g, '(')
+          .replace(/\)/g, ')')
           .replace(/\n/g, '\\n');
 
+        // Use heredoc to avoid shell escaping issues with special characters
         execSync(
-          `osascript -e 'tell application "Messages" to send "${escaped}" to buddy "${phoneNumber}"'`,
-          { timeout: 10000 }
+          `osascript <<'APPLESCRIPT'\ntell application "Messages" to send "${escaped}" to buddy "${phoneNumber}"\nAPPLESCRIPT`,
+          { timeout: 10000, shell: '/bin/bash' }
         );
         results.push('imessage');
       } else {
