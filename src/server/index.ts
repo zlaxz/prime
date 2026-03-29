@@ -384,9 +384,9 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
   });
 
   // ── Chat API (replaces Claude Desktop as primary interface) ──
-  app.get('/api/v1/chat/sidebar', (_req, res) => {
+  app.get('/api/v1/chat/sidebar', async (_req, res) => {
     try {
-      const { getChatSidebar } = require('../ai/chat.js');
+      const { getChatSidebar } = await import('../ai/chat.js');
       res.json(getChatSidebar(db));
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
