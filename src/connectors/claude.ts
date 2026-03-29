@@ -564,7 +564,7 @@ export async function scanClaude(
   // ---- PHASE 2: AI extraction in parallel (batches of 5) ----
   console.log(`  Phase 2: AI extraction on ${fetchedConversations.length} conversations...`);
 
-  const EXTRACT_CONCURRENCY = 5;
+  const EXTRACT_CONCURRENCY = 100;  // DeepSeek handles 100+ concurrent, no reason to throttle
 
   interface ProcessedConvo {
     convo: ClaudeConversation;
