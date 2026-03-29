@@ -317,17 +317,19 @@ function render() {
   // Action cards
   const actionsEl = document.getElementById('actions');
   if (state.actions?.length > 0) {
-    actionsEl.innerHTML = state.actions.map(a =>
-      '<div class="action-card" data-id="'+a.id+'" onclick="selectAction(this,'+a.id+')">' +
+    actionsEl.innerHTML = state.actions.map(a => {
+      const btnLabel = a.type === 'email' ? 'Send Email' : a.type === 'calendar' ? 'Create Event' : 'Acknowledge';
+      const btnClass = a.type === 'email' ? 'btn btn-arc' : 'btn btn-arc';
+      return '<div class="action-card" data-id="'+a.id+'">' +
         '<div class="action-type '+a.type+'">'+a.type+'</div>' +
-        '<div class="action-title">'+a.summary+'</div>' +
+        '<div class="action-title">'+(a.summary||'').replace(/</g,'&lt;')+'</div>' +
         (a.project ? '<div class="action-project">'+a.project+'</div>' : '') +
         '<div class="action-btns">' +
-          '<button class="btn btn-arc" onclick="event.stopPropagation();approve('+a.id+')">Approve</button>' +
-          '<button class="btn btn-dim" onclick="event.stopPropagation();dismiss('+a.id+')">Skip</button>' +
+          '<button class="'+btnClass+'" onclick="approve('+a.id+',this)">'+btnLabel+'</button>' +
+          '<button class="btn btn-dim" onclick="skipAction('+a.id+',this)">Later</button>' +
         '</div>' +
-      '</div>'
-    ).join('');
+      '</div>';
+    }).join('');
   } else {
     actionsEl.innerHTML = '<div class="empty-state"><div class="icon" style="color:var(--green)">&#10003;</div><div class="msg">All clear. Nothing pending.</div></div>';
   }
@@ -344,19 +346,40 @@ function render() {
     (state.dream_age_hours < 1 ? 'fresh' : state.dream_age_hours + 'h ago');
 }
 
-function selectAction(el, id) {
-  document.querySelectorAll('.action-card').forEach(c => c.classList.remove('selected'));
-  el.classList.add('selected');
+async function approve(id, btn) {
+  if (btn) { btn.textContent = '...'; btn.disabled = true; }
+  try {
+    const res = await fetch('/api/approve-action', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id})});
+    const result = await res.json();
+    const card = document.querySelector('[data-id="'+id+'"]');
+    if (card) {
+      card.style.borderColor = result.success ? 'var(--green)' : 'var(--coral)';
+      card.style.opacity = '0.6';
+      const msg = document.createElement('div');
+      msg.style.cssText = 'margin-top:8px;font-size:12px;color:' + (result.success ? 'var(--green)' : 'var(--coral)');
+      msg.textContent = result.success ? result.message : 'Failed: ' + result.message;
+      card.appendChild(msg);
+      setTimeout(() => { card.style.transition = 'all 0.5s'; card.style.opacity = '0'; card.style.transform = 'translateX(20px)'; }, 2000);
+      setTimeout(() => fetchState(), 2500);
+    }
+    showToast(result.success ? result.message : 'Failed', result.success);
+  } catch(e) { showToast('Error: ' + e.message, false); }
 }
 
-async function approve(id) {
-  await fetch('/api/approve-action', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id})});
-  fetchState();
+function skipAction(id, btn) {
+  const card = document.querySelector('[data-id="'+id+'"]');
+  if (card) { card.style.transition = 'all 0.3s'; card.style.opacity = '0'; card.style.transform = 'translateX(20px)'; }
+  setTimeout(() => card?.remove(), 300);
 }
 
-async function dismiss(id) {
-  // Just remove from view for now
-  document.querySelector('[data-id="'+id+'"]')?.remove();
+function showToast(msg, success) {
+  const t = document.createElement('div');
+  t.style.cssText = 'position:fixed;top:24px;left:50%;transform:translateX(-50%);padding:12px 24px;border-radius:10px;font-size:13px;z-index:999;backdrop-filter:blur(12px);transition:opacity 0.5s;' +
+    (success ? 'background:rgba(74,222,128,0.12);border:1px solid rgba(74,222,128,0.3);color:var(--green)' : 'background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);color:var(--coral)');
+  t.textContent = (msg||'').slice(0, 100);
+  document.body.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; }, 3000);
+  setTimeout(() => t.remove(), 3500);
 }
 
 // Privacy + keyboard
