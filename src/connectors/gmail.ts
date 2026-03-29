@@ -582,11 +582,11 @@ export async function scanSentMail(
   stats.scanned = threadData.length;
   console.log(`  Done: ${stats.scanned} scanned, ${stats.corrected} corrected, ${stats.newItems} new, ${outboundMentions} outbound mentions`);
 
-  // Update sync state
+  // Update sync state — report total items processed (corrections + new items)
   db.prepare(
     `INSERT OR REPLACE INTO sync_state (source, last_sync_at, items_synced, status, updated_at)
      VALUES ('gmail-sent', datetime('now'), ?, 'idle', datetime('now'))`
-  ).run(stats.corrected);
+  ).run(stats.corrected + stats.newItems);
 
   return stats;
 }

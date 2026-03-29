@@ -2545,6 +2545,98 @@ Include 3-7 predictions. They MUST be:
   }
 }
 
+// ── Task 21: Strategic Question Generator ────────────────────
+// Analyzes what the dream pipeline produced and surfaces questions
+// that only Zach can answer — strategy, clarifications, prediction
+// reviews, and priority calls. Runs AFTER world narrative, BEFORE self-audit.
+
+async function task21QuestionGenerator(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    // Expire questions older than 7 days
+    db.prepare("UPDATE prime_questions SET status = 'expired' WHERE status = 'pending' AND created_at < datetime('now', '-7 days')").run();
+
+    // Gather pipeline outputs for LLM context
+    const gapsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'detected_gaps'").get() as any)?.value;
+    const profilesRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'project_profiles'").get() as any)?.value;
+    const predsRaw = db.prepare("SELECT subject, prediction, confidence, outcome, error_analysis, project FROM predictions WHERE outcome != 'pending' ORDER BY updated_at DESC LIMIT 5").all() as any[];
+    const investigationsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'investigation_results'").get() as any)?.value;
+    const narrativeRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'world_narrative'").get() as any)?.value;
+
+    const gaps = gapsRaw ? JSON.parse(gapsRaw).slice(0, 10) : [];
+    const profiles = profilesRaw ? JSON.parse(profilesRaw) : [];
+    const investigations = investigationsRaw ? JSON.parse(investigationsRaw) : [];
+    const narrative = narrativeRaw ? JSON.parse(narrativeRaw)?.narrative?.slice(0, 2000) || '' : '';
+
+    // Check for existing pending questions to avoid duplicates
+    const existingQs = db.prepare("SELECT question FROM prime_questions WHERE status = 'pending'").all() as any[];
+    const existingSet = new Set(existingQs.map((q: any) => q.question.toLowerCase().slice(0, 50)));
+
+    const prompt = `You are the AI Chief of Staff analyzing dream pipeline outputs. Your job: identify 3-5 questions that ONLY Zach (the founder) can answer. These are things the data cannot resolve.
+
+CATEGORIES:
+- STRATEGIC: Business judgment calls (deal terms, partnership decisions, pricing strategy)
+- CLARIFICATION: Ambiguous references in data the system can't resolve (mentioned frameworks, unnamed contacts, vague plans)
+- PREDICTION_REVIEW: The system predicted wrong — what signal was missed? (only if predictions below show errors)
+- PRIORITY: Competing demands that need Zach's prioritization call
+
+DETECTED GAPS:
+${gaps.length > 0 ? gaps.map((g: any) => `[${g.severity}] ${g.type}: ${g.description}`).join('\n') : '(none)'}
+
+PROJECT PROFILES:
+${profiles.length > 0 ? profiles.map((p: any) => `${p.project} [${p.status}]: ${p.status_reasoning || ''}${p.next_action ? ' Next: ' + p.next_action : ''}`).join('\n') : '(none)'}
+
+RECENT PREDICTION OUTCOMES:
+${predsRaw.length > 0 ? predsRaw.map((p: any) => `${p.subject}: predicted "${p.prediction}" (${Math.round(p.confidence * 100)}%) → ${p.outcome}${p.error_analysis ? ' | Error: ' + p.error_analysis : ''}`).join('\n') : '(no verified predictions yet)'}
+
+INVESTIGATION RESULTS:
+${investigations.length > 0 ? JSON.stringify(investigations).slice(0, 1500) : '(none)'}
+
+WORLD NARRATIVE (excerpt):
+${narrative || '(not available)'}
+
+ALREADY PENDING (do NOT repeat these):
+${existingQs.map((q: any) => q.question).join('\n') || '(none)'}
+
+Respond ONLY with a JSON array. Each item: {"question": "...", "category": "strategic|clarification|prediction_review|priority", "project": "ProjectName or null", "entity": "PersonName or null", "context": "why you're asking — what data prompted this", "priority": "high|medium|low"}
+
+Rules:
+- 3-5 questions, no more
+- Each must be specific and actionable — not vague
+- Priority "high" only for questions blocking decisions
+- Skip prediction_review if no errors in data
+- If everything looks clear, return fewer questions`;
+
+    const raw = await callClaude(prompt, 120000);
+    const jsonMatch = raw.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      return { task: '21-question-generator', status: 'skipped', duration_seconds: (Date.now() - start) / 1000, output: { reason: 'no valid JSON response' } };
+    }
+
+    const questions = JSON.parse(jsonMatch[0]);
+    const { v4: uuidv4 } = await import('uuid');
+    let stored = 0;
+
+    for (const q of questions.slice(0, 5)) {
+      if (!q.question || !q.category) continue;
+      // Skip near-duplicates of existing pending questions
+      if (existingSet.has(q.question.toLowerCase().slice(0, 50))) continue;
+
+      db.prepare(`INSERT INTO prime_questions (id, question, category, project, entity, context, priority, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`)
+        .run(uuidv4(), q.question, q.category, q.project || null, q.entity || null, q.context || null, q.priority || 'medium');
+      stored++;
+    }
+
+    // Store pending questions in graph_state for API
+    const pending = db.prepare("SELECT id, question, category, project, entity, context, priority, created_at FROM prime_questions WHERE status = 'pending' ORDER BY CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, created_at DESC LIMIT 10").all();
+    db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('pending_questions', ?, datetime('now'))").run(JSON.stringify(pending));
+
+    return { task: '21-question-generator', status: 'success', duration_seconds: (Date.now() - start) / 1000, output: { generated: stored, total_pending: pending.length } };
+  } catch (err: any) {
+    return { task: '21-question-generator', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
 // ── Pipeline Runner ─────────────────────────────────────────
 
 export async function runDreamPipeline(
@@ -2670,6 +2762,12 @@ export async function runDreamPipeline(
     const r09 = await task09WorldNarrative(db);
     results.push(r09);
     console.log(`    ${r09.status === 'success' ? '✓' : '✗'} ${r09.status} (${r09.duration_seconds.toFixed(1)}s)${r09.output ? ` — ${JSON.stringify(r09.output).slice(0, 100)}` : ''}`);
+
+    // Task 21: Strategic Question Generator — what can't the system determine alone?
+    console.log('  Task 21: Strategic question generator (LLM)...');
+    const r21 = await task21QuestionGenerator(db);
+    results.push(r21);
+    console.log(`    ${r21.status === 'success' ? '✓' : r21.status === 'skipped' ? '○' : '✗'} ${r21.status} (${r21.duration_seconds.toFixed(1)}s)${r21.output ? ` — ${JSON.stringify(r21.output).slice(0, 120)}` : ''}`);
 
     // Task 05: Self-audit — grade OUR OWN work
     console.log('  Task 05: Self-audit...');

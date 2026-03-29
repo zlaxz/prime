@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { scanGmail } from './gmail.js';
+import { scanGmail, scanSentMail } from './gmail.js';
 import { scanCalendar } from './calendar.js';
 import { scanClaude } from './claude.js';
 import { scanCowork } from './cowork.js';
@@ -55,6 +55,16 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
       results.push({ source: 'cowork', items });
     } catch (err: any) {
       results.push({ source: 'cowork', items: 0, error: err.message });
+    }
+  }
+
+  // Gmail Sent — corrects false awaiting_reply tags + captures Zach-initiated threads
+  if (gmailTokens) {
+    try {
+      const sent = await scanSentMail(db, { days: 7, maxThreads: 100 });
+      results.push({ source: 'gmail-sent', items: sent.corrected + sent.newItems });
+    } catch (err: any) {
+      results.push({ source: 'gmail-sent', items: 0, error: err.message });
     }
   }
 

@@ -491,6 +491,13 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         if (gapsRaw) detectedGaps = JSON.parse(gapsRaw.value);
       } catch {}
 
+      // Load pending questions for display
+      let pendingQuestions: any[] = [];
+      try {
+        const qRaw = db.prepare("SELECT value FROM graph_state WHERE key = 'pending_questions'").get() as any;
+        if (qRaw) pendingQuestions = JSON.parse(qRaw.value);
+      } catch {}
+
       res.json({
         display_state: displayState,
         one_thing: oneThing,
@@ -507,6 +514,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
           critical: detectedGaps.filter((g: any) => g.severity === 'critical').length,
           high: detectedGaps.filter((g: any) => g.severity === 'high').length,
         } : null,
+        questions: pendingQuestions.slice(0, 5),
         prediction_accuracy: accuracy ? Math.round(accuracy.accuracy_rate * 100) : null,
         meta_insight: metaInsight,
         dream_age_hours: Math.round(dreamAge),
