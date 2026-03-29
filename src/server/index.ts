@@ -580,6 +580,167 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ============================================================
+  // Command Dispatch — unified natural language interface
+  // ============================================================
+  app.post('/api/v1/command', async (req, res) => {
+    try {
+      const { text } = req.body;
+      if (!text) { res.status(400).json({ error: 'text required' }); return; }
+
+      const cmd = text.trim().toLowerCase();
+
+      // Pattern-match commands (instant, no LLM)
+      if (cmd === 'status') {
+        res.json({ intent: 'status', result: getStats(db) });
+        return;
+      }
+
+      if (cmd === 'commitments' || cmd.startsWith('commitment')) {
+        const rows = db.prepare("SELECT * FROM commitments WHERE state IN ('active','overdue') ORDER BY due_date ASC LIMIT 10").all();
+        res.json({ intent: 'commitments', result: rows });
+        return;
+      }
+
+      if (cmd === 'briefing' || cmd === 'brief') {
+        const { askWithSources: ask } = await import('../ai/ask.js');
+        const answer = await ask(db, 'Generate a morning briefing: top priorities, commitments due, dropped balls, relationship health.');
+        res.json({ intent: 'briefing', result: answer });
+        return;
+      }
+
+      if (cmd === 'calendar' || cmd === 'today') {
+        const rows = db.prepare("SELECT title, summary, source_date, contacts, project FROM knowledge WHERE source = 'calendar' AND source_date >= date('now') AND source_date < date('now', '+2 days') ORDER BY source_date ASC LIMIT 10").all();
+        res.json({ intent: 'calendar', result: rows });
+        return;
+      }
+
+      if (cmd.startsWith('predict ') || cmd.startsWith('prediction ')) {
+        const entity = text.replace(/^predict(ion)?\s+/i, '').trim();
+        const { getEntityPrediction, ensurePredictorSchema } = await import('../ai/predict.js');
+        ensurePredictorSchema(db);
+        const pred = getEntityPrediction(db, entity);
+        res.json({ intent: 'predict', entity, result: pred });
+        return;
+      }
+
+      if (cmd.startsWith('search ')) {
+        const query = text.replace(/^search\s+/i, '').trim();
+        const apiKey = getConfig(db, 'openai_api_key');
+        let results: any[];
+        if (apiKey) {
+          try {
+            const emb = await generateEmbedding(query, apiKey);
+            results = searchByEmbedding(db, emb, 10, 0.3);
+          } catch {
+            results = searchByText(db, query, 10);
+          }
+        } else {
+          results = searchByText(db, query, 10);
+        }
+        res.json({ intent: 'search', query, result: results });
+        return;
+      }
+
+      if (cmd.startsWith('ask ')) {
+        const question = text.replace(/^ask\s+/i, '').trim();
+        const { askWithSources: ask } = await import('../ai/ask.js');
+        const answer = await ask(db, question);
+        res.json({ intent: 'ask', result: answer });
+        return;
+      }
+
+      if (cmd.startsWith('capture ') || cmd.startsWith('remember ')) {
+        const content = text.replace(/^(capture|remember)\s+/i, '').trim();
+        const apiKey = getConfig(db, 'openai_api_key');
+        const extracted = await extractIntelligence(content, apiKey);
+        const emb = await generateEmbedding(`${extracted.title}\n${extracted.summary}`, apiKey!);
+        const item: KnowledgeItem = {
+          id: uuid(), title: extracted.title, summary: extracted.summary,
+          source: 'command', source_ref: `command:${Date.now()}`,
+          source_date: new Date().toISOString(),
+          contacts: extracted.contacts, organizations: extracted.organizations,
+          decisions: extracted.decisions, commitments: extracted.commitments,
+          action_items: extracted.action_items, tags: extracted.tags,
+          project: extracted.project, importance: extracted.importance, embedding: emb,
+        };
+        insertKnowledge(db, item);
+        res.json({ intent: 'capture', result: { id: item.id, title: item.title } });
+        return;
+      }
+
+      if (cmd.startsWith('approve ')) {
+        const id = text.replace(/^approve\s+/i, '').trim();
+        try {
+          const { executeAction } = await import('../actions.js');
+          const result = await executeAction(db, id);
+          res.json({ intent: 'approve', result });
+        } catch (err: any) {
+          res.json({ intent: 'approve', error: err.message });
+        }
+        return;
+      }
+
+      // Unrecognized — try as a search
+      const results = searchByText(db, text, 5);
+      if (results.length > 0) {
+        res.json({ intent: 'search_fallback', query: text, result: results });
+      } else {
+        res.json({
+          intent: 'unknown',
+          preview: `I didn't understand "${text}". Try: search, ask, commitments, predict, capture, approve, briefing, calendar, status`,
+          needs_disambiguation: true,
+        });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ============================================================
+  // Predictions API
+  // ============================================================
+  app.get('/api/v1/predictions', async (_req, res) => {
+    try {
+      const { getAnomalies, ensurePredictorSchema } = await import('../ai/predict.js');
+      ensurePredictorSchema(db);
+      const anomalies = getAnomalies(db);
+      res.json({ anomalies, total: anomalies.length });
+    } catch (err: any) {
+      res.json({ anomalies: [], total: 0, error: err.message });
+    }
+  });
+
+  // ============================================================
+  // Calendar context API
+  // ============================================================
+  app.get('/api/v1/calendar', (_req, res) => {
+    try {
+      const events = db.prepare(`
+        SELECT title, summary, source_date, contacts, project, metadata
+        FROM knowledge
+        WHERE source = 'calendar'
+        AND source_date >= datetime('now', '-1 hour')
+        AND source_date < datetime('now', '+2 days')
+        ORDER BY source_date ASC
+        LIMIT 10
+      `).all();
+
+      // Parse JSON fields
+      for (const e of events as any[]) {
+        for (const f of ['contacts', 'metadata']) {
+          if (e[f] && typeof e[f] === 'string') {
+            try { e[f] = JSON.parse(e[f]); } catch {}
+          }
+        }
+      }
+
+      res.json({ events, count: events.length });
+    } catch (err: any) {
+      res.json({ events: [], count: 0, error: err.message });
+    }
+  });
+
   app.listen(port, '0.0.0.0', () => {
     const stats = getStats(db);
     console.log(`\n⚡ Prime server running on http://0.0.0.0:${port}`);
