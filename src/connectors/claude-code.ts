@@ -371,7 +371,7 @@ export async function scanClaudeCode(
       commitments: extracted.commitments,
       action_items: extracted.action_items,
       tags: [
-        ...extracted.tags,
+        ...(extracted.tags || []),
         'claude-code',
         `project:${projectName}`,
       ],
