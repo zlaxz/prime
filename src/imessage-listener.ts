@@ -5,6 +5,7 @@ import { homedir } from 'os';
 import Database from 'better-sqlite3';
 import { getDb, getConfig } from './db.js';
 import { executeAction, executeAllPending } from './actions.js';
+import { snoozeAllPending } from './escalation.js';
 import { notify } from './notify.js';
 
 // ============================================================
@@ -142,19 +143,30 @@ async function processReply(db: Database.Database, text: string, zachPhone: stri
 
     console.log(`[iMessage] Action #${actionNum}: ${result.success ? 'success' : 'failed'}`);
 
+  } else if (cmd === 'LATER' || cmd === 'SNOOZE') {
+    // Snooze all pending actions — reset escalation, extend expiry 24h
+    const snoozed = snoozeAllPending(db);
+    if (snoozed === 0) {
+      sendReply(zachPhone, 'No pending actions to snooze.');
+    } else {
+      sendReply(zachPhone, `Snoozed ${snoozed} action${snoozed === 1 ? '' : 's'} for 24h. Escalation reset.`);
+    }
+    console.log(`[iMessage] Snoozed ${snoozed} actions`);
+
   } else if (cmd === 'STATUS' || cmd === 'LIST') {
     // List pending actions
     const pending = db.prepare(
-      "SELECT id, type, summary, project FROM staged_actions WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY id"
+      "SELECT id, type, summary, project, COALESCE(escalation_level, 0) as escalation_level FROM staged_actions WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY id"
     ).all() as any[];
 
     if (pending.length === 0) {
       sendReply(zachPhone, 'No pending actions.');
     } else {
+      const levelLabel = (l: number) => l === 0 ? '' : l === 1 ? ' [REMINDER]' : l === 2 ? ' [AUTO-SEND SOON]' : ' [AUTO-SENDING]';
       const lines = pending.map((a: any, i: number) =>
-        `${i + 1}. [${a.type}] ${a.summary}`
+        `${i + 1}. [${a.type}] ${a.summary}${levelLabel(a.escalation_level)}`
       ).join('\n');
-      sendReply(zachPhone, `${pending.length} pending:\n${lines}\n\nReply YES to approve all, or # for specific.`);
+      sendReply(zachPhone, `${pending.length} pending:\n${lines}\n\nReply YES/NO/#/LATER`);
     }
 
   } else {
@@ -182,7 +194,7 @@ export async function startListener(): Promise<void> {
 
   console.log(`[iMessage] Listener started. Monitoring replies from ${zachPhone}`);
   console.log(`[iMessage] Last processed ROWID: ${lastRowId}`);
-  console.log(`[iMessage] Commands: YES/Y, NO/N, #, STATUS, LIST`);
+  console.log(`[iMessage] Commands: YES/Y, NO/N, #, LATER/SNOOZE, STATUS, LIST`);
   console.log(`[iMessage] Polling every ${POLL_INTERVAL / 1000}s\n`);
 
   const poll = async () => {

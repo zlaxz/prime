@@ -1030,6 +1030,22 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
   });
 
   // ============================================================
+  // Corrections API
+  // ============================================================
+  app.get('/api/v1/corrections', (_req, res) => {
+    try {
+      const corrections = db.prepare(
+        `SELECT id, original_claim, corrected_claim, correction_type, affected_entity_id, affected_project,
+                timestamp, propagation_status, propagated_at
+         FROM brain_corrections ORDER BY timestamp DESC LIMIT 50`
+      ).all();
+      res.json({ corrections, total: corrections.length });
+    } catch (err: any) {
+      res.json({ corrections: [], total: 0, error: err.message });
+    }
+  });
+
+  // ============================================================
   // Predictions API
   // ============================================================
   app.get('/api/v1/predictions', async (_req, res) => {
