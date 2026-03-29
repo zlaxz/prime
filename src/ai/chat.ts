@@ -265,26 +265,44 @@ export async function chatMessage(
     session = db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(sessionId) as ChatSession;
   }
 
-  // Save user message
-  const userMsgId = uuid();
+  // Classify intent
   const intent = classifyIntent(opts.message);
+
+  // Build context BEFORE saving message (so history doesn't include current message)
+  const { systemPrompt, history } = await buildChatContext(db, session, opts.message);
+
+  // NOW save user message (after context is built)
+  const userMsgId = uuid();
   db.prepare(`
     INSERT INTO chat_messages (id, session_id, role, content, intent, created_at)
     VALUES (?, ?, 'user', ?, ?, datetime('now'))
   `).run(userMsgId, sessionId, opts.message, intent);
 
-  // Build context
-  const { systemPrompt, history } = await buildChatContext(db, session, opts.message);
-
-  // Assemble messages for LLM
+  // Assemble messages for LLM — filter out any empty assistant messages from previous failures
+  const cleanHistory = history.filter(m => m.content && m.content.trim().length > 0);
   const messages = [
     { role: 'system', content: systemPrompt },
-    ...history,
+    ...cleanHistory,
     { role: 'user', content: opts.message },
   ];
 
-  // Call LLM
-  const response = await provider.chat(messages, { temperature: 0.3, max_tokens: 3000 });
+  // Call LLM with retry
+  let response: string;
+  try {
+    response = await provider.chat(messages, { temperature: 0.3, max_tokens: 3000 });
+  } catch (err: any) {
+    // Retry once
+    try {
+      response = await provider.chat(messages, { temperature: 0.3, max_tokens: 3000 });
+    } catch (err2: any) {
+      response = `I encountered an error processing your request. Error: ${err2.message?.slice(0, 100)}. Please try again.`;
+    }
+  }
+
+  // Ensure response is not empty
+  if (!response || response.trim().length === 0) {
+    response = 'I was unable to generate a response. This may be a temporary issue. Please try again.';
+  }
 
   // Parse actions from response
   const actionIds = parseActions(response, db, sessionId!);
