@@ -329,8 +329,138 @@ export async function retrieveSourceContent(
     };
   }
 
-  // For other sources (claude, otter, cowork), use the stored summary as fallback
-  // These can be extended with their respective APIs later
+  // Claude.ai conversations — retrieve via internal API
+  if (item.source === 'claude') {
+    const convUuid = item.source_ref.replace('claude:', '').replace('claude-artifact:', '').split(':')[0];
+    if (!convUuid) return null;
+
+    try {
+      const sessionKey = getConfig(db, 'claude_session_key');
+      const orgId = getConfig(db, 'claude_active_org');
+      if (!sessionKey || !orgId) return null;
+
+      const https = await import('https');
+      const content = await new Promise<string | null>((resolve, reject) => {
+        const req = https.request({
+          hostname: 'claude.ai',
+          path: `/api/organizations/${orgId}/chat_conversations/${convUuid}`,
+          method: 'GET',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0',
+            'Cookie': `sessionKey=${sessionKey}`,
+            'Accept': 'application/json',
+          },
+        }, (res) => {
+          let data = '';
+          res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+          res.on('end', () => {
+            try {
+              const parsed = JSON.parse(data);
+              const msgs = parsed.chat_messages || [];
+              const text = msgs.map((m: any) => `[${m.sender}]: ${m.text || ''}`).join('\n\n');
+              resolve(text || null);
+            } catch { resolve(null); }
+          });
+        });
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+        req.setTimeout(15000);
+        req.end();
+      });
+
+      if (content) {
+        // Cache for this session
+        try {
+          db.prepare('UPDATE knowledge SET raw_content = ? WHERE source_ref = ?')
+            .run(content.slice(0, 50000), item.source_ref);
+        } catch {}
+
+        return {
+          source: item.source,
+          source_ref: item.source_ref,
+          content,
+          content_type: 'conversation' as const,
+          retrieved_at: new Date().toISOString(),
+        };
+      }
+    } catch {}
+  }
+
+  // Otter.ai meetings — retrieve via internal API
+  if (item.source === 'otter') {
+    const otid = item.source_ref.replace('otter:', '');
+    if (!otid) return null;
+
+    try {
+      const sessionId = getConfig(db, 'otter_session_id');
+      const csrfToken = getConfig(db, 'otter_csrf_token');
+      if (!sessionId || !csrfToken) return null;
+
+      const https = await import('https');
+      const content = await new Promise<string | null>((resolve, reject) => {
+        const req = https.request({
+          hostname: 'otter.ai',
+          path: `/forward/api/v1/speech?otid=${otid}`,
+          method: 'GET',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0',
+            'Cookie': `sessionid=${sessionId}; csrftoken=${csrfToken}`,
+            'X-CSRFToken': csrfToken,
+            'Referer': 'https://otter.ai/',
+            'Accept': 'application/json',
+          },
+        }, (res) => {
+          let data = '';
+          res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+          res.on('end', () => {
+            try {
+              const parsed = JSON.parse(data);
+              const speech = parsed.speech || {};
+              // Build text from outline segments
+              const outline = speech.speech_outline || [];
+              const flatten = (items: any[]): string[] => {
+                const texts: string[] = [];
+                for (const item of (Array.isArray(items) ? items : [])) {
+                  if (item.text) texts.push(item.text);
+                  if (item.segments) texts.push(...flatten(item.segments));
+                }
+                return texts;
+              };
+              const outlineText = flatten(outline).join('\n');
+              const text = `Meeting: ${speech.title}\nSpeakers: ${(speech.speakers || []).map((s: any) => s.speaker_name).join(', ')}\nSummary: ${speech.summary || ''}\n\nOutline:\n${outlineText}`;
+              resolve(text || null);
+            } catch { resolve(null); }
+          });
+        });
+        req.on('error', () => resolve(null));
+        req.on('timeout', () => { req.destroy(); resolve(null); });
+        req.setTimeout(15000);
+        req.end();
+      });
+
+      if (content) {
+        return {
+          source: item.source,
+          source_ref: item.source_ref,
+          content,
+          content_type: 'meeting_transcript' as const,
+          retrieved_at: new Date().toISOString(),
+        };
+      }
+    } catch {}
+  }
+
+  // For other sources (cowork, etc.), use stored metadata.conversation_text if available
+  if (meta?.conversation_text) {
+    return {
+      source: item.source,
+      source_ref: item.source_ref,
+      content: meta.conversation_text,
+      content_type: 'conversation' as const,
+      retrieved_at: new Date().toISOString(),
+    };
+  }
+
   return null;
 }
 
