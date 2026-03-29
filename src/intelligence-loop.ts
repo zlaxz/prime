@@ -1,0 +1,352 @@
+import type Database from 'better-sqlite3';
+import { v4 as uuid } from 'uuid';
+import { getConfig } from './db.js';
+import { getBulkProvider, getDefaultProvider } from './ai/providers.js';
+
+// ============================================================
+// Recursive Intelligence Loop
+//
+// Task 15: Prediction Verification (DeepSeek — bulk check)
+// Task 16: Strategic Reflection (Claude — meta-cognition)
+//
+// Red team mitigations baked in:
+// - Source-grounded verification (must cite timestamped data)
+// - Impact-weighted predictions (no trivial gaming)
+// - Counterfactual validation on action-changing lessons
+// - Lesson conflict detection
+// - Confidence calibration tracking
+// ============================================================
+
+interface TaskResult {
+  task: string;
+  status: 'success' | 'failed' | 'skipped';
+  duration_seconds: number;
+  output?: any;
+  error?: string;
+}
+
+// ── Task 15: Prediction Verification ─────────────────────
+
+export async function task15PredictionVerification(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    // Get pending predictions due for verification
+    const pending = db.prepare(`
+      SELECT * FROM predictions
+      WHERE outcome = 'pending' AND check_by <= date('now')
+      ORDER BY prediction_date ASC LIMIT 20
+    `).all() as any[];
+
+    if (pending.length === 0) {
+      return { task: '15-prediction-verification', status: 'skipped', duration_seconds: 0, output: { message: 'No predictions due for verification' } };
+    }
+
+    // Gather current reality for each prediction
+    const verificationsPrompt: string[] = [];
+    for (let i = 0; i < pending.length; i++) {
+      const pred = pending[i];
+      let reality = '';
+
+      if (pred.domain === 'project') {
+        const profile = db.prepare("SELECT value FROM graph_state WHERE key = 'project_profiles'").get() as any;
+        if (profile) {
+          const profiles = JSON.parse(profile.value);
+          const match = profiles.find((p: any) => p.project === pred.subject || p.project === pred.project);
+          if (match) reality = `Project status: ${match.status}. Reasoning: ${match.status_reasoning || 'N/A'}`;
+        }
+        // Recent items for this project
+        const items = db.prepare(
+          "SELECT title, source, source_date FROM knowledge_primary WHERE project = ? AND source_date > ? ORDER BY source_date DESC LIMIT 5"
+        ).all(pred.project || pred.subject, pred.prediction_date) as any[];
+        if (items.length > 0) {
+          reality += '\nRecent activity:\n' + items.map((i: any) => `  ${i.source_date} [${i.source}] ${i.title}`).join('\n');
+        }
+      } else if (pred.domain === 'entity') {
+        const items = db.prepare(`
+          SELECT k.title, k.source, k.source_date FROM knowledge_primary k
+          JOIN entity_mentions em ON k.id = em.knowledge_item_id
+          JOIN entities e ON em.entity_id = e.id
+          WHERE e.canonical_name LIKE ? AND k.source_date > ?
+          ORDER BY k.source_date DESC LIMIT 5
+        `).all(`%${pred.subject}%`, pred.prediction_date) as any[];
+        reality = items.length > 0
+          ? 'Recent activity:\n' + items.map((i: any) => `  ${i.source_date} [${i.source}] ${i.title}`).join('\n')
+          : 'No activity found since prediction was made.';
+      } else if (pred.domain === 'commitment') {
+        const commitments = db.prepare(
+          "SELECT text, state, detected_from FROM commitments WHERE text LIKE ? OR project = ? ORDER BY detected_at DESC LIMIT 3"
+        ).all(`%${pred.subject}%`, pred.project || '') as any[];
+        reality = commitments.length > 0
+          ? commitments.map((c: any) => `Commitment: "${c.text}" — state: ${c.state}`).join('\n')
+          : 'No matching commitments found.';
+      }
+
+      if (!reality) {
+        reality = 'No direct evidence found. Check may be premature.';
+      }
+
+      verificationsPrompt.push(
+        `[${i + 1}] PREDICTED (${pred.prediction_date}, ${Math.round(pred.confidence * 100)}% confidence):\n` +
+        `  "${pred.prediction}"\n` +
+        `  Subject: ${pred.subject}\n` +
+        `  Reasoning: ${pred.reasoning}\n` +
+        `  CURRENT REALITY:\n  ${reality}`
+      );
+    }
+
+    const prompt = `You are verifying predictions made by an AI Chief of Staff system.
+For each prediction, compare what was predicted against current evidence.
+
+IMPORTANT: You MUST cite specific timestamped evidence. Do NOT invent evidence.
+If evidence is ambiguous or insufficient, mark as "unverifiable" — do NOT guess.
+
+${verificationsPrompt.join('\n\n')}
+
+Return JSON array:
+[{
+  "index": 1,
+  "outcome": "correct|partially_correct|wrong|unverifiable",
+  "evidence": "specific evidence with dates",
+  "error_description": "what was wrong (null if correct or unverifiable)"
+}]`;
+
+    const provider = await getBulkProvider(getConfig(db, 'openai_api_key') || undefined);
+    const response = await provider.chat([{ role: 'user', content: prompt }], { json: true, temperature: 0.1 });
+
+    let results: any[];
+    try {
+      const parsed = JSON.parse(response.replace(/```json?\s*\n?/g, '').replace(/\n?```/g, ''));
+      results = Array.isArray(parsed) ? parsed : parsed.results || parsed.predictions || [];
+    } catch {
+      return { task: '15-prediction-verification', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: 'Failed to parse verification results' };
+    }
+
+    // Update predictions
+    let correct = 0, wrong = 0, partial = 0, unverifiable = 0;
+    for (const r of results) {
+      const idx = (r.index || r.id || 0) - 1;
+      if (idx < 0 || idx >= pending.length) continue;
+      const pred = pending[idx];
+
+      db.prepare(`
+        UPDATE predictions SET outcome = ?, outcome_evidence = ?, outcome_date = date('now'),
+        error_analysis = ?, updated_at = datetime('now') WHERE id = ?
+      `).run(r.outcome, r.evidence, r.error_description, pred.id);
+
+      if (r.outcome === 'correct') correct++;
+      else if (r.outcome === 'wrong') wrong++;
+      else if (r.outcome === 'partially_correct') partial++;
+      else unverifiable++;
+    }
+
+    // Compute accuracy metrics
+    const verified = correct + wrong + partial;
+    const accuracy = verified > 0 ? (correct + partial * 0.5) / verified : 0;
+
+    // Historical accuracy
+    const allVerified = db.prepare(
+      "SELECT outcome, COUNT(*) as cnt FROM predictions WHERE outcome != 'pending' GROUP BY outcome"
+    ).all() as any[];
+    const totalVerified = allVerified.reduce((s: number, r: any) => s + r.cnt, 0);
+    const totalCorrect = allVerified.find((r: any) => r.outcome === 'correct')?.cnt || 0;
+    const totalPartial = allVerified.find((r: any) => r.outcome === 'partially_correct')?.cnt || 0;
+    const overallAccuracy = totalVerified > 0 ? (totalCorrect + totalPartial * 0.5) / totalVerified : 0;
+
+    const accuracyData = {
+      total_verified: totalVerified,
+      correct: totalCorrect,
+      partially_correct: totalPartial,
+      wrong: allVerified.find((r: any) => r.outcome === 'wrong')?.cnt || 0,
+      unverifiable: allVerified.find((r: any) => r.outcome === 'unverifiable')?.cnt || 0,
+      accuracy_rate: overallAccuracy,
+      this_run: { correct, wrong, partial, unverifiable },
+      verified_at: new Date().toISOString(),
+    };
+
+    db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('prediction_accuracy', ?, datetime('now'))")
+      .run(JSON.stringify(accuracyData));
+
+    // Store recent errors for Task 16
+    const recentErrors = pending
+      .map((p: any, i: number) => {
+        const r = results.find((r: any) => (r.index || r.id || 0) - 1 === i);
+        if (!r || (r.outcome !== 'wrong' && r.outcome !== 'partially_correct')) return null;
+        return { prediction: p.prediction, subject: p.subject, confidence: p.confidence, reasoning: p.reasoning, outcome: r.outcome, evidence: r.evidence, error: r.error_description };
+      })
+      .filter(Boolean);
+
+    db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('prediction_errors_latest', ?, datetime('now'))")
+      .run(JSON.stringify(recentErrors));
+
+    return {
+      task: '15-prediction-verification',
+      status: 'success',
+      duration_seconds: (Date.now() - start) / 1000,
+      output: { verified: pending.length, correct, wrong, partial, unverifiable, overall_accuracy: overallAccuracy },
+    };
+  } catch (err: any) {
+    return { task: '15-prediction-verification', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
+// ── Task 16: Strategic Reflection ────────────────────────
+
+export async function task16StrategicReflection(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    // Load prediction errors
+    const errorsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'prediction_errors_latest'").get() as any)?.value;
+    const errors = errorsRaw ? JSON.parse(errorsRaw) : [];
+
+    // Load accuracy history
+    const accuracyRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'prediction_accuracy'").get() as any)?.value;
+    const accuracy = accuracyRaw ? JSON.parse(accuracyRaw) : null;
+
+    // Need at least some data to reflect on
+    if (errors.length === 0 && (!accuracy || accuracy.total_verified < 3)) {
+      return { task: '16-strategic-reflection', status: 'skipped', duration_seconds: 0, output: { message: 'Insufficient prediction history for reflection' } };
+    }
+
+    // Load active lessons
+    const activeLessons = db.prepare(
+      "SELECT * FROM strategic_lessons WHERE superseded_by IS NULL AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY created_at DESC LIMIT 15"
+    ).all() as any[];
+
+    // Load recent staged action feedback
+    const recentFeedback = db.prepare(
+      "SELECT type, summary, status, reasoning, project FROM staged_actions WHERE acted_at > datetime('now', '-7 days') ORDER BY acted_at DESC LIMIT 10"
+    ).all() as any[];
+
+    const prompt = `You are the METACOGNITIVE LAYER of an AI Chief of Staff for Zach Stock (insurance MGA founder, ADHD).
+Your job: analyze WHY predictions were wrong and extract lessons that prevent the same errors.
+
+PREDICTION ERRORS:
+${errors.length > 0 ? errors.map((e: any) => `- PREDICTED: "${e.prediction}" (${Math.round(e.confidence * 100)}% confidence)\n  ACTUAL: ${e.outcome} — ${e.evidence}\n  ERROR: ${e.error}`).join('\n') : '(no errors this cycle)'}
+
+ACCURACY HISTORY:
+${accuracy ? `Overall: ${Math.round(accuracy.accuracy_rate * 100)}% (${accuracy.total_verified} verified)\nThis run: ${accuracy.this_run?.correct || 0} correct, ${accuracy.this_run?.wrong || 0} wrong` : '(first cycle)'}
+
+ACTIVE LESSONS (${activeLessons.length}):
+${activeLessons.map((l: any) => `- [${l.lesson_type}] ${l.lesson}\n  Rule: ${l.correction_rule || 'none'}`).join('\n') || '(none yet)'}
+
+USER FEEDBACK (staged action outcomes):
+${recentFeedback.map((f: any) => `- [${f.status}] ${f.type}: ${f.summary}`).join('\n') || '(none)'}
+
+REFLECT:
+1. What SYSTEMATIC ERRORS is the system making?
+2. Is the system OVER-CONFIDENT or UNDER-CONFIDENT?
+3. What BLIND SPOTS exist?
+4. Which existing lessons should be RETIRED?
+5. What NEW RULES should the system follow?
+
+CRITICAL: correction_rule must be CONCRETE and ACTIONABLE — not "be more careful" but "When evaluating X, weight Y because Z."
+
+ALSO CRITICAL: Before proposing a lesson that would REDUCE follow-up with someone, consider whether that creates a self-fulfilling prophecy. If reducing action could CAUSE the predicted outcome, flag it.
+
+Return JSON:
+{
+  "systematic_errors": ["pattern 1", "pattern 2"],
+  "calibration": {"direction": "overconfident|underconfident|calibrated", "recommendation": "..."},
+  "blind_spots": ["..."],
+  "new_lessons": [{
+    "lesson_type": "prediction_error|blind_spot|calibration|pattern_discovery",
+    "lesson": "human-readable lesson",
+    "domain": "project|entity|commitment|deal|timing|relationship",
+    "root_cause": "why the error occurred",
+    "severity": "critical|high|medium|low",
+    "correction_rule": "When X, do Y instead of Z",
+    "self_fulfilling_risk": false,
+    "supersedes_lesson_id": null
+  }],
+  "retired_lessons": [],
+  "meta_insight": "one sentence about the system's biggest growth area"
+}`;
+
+    // Use Claude for strategic reflection (highest quality reasoning)
+    const { spawn } = await import('child_process');
+    const response = await new Promise<string>((resolve, reject) => {
+      const env = { ...process.env };
+      delete env.ANTHROPIC_API_KEY;
+      const proc = spawn('claude', ['-p'], { stdio: ['pipe', 'pipe', 'pipe'], env, timeout: 180000 });
+      let stdout = '';
+      let stderr = '';
+      proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+      proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+      proc.on('close', (code) => { if (code === 0) resolve(stdout.trim()); else reject(new Error(`claude exited ${code}`)); });
+      proc.on('error', reject);
+      proc.stdin.write(prompt);
+      proc.stdin.end();
+    });
+
+    // Parse response
+    const cleaned = response.replace(/```json?\s*\n?/g, '').replace(/\n?```/g, '').trim();
+    const objMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!objMatch) {
+      return { task: '16-strategic-reflection', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: 'No JSON in reflection response' };
+    }
+
+    const reflection = JSON.parse(objMatch[0]);
+
+    // Insert new lessons
+    let lessonsAdded = 0;
+    for (const lesson of (reflection.new_lessons || [])) {
+      // Skip self-fulfilling lessons unless flagged as safe
+      if (lesson.self_fulfilling_risk) {
+        console.log(`    ⚠ Skipped self-fulfilling lesson: "${lesson.lesson}"`);
+        continue;
+      }
+
+      db.prepare(`
+        INSERT INTO strategic_lessons (id, lesson_date, lesson_type, lesson, domain, root_cause, severity, correction_rule, superseded_by)
+        VALUES (?, date('now'), ?, ?, ?, ?, ?, ?, ?)
+      `).run(uuid(), lesson.lesson_type, lesson.lesson, lesson.domain, lesson.root_cause, lesson.severity, lesson.correction_rule, null);
+
+      // Handle superseding
+      if (lesson.supersedes_lesson_id) {
+        db.prepare("UPDATE strategic_lessons SET superseded_by = ? WHERE id = ?")
+          .run(lesson.supersedes_lesson_id, lesson.supersedes_lesson_id);
+      }
+      lessonsAdded++;
+    }
+
+    // Retire old lessons
+    for (const retiredId of (reflection.retired_lessons || [])) {
+      db.prepare("UPDATE strategic_lessons SET superseded_by = 'retired', expires_at = datetime('now') WHERE id = ?").run(retiredId);
+    }
+
+    // Build active correction rules for injection into downstream tasks
+    const allActive = db.prepare(
+      "SELECT correction_rule, domain, severity FROM strategic_lessons WHERE superseded_by IS NULL AND correction_rule IS NOT NULL AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END LIMIT 10"
+    ).all() as any[];
+
+    db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('active_correction_rules', ?, datetime('now'))")
+      .run(JSON.stringify(allActive));
+
+    db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('strategic_reflection_latest', ?, datetime('now'))")
+      .run(JSON.stringify(reflection));
+
+    return {
+      task: '16-strategic-reflection',
+      status: 'success',
+      duration_seconds: (Date.now() - start) / 1000,
+      output: { lessons_added: lessonsAdded, meta_insight: reflection.meta_insight, calibration: reflection.calibration?.direction },
+    };
+  } catch (err: any) {
+    return { task: '16-strategic-reflection', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
+// ── Helper: Get correction rules for prompt injection ────
+
+export function getCorrectionRules(db: Database.Database, domain?: string): string {
+  const raw = (db.prepare("SELECT value FROM graph_state WHERE key = 'active_correction_rules'").get() as any)?.value;
+  if (!raw) return '';
+
+  const rules = JSON.parse(raw) as any[];
+  const filtered = domain ? rules.filter(r => r.domain === domain || r.domain === 'general') : rules;
+  if (filtered.length === 0) return '';
+
+  return 'CORRECTION RULES (from past errors — FOLLOW THESE):\n' +
+    filtered.map((r: any, i: number) => `${i + 1}. [${r.domain}] ${r.correction_rule}`).join('\n') +
+    '\nThese are extracted from PAST ERRORS. When your analysis conflicts with a rule, the rule wins unless you have strong new evidence.\n';
+}

@@ -11,6 +11,8 @@ import { retrieveDeepContext } from './source-retrieval.js';
 import { notify } from './notify.js';
 import { generateBriefingDoc } from './briefing-doc.js';
 import { autoExecuteLowRisk } from './actions.js';
+import { task15PredictionVerification, task16StrategicReflection, getCorrectionRules } from './intelligence-loop.js';
+import { task17ThreadBuilder, getThreadContext } from './narrative-threads.js';
 
 // ============================================================
 // Dream State Pipeline — Phase 5 of v1.0 Brain Architecture
@@ -2009,6 +2011,17 @@ export async function runDreamPipeline(
 
   console.log(`\n⚡ DREAM PIPELINE — ${new Date().toLocaleString()}\n`);
 
+  // ── RECURSIVE INTELLIGENCE LOOP (runs first, before data changes) ──
+  console.log('  Task 15: Prediction verification (DeepSeek)...');
+  const r15 = await task15PredictionVerification(db);
+  results.push(r15);
+  console.log(`    ${r15.status === 'success' ? '✓' : r15.status === 'skipped' ? '○' : '✗'} ${r15.status} (${r15.duration_seconds.toFixed(1)}s)${r15.output ? ` — ${JSON.stringify(r15.output).slice(0, 120)}` : ''}`);
+
+  console.log('  Task 16: Strategic reflection (Claude)...');
+  const r16 = await task16StrategicReflection(db);
+  results.push(r16);
+  console.log(`    ${r16.status === 'success' ? '✓' : r16.status === 'skipped' ? '○' : '✗'} ${r16.status} (${r16.duration_seconds.toFixed(1)}s)${r16.output ? ` — ${JSON.stringify(r16.output).slice(0, 120)}` : ''}`);
+
   // Task 01: Consolidate
   console.log('  Task 01: Consolidate new signals...');
   const r01 = await task01Consolidate(db);
@@ -2035,6 +2048,12 @@ export async function runDreamPipeline(
   const r13 = await task13EpisodicExtraction(db);
   results.push(r13);
   console.log(`    ${r13.status === 'success' ? '✓' : r13.status === 'skipped' ? '○' : '✗'} ${r13.status} (${r13.duration_seconds.toFixed(1)}s)${r13.output ? ` — ${JSON.stringify(r13.output).slice(0, 100)}` : ''}`);
+
+  // Task 17: Narrative Thread Builder (cross-source threading)
+  console.log('  Task 17: Narrative thread builder (DeepSeek + Claude)...');
+  const r17 = await task17ThreadBuilder(db);
+  results.push(r17);
+  console.log(`    ${r17.status === 'success' ? '✓' : r17.status === 'skipped' ? '○' : '✗'} ${r17.status} (${r17.duration_seconds.toFixed(1)}s)${r17.output ? ` — ${JSON.stringify(r17.output).slice(0, 120)}` : ''}`);
 
   // ── INTELLIGENCE LAYER (LLM-powered, skip in quick mode) ──────
   if (!options.quick) {
