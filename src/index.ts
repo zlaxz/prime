@@ -2737,4 +2737,130 @@ program
     }
   });
 
+// ============================================================
+// recall predict — entity prediction engine
+// ============================================================
+program
+  .command('predict [entity]')
+  .description('Predict relationship health — anomaly detection on entity communication patterns')
+  .option('--compute', 'Recompute all predictions from current data')
+  .option('-v, --verbose', 'Show detailed output')
+  .action(async (entityName: string | undefined, opts: any) => {
+    const { computePredictions, getAnomalies, getEntityPrediction, getAllPredictions } = await import('./ai/predict.js');
+    const db = getDb();
+
+    if (opts.compute) {
+      console.log('\n  Computing entity predictions...\n');
+      const stats = await computePredictions(db, { verbose: true, interpret: true });
+      console.log(`\n  Done: ${stats.computed} entities, ${stats.anomalies} anomalies, ${stats.interpreted} interpreted\n`);
+    }
+
+    if (entityName) {
+      // Show prediction for specific entity
+      const pred = getEntityPrediction(db, entityName);
+      if (!pred) {
+        console.log(`\n  No prediction data for "${entityName}". Run: recall predict --compute\n`);
+        return;
+      }
+
+      console.log(`\n  PREDICTION: ${pred.entity_name} [${pred.relationship_type || '?'}]\n`);
+      console.log(`  Baseline (30d):  ${pred.avg_mentions_per_week}/week | ${pred.avg_gap_days}d avg gap | ${Math.round((pred.inbound_ratio as number) * 100)}% inbound`);
+      console.log(`  Recent (7d):     ${pred.recent_mentions} mentions (${pred.recent_inbound} in, ${pred.recent_outbound} out)`);
+      console.log(`  Last contact:    ${pred.days_since_last} days ago`);
+      console.log(`  Velocity:        ${pred.velocity_change}x baseline`);
+
+      if (pred.is_anomaly) {
+        const severity = pred.anomaly_severity === 'high' ? '🔴' : pred.anomaly_severity === 'medium' ? '🟡' : '🟢';
+        console.log(`\n  ${severity} ANOMALY: ${pred.anomaly_type} (${pred.anomaly_severity})`);
+        if (pred.interpretation) console.log(`  ${pred.interpretation}`);
+        if (pred.recommended_action) console.log(`  → ${pred.recommended_action}`);
+      } else {
+        console.log(`\n  ✓ Normal — no anomalies detected`);
+      }
+      console.log('');
+      return;
+    }
+
+    // Show all anomalies
+    const anomalies = getAnomalies(db);
+    if (anomalies.length === 0) {
+      const all = getAllPredictions(db);
+      if (all.length === 0) {
+        console.log('\n  No predictions computed yet. Run: recall predict --compute\n');
+      } else {
+        console.log(`\n  ✓ ${all.length} entities tracked — no anomalies detected\n`);
+      }
+      return;
+    }
+
+    console.log(`\n  ANOMALIES (${anomalies.length})\n`);
+
+    for (const a of anomalies) {
+      const severity = a.anomaly_severity === 'high' ? '🔴' : a.anomaly_severity === 'medium' ? '🟡' : '🟢';
+      console.log(`  ${severity} ${a.entity_name} [${a.relationship_type || '?'}] — ${a.anomaly_type}`);
+      console.log(`     Baseline: ${a.avg_mentions_per_week}/wk | Recent: ${a.recent_mentions}/7d | Last: ${a.days_since_last}d ago | ${a.velocity_change}x`);
+      if (a.interpretation) console.log(`     ${a.interpretation}`);
+      if (a.recommended_action) console.log(`     → ${a.recommended_action}`);
+      console.log('');
+    }
+  });
+
+// ============================================================
+// recall noise — scan for and manage noise items
+// ============================================================
+program
+  .command('noise')
+  .description('Scan for noise items (spam, cold emails, newsletters, automated reports)')
+  .option('--scan', 'Scan all items and classify noise')
+  .option('--tag', 'Tag detected noise items (sets importance=noise)')
+  .option('--quarantine', 'Auto-dismiss entities that only appear in noise')
+  .option('--block-domain <domain>', 'Block a domain permanently')
+  .option('--list-blocked', 'Show all blocked domains')
+  .option('-v, --verbose', 'Show detailed output')
+  .action(async (opts: any) => {
+    const { scanForNoise, quarantineNoiseEntities, blockDomain, getBlockedDomains } = await import('./ai/noise.js');
+    const db = getDb();
+
+    if (opts.listBlocked) {
+      const domains = getBlockedDomains(db);
+      console.log(`\n  Blocked domains (${domains.length}):\n`);
+      for (const d of domains) {
+        console.log(`    ${d.domain} — ${d.reason}`);
+      }
+      console.log('');
+      return;
+    }
+
+    if (opts.blockDomain) {
+      blockDomain(db, opts.blockDomain);
+      console.log(`\n  ✓ Blocked domain: ${opts.blockDomain}\n`);
+      return;
+    }
+
+    if (opts.scan || opts.tag) {
+      console.log('\n  Scanning for noise...\n');
+      const stats = scanForNoise(db, { verbose: opts.verbose, tag: opts.tag });
+      console.log(`\n  Scanned: ${stats.scanned} | Noise found: ${stats.noise_found} | Tagged: ${stats.tagged}`);
+      if (!opts.tag && stats.noise_found > 0) {
+        console.log('  Run with --tag to mark them as noise\n');
+      }
+      console.log('');
+    }
+
+    if (opts.quarantine) {
+      console.log('  Quarantining noise-only entities...');
+      const q = quarantineNoiseEntities(db, { verbose: opts.verbose });
+      console.log(`  ✓ ${q.quarantined} entities quarantined\n`);
+    }
+
+    if (!opts.scan && !opts.tag && !opts.quarantine && !opts.blockDomain && !opts.listBlocked) {
+      console.log('\n  Usage:');
+      console.log('    recall noise --scan              Detect noise items');
+      console.log('    recall noise --scan --tag         Detect and tag noise');
+      console.log('    recall noise --quarantine         Auto-dismiss noise-only entities');
+      console.log('    recall noise --block-domain X     Block a domain forever');
+      console.log('    recall noise --list-blocked       Show blocked domains\n');
+    }
+  });
+
 program.parse();
