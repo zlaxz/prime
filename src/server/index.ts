@@ -273,9 +273,28 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
   app.get('/api/ambient', (_req, res) => {
     try {
       // Staged actions pending
-      const actions = db.prepare(
-        "SELECT id, type, summary, reasoning, project FROM staged_actions WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY id"
+      const rawActions = db.prepare(
+        "SELECT id, type, summary, reasoning, project, payload FROM staged_actions WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY id"
       ).all() as any[];
+
+      // Parse payload and merge into action for the UI
+      const actions = rawActions.map((a: any) => {
+        let payload: any = {};
+        try { payload = typeof a.payload === 'string' ? JSON.parse(a.payload) : (a.payload || {}); } catch {}
+        return {
+          id: a.id,
+          type: a.type,
+          summary: a.summary,
+          reasoning: a.reasoning,
+          project: a.project,
+          to: payload.to || null,
+          subject: payload.subject || null,
+          body: payload.body || null,
+          text: payload.text || null,
+          // Gmail compose deep link
+          gmail_link: payload.to ? `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(payload.to)}&su=${encodeURIComponent(payload.subject || '')}&body=${encodeURIComponent(payload.body || '')}` : null,
+        };
+      });
 
       // World narrative freshness
       const narrativeState = db.prepare("SELECT value, updated_at FROM graph_state WHERE key = 'world_narrative'").get() as any;
