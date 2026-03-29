@@ -576,11 +576,10 @@ export async function scanClaude(
         // Extract artifacts from ALL messages (assistant text + attachments)
         const artifacts = extractArtifacts(messages);
 
-        // For conversations, request a DETAILED summary — these are research sessions, not single emails
-        const extracted = await extractIntelligence(
-          `[CONVERSATION - provide a DETAILED summary of 500-1000 words covering ALL key findings, recommendations, and decisions. Do not compress to a few sentences.]\n\n${conversationText}`,
-          apiKey
-        );
+        // For conversations, pass the full text and let the extractor handle it
+        // The extractIntelligence prompt already asks for a summary — the quality improvement
+        // comes from passing MORE text (20K chars) and storing full text in metadata
+        const extracted = await extractIntelligence(conversationText, apiKey);
         const projectName = convo.project_uuid ? (projectMap.get(convo.project_uuid) ?? null) : null;
 
         return { convo, extracted, artifacts, projectName, conversationText };
