@@ -427,10 +427,11 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
 
       // Sort: Tier 1 first, then by urgency within tier
       // Sort by URGENCY first (what matters most), then tier
-      const urgencyOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+      const urgencyOrder: Record<string, number> = { critical: 1, high: 2, medium: 3, low: 4 };
       priorities.sort((a, b) => {
-        const urgDiff = (urgencyOrder[a.urgency] || 3) - (urgencyOrder[b.urgency] || 3);
-        if (urgDiff !== 0) return urgDiff;
+        const urgA = urgencyOrder[a.urgency] ?? 5;
+        const urgB = urgencyOrder[b.urgency] ?? 5;
+        if (urgA !== urgB) return urgA - urgB;
         return a.tier - b.tier;
       });
 
