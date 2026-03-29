@@ -272,52 +272,185 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
   // ── Ambient State API (powers all display surfaces) ─────
   app.get('/api/ambient', (_req, res) => {
     try {
-      // Staged actions pending
+      // ============================================================
+      // PRIORITY ENGINE — Business-driven, not reply-driven
+      //
+      // Tier 1: Strategic milestones (deadlines, launches, obligations)
+      // Tier 2: Active deal work (what moves deals forward)
+      // Tier 3: Genuine dropped balls (filtered — no solicitations)
+      // ============================================================
+
+      const priorities: any[] = [];
+
+      // ---- TIER 1: Strategic milestones ----
+      // Overdue and upcoming commitments with due dates
+      const urgentCommitments = db.prepare(`
+        SELECT id, text, state, due_date, owner, project, context
+        FROM commitments
+        WHERE state IN ('active', 'overdue')
+        AND due_date IS NOT NULL
+        AND due_date < datetime('now', '+7 days')
+        ORDER BY due_date ASC
+        LIMIT 5
+      `).all() as any[];
+
+      for (const c of urgentCommitments) {
+        const daysUntil = Math.round((new Date(c.due_date).getTime() - Date.now()) / 86400000);
+        const isOverdue = daysUntil < 0;
+        priorities.push({
+          id: `commitment-${c.id}`,
+          tier: 1,
+          type: 'milestone',
+          summary: c.text,
+          reasoning: isOverdue
+            ? `${Math.abs(daysUntil)} days overdue. ${c.context || ''}`
+            : `Due in ${daysUntil} day${daysUntil !== 1 ? 's' : ''}. ${c.context || ''}`,
+          project: c.project,
+          urgency: isOverdue ? 'critical' : daysUntil <= 2 ? 'high' : 'medium',
+          due_date: c.due_date,
+        });
+      }
+
+      // Project profiles — accelerating projects need next actions surfaced
+      let projectProfiles: any[] = [];
+      try {
+        const profilesRaw = db.prepare("SELECT value FROM graph_state WHERE key = 'project_profiles'").get() as any;
+        if (profilesRaw) projectProfiles = JSON.parse(profilesRaw.value);
+      } catch {}
+
+      for (const p of projectProfiles) {
+        if ((p.status === 'accelerating' || p.status === 'active') && p.next_action) {
+          // Don't duplicate if already in commitments
+          const alreadyShown = priorities.some(pr => pr.project === p.project && pr.tier === 1);
+          if (!alreadyShown) {
+            priorities.push({
+              id: `project-${p.project}`,
+              tier: 1,
+              type: 'strategic',
+              summary: p.next_action,
+              reasoning: p.status_reasoning?.slice(0, 200),
+              project: p.project,
+              urgency: p.status === 'accelerating' ? 'high' : 'medium',
+            });
+          }
+        }
+      }
+
+      // ---- TIER 2: Staged actions (quality-gated) ----
       const rawActions = db.prepare(
-        "SELECT id, type, summary, reasoning, project, payload FROM staged_actions WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY id"
+        "SELECT id, type, summary, reasoning, project, payload, created_at FROM staged_actions WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY id"
       ).all() as any[];
 
-      // Parse payload and merge into action for the UI
-      const actions = rawActions.map((a: any) => {
+      for (const a of rawActions) {
         let payload: any = {};
         try { payload = typeof a.payload === 'string' ? JSON.parse(a.payload) : (a.payload || {}); } catch {}
-        return {
-          id: a.id,
-          type: a.type,
+
+        // QUALITY GATE: Skip actions targeting dismissed/noise entities
+        if (payload.to) {
+          const isDismissed = db.prepare(
+            "SELECT 1 FROM entities WHERE (email = ? OR canonical_name LIKE ?) AND user_dismissed = 1"
+          ).get(payload.to, `%${payload.to.split('@')[0]}%`);
+          if (isDismissed) continue;
+
+          // QUALITY GATE: Skip if there's been new communication since action was created
+          // (action may be stale)
+          const newActivity = db.prepare(`
+            SELECT COUNT(*) as cnt FROM knowledge
+            WHERE source_date > ? AND (contacts LIKE ? OR summary LIKE ?)
+          `).get(a.created_at, `%${payload.to}%`, `%${payload.to.split('@')[0]}%`) as any;
+
+          if (newActivity?.cnt > 0) {
+            // Mark as stale but don't skip entirely — show with warning
+            a._stale = true;
+          }
+        }
+
+        // QUALITY GATE: Skip actions older than 72 hours
+        const ageHours = (Date.now() - new Date(a.created_at).getTime()) / 3600000;
+        if (ageHours > 72) {
+          db.prepare("UPDATE staged_actions SET status = 'expired' WHERE id = ?").run(a.id);
+          continue;
+        }
+
+        priorities.push({
+          id: `action-${a.id}`,
+          tier: 2,
+          type: a.type || 'task',
           summary: a.summary,
           reasoning: a.reasoning,
           project: a.project,
+          urgency: 'medium',
           to: payload.to || null,
           subject: payload.subject || null,
           body: payload.body || null,
-          text: payload.text || null,
-          // Gmail compose deep link
           gmail_link: payload.to ? `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(payload.to)}&su=${encodeURIComponent(payload.subject || '')}&body=${encodeURIComponent(payload.body || '')}` : null,
-        };
+          stale: a._stale || false,
+          action_id: a.id, // for approve/dismiss
+        });
+      }
+
+      // ---- TIER 3: Entity alerts (genuine concerns only) ----
+      try {
+        const entityAlerts = db.prepare(`
+          SELECT e.canonical_name, e.user_label, ep.alert_verdict, ep.communication_nature
+          FROM entity_profiles ep
+          JOIN entities e ON ep.entity_id = e.id
+          WHERE ep.alert_verdict = 'genuine_concern'
+          AND e.user_dismissed = 0
+          AND e.user_label NOT IN ('noise', 'solicitation')
+          ORDER BY ep.last_verified_at DESC LIMIT 3
+        `).all() as any[];
+
+        for (const ea of entityAlerts) {
+          priorities.push({
+            id: `entity-${ea.canonical_name}`,
+            tier: 3,
+            type: 'relationship',
+            summary: `${ea.canonical_name} — ${ea.communication_nature || 'needs attention'}`,
+            reasoning: `Relationship type: ${ea.user_label || 'unknown'}. Alert: ${ea.alert_verdict}`,
+            urgency: 'low',
+          });
+        }
+      } catch {}
+
+      // Sort: Tier 1 first, then by urgency within tier
+      const urgencyOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+      priorities.sort((a, b) => {
+        if (a.tier !== b.tier) return a.tier - b.tier;
+        return (urgencyOrder[a.urgency] || 3) - (urgencyOrder[b.urgency] || 3);
       });
 
-      // World narrative freshness
+      // ---- THE ONE THING ----
+      // Highest priority = The One Thing
+      let oneThing = 'No urgent priorities. Focus on what matters most to you.';
+      if (priorities.length > 0) {
+        const top = priorities[0];
+        oneThing = top.summary;
+        if (top.due_date) {
+          const daysUntil = Math.round((new Date(top.due_date).getTime() - Date.now()) / 86400000);
+          if (daysUntil < 0) oneThing += ` — ${Math.abs(daysUntil)} days overdue`;
+          else if (daysUntil === 0) oneThing += ' — due today';
+          else oneThing += ` — due in ${daysUntil} days`;
+        }
+      }
+
+      // ---- CONTEXT ----
       const narrativeState = db.prepare("SELECT value, updated_at FROM graph_state WHERE key = 'world_narrative'").get() as any;
       const narrativeAge = narrativeState ? (Date.now() - new Date(narrativeState.updated_at).getTime()) / 3600000 : 999;
 
-      // Prediction accuracy
       const predAccuracy = db.prepare("SELECT value FROM graph_state WHERE key = 'prediction_accuracy'").get() as any;
       const accuracy = predAccuracy ? JSON.parse(predAccuracy.value) : null;
 
-      // Active threads
       const threads = db.prepare(
         "SELECT title, current_state, next_action, project, source_count, item_count FROM narrative_threads WHERE status = 'active' ORDER BY latest_source_date DESC LIMIT 5"
       ).all() as any[];
 
-      // Recent strategic reflection
       const reflection = db.prepare("SELECT value FROM graph_state WHERE key = 'strategic_reflection_latest'").get() as any;
       const metaInsight = reflection ? JSON.parse(reflection.value)?.meta_insight : null;
 
-      // Last dream run
       const lastDream = (db.prepare("SELECT value FROM graph_state WHERE key = 'last_dream_run'").get() as any)?.value;
       const dreamAge = lastDream ? (Date.now() - new Date(lastDream).getTime()) / 3600000 : 999;
 
-      // Calendar today
       const todayStart = new Date(); todayStart.setHours(0,0,0,0);
       const todayEnd = new Date(); todayEnd.setHours(23,59,59,999);
       const todayEvents = db.prepare(`
@@ -326,39 +459,22 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         ORDER BY source_date ASC LIMIT 5
       `).all(todayStart.toISOString(), todayEnd.toISOString()) as any[];
 
-      // Entity health (from entity profiles)
-      const entityHealth = db.prepare(`
-        SELECT e.canonical_name, ep.communication_nature, ep.alert_verdict
-        FROM entity_profiles ep JOIN entities e ON ep.entity_id = e.id
-        WHERE ep.alert_verdict IN ('genuine_concern', 'worth_monitoring')
-        ORDER BY ep.last_verified_at DESC LIMIT 5
-      `).all() as any[];
-
-      // Determine display state
-      const criticalActions = actions.filter((a: any) => a.type === 'email');
-      let displayState: string;
-      if (criticalActions.length >= 3) displayState = 'crisis';
-      else if (actions.length > 0) displayState = 'pulse';
-      else if (narrativeAge < 1) displayState = 'briefing';
-      else displayState = 'ambient';
-
-      // The one thing
-      const oneThingRaw = db.prepare("SELECT value FROM graph_state WHERE key = 'world_narrative'").get() as any;
-      let oneThing = 'All systems nominal.';
-      if (oneThingRaw) {
-        const match = oneThingRaw.value?.match(/\*\*The One Thing\*\*[:\s—-]*(.*?)(?:\n|$)/);
-        if (match) oneThing = match[1].trim();
-      }
-
       const stats = getStats(db);
+
+      // Display state based on priority tiers
+      const hasCritical = priorities.some(p => p.urgency === 'critical');
+      const hasActions = priorities.some(p => p.tier === 2);
+      let displayState = 'ambient';
+      if (hasCritical) displayState = 'crisis';
+      else if (hasActions || priorities.length > 3) displayState = 'pulse';
+      else if (narrativeAge < 1) displayState = 'briefing';
 
       res.json({
         display_state: displayState,
         one_thing: oneThing,
-        actions_pending: actions.length,
-        actions,
+        actions_pending: priorities.length,
+        actions: priorities.slice(0, 8), // Max 8 displayed
         threads: threads.map((t: any) => ({ title: t.title, state: t.current_state, next: t.next_action, items: t.item_count })),
-        entity_alerts: entityHealth.map((e: any) => ({ name: e.canonical_name, verdict: e.alert_verdict })),
         calendar_today: todayEvents.map((e: any) => {
           const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : e.metadata || {};
           return { title: e.title, time: meta.start_time || e.source_date };
