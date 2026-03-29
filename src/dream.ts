@@ -478,11 +478,17 @@ ${itemContext}
 
 ${deepContent ? 'COMPLETE PROJECT NARRATIVE (emails, meetings, Claude conversations, Cowork sessions — read as ONE STORY unfolding over time):\n' + deepContent : ''}
 
+TODAY IS: ${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })} at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}.
+
 CRITICAL RULES FOR REASONING:
 1. READ THE FULL NARRATIVE ABOVE before making claims. If Zach sent a reply, he responded. If the other person gave counter-points, that's NEGOTIATION not rejection.
 2. Trace the conversation across ALL sources — an email thread may be followed by a Claude session where the response was drafted, then a meeting where it was discussed.
 3. Check the DATES — the most recent communication determines where things actually stand.
 4. Do NOT assume silence from stale extracted summaries. The narrative above is the truth.
+5. TEMPORAL AWARENESS: Know what day and time it is. Do NOT suggest sending business emails on Saturday night or Sunday. Monday morning is appropriate. Consider the other person's stated schedule (meetings, travel, holidays).
+6. SOCIAL RHYTHM: If someone said "let's talk end of week" and it's now the weekend, that's NORMAL — not a crisis. A few days of silence after a mutual agreement to talk is expected business rhythm, not a dropped ball.
+7. CALENDAR CROSS-REFERENCE: Before claiming a scheduled conversation didn't happen, check if there's a calendar event for it. Someone saying "let's discuss end of week" may have sent a calendar invite Zach accepted.
+8. RELATIONSHIP TEMPO: Every relationship has a natural cadence. A partner who responds within hours to emails has a different expectation than one who responds weekly. Don't apply one-size-fits-all urgency.
 
 KEY PEOPLE: ${entityContext || '(none identified)'}
 
