@@ -17,13 +17,21 @@ import { askWithSources } from '../ai/ask.js';
 import { generateBriefing } from '../ai/briefing.js';
 import { v4 as uuid } from 'uuid';
 
-const server = new McpServer({
+const MCP_SERVER_CONFIG = {
   name: "prime-recall",
   version: "0.1.0",
   description: "Prime Recall is the user's unified business knowledge base. It contains indexed data from Gmail emails, Google Calendar events, Claude.ai conversations (across ALL projects and organizations), meeting notes, and manual entries. IMPORTANT: Always search Prime Recall BEFORE answering questions about the user's business, contacts, deals, projects, relationships, commitments, or prior conversations. The user's real context lives here, not in your training data.",
-});
+};
 
-server.tool(
+export { MCP_SERVER_CONFIG };
+
+/**
+ * Register all Prime Recall MCP tools on a server instance.
+ * Exported so both stdio (local) and HTTP (remote) can share tool definitions.
+ */
+export function registerPrimeTools(srv: McpServer) {
+
+srv.tool(
   "prime_search",
   "ALWAYS USE THIS FIRST when the user asks about their business, contacts, deals, projects, emails, meetings, or prior work. Searches across all sources: Gmail threads, Claude.ai conversations (all projects/orgs), calendar events, meeting notes, and manual entries. Use this before relying on conversation context alone.",
   {
@@ -83,7 +91,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_ask",
   "Ask a question about the user's business. AI answer grounded in knowledge base with cited sources.",
   { question: z.string().describe("Question about the user's business") },
@@ -95,7 +103,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_remember",
   "Save knowledge — a decision, commitment, fact, insight, or agent report. For agent reports, include the FULL report text in the content field. Automatically extracts contacts and tags.",
   {
@@ -140,7 +148,7 @@ server.tool(
   }
 );
 
-server.tool("prime_get_contacts", "List all known contacts sorted by mention frequency.", {}, async () => {
+srv.tool("prime_get_contacts", "List all known contacts sorted by mention frequency.", {}, async () => {
   const db = getDb();
   const all = searchByText(db, '', 1000);
   const contacts = new Map<string, number>();
@@ -152,7 +160,7 @@ server.tool("prime_get_contacts", "List all known contacts sorted by mention fre
   return { content: [{ type: "text" as const, text: text || "No contacts found." }] };
 });
 
-server.tool(
+srv.tool(
   "prime_get_commitments",
   "List all commitments and promises with state tracking (overdue, active, fulfilled, dropped).",
   {
@@ -212,7 +220,7 @@ server.tool(
   }
 );
 
-server.tool("prime_get_projects", "List projects identified in the knowledge base.", {}, async () => {
+srv.tool("prime_get_projects", "List projects identified in the knowledge base.", {}, async () => {
   const db = getDb();
   const all = searchByText(db, '', 1000);
   const projects = new Map<string, number>();
@@ -221,7 +229,7 @@ server.tool("prime_get_projects", "List projects identified in the knowledge bas
   return { content: [{ type: "text" as const, text: text || "No projects detected." }] };
 });
 
-server.tool("prime_status", "Knowledge base statistics.", {}, async () => {
+srv.tool("prime_status", "Knowledge base statistics.", {}, async () => {
   const db = getDb();
   const stats = getStats(db);
   let text = `Prime Recall: ${stats.total_items} knowledge items\n`;
@@ -229,7 +237,7 @@ server.tool("prime_status", "Knowledge base statistics.", {}, async () => {
   return { content: [{ type: "text" as const, text }] };
 });
 
-server.tool(
+srv.tool(
   "prime_get_connections",
   "Get connections graph for a contact or knowledge item. Shows how people, topics, and projects are linked.",
   {
@@ -339,7 +347,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_briefing",
   "Generate a daily intelligence briefing — priorities, commitments, dropped balls, relationship health.",
   { days: z.number().optional().default(7).describe("Days to look back") },
@@ -361,7 +369,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_alerts",
   "URGENT: Get all current alerts — dropped balls (people waiting on user), overdue commitments, approaching deadlines, cold relationships. Call this proactively when the user asks about priorities or what needs attention.",
   {},
@@ -389,7 +397,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_prep",
   "Generate an intelligence dossier on a person, deal, topic, or upcoming meeting. Pulls everything from all sources: emails, Claude conversations, meetings, commitments. USE THIS before meetings or when the user asks about a specific person or topic.",
   { query: z.string().describe("Person name, topic, deal name, or meeting subject") },
@@ -405,7 +413,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_catchup",
   "What happened while the user was away. Generates a narrative catch-up briefing. Use when the user says 'catch me up', 'what did I miss', or 'what happened'.",
   { days: z.number().optional().default(3).describe("Days to catch up on") },
@@ -421,7 +429,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_relationships",
   "Relationship health dashboard. Shows all contacts with their status (active/warm/cooling/cold/dormant), last interaction date, and mention frequency. Use when the user asks about contacts, relationships, or who to follow up with.",
   { cold_only: z.boolean().optional().describe("Show only cold/dormant contacts") },
@@ -442,7 +450,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_deal",
   "Comprehensive deal/project intelligence dossier. Pulls all knowledge items, people, decisions, commitments, and timeline for a specific project or deal. Use when the user asks about a deal, project status, or needs to prepare for a strategic discussion.",
   { project: z.string().describe("Project or deal name to analyze") },
@@ -458,7 +466,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_notify",
   "Send a notification to the user. Routes by urgency: CRITICAL → iMessage + email, HIGH → iMessage, NORMAL → email, FYI → save only. Use when an agent has something important to communicate.",
   {
@@ -483,7 +491,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_spawn_agent",
   "Spawn an agent to work on a task in the background. The agent has full access to Prime Recall and will save its report when done. Use for research, drafting, analysis, or any work the user delegates.",
   {
@@ -506,7 +514,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_agent_activity",
   "Show recent agent activity — reports, notifications, and pending tasks. Use when the user asks 'what did my agents do?' or 'any updates?'",
   {
@@ -534,7 +542,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_get_artifact",
   "Find the LATEST version of a Claude artifact by name. Use this BEFORE creating or editing any document, design, or code artifact to ensure you have the most recent version.",
   {
@@ -595,7 +603,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_entity",
   "Get the full profile of a person, project, or organization — mentions, communication patterns, projects, commitments, connected entities. Use when the user asks about a specific person or when you need context about someone.",
   { name: z.string().describe("Person name, email, project name, or organization") },
@@ -623,7 +631,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_correct",
   "Update the entity graph when the user corrects, labels, dismisses, or merges entities. Use when the user says things like 'Forrest is my employee', 'ignore Laura Crowley', 'merge Forrest S. Pullen into Forrest Pullen'.",
   {
@@ -667,7 +675,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_world",
   "Get the current world model — a structured, cited view of all people, projects, alerts, dismissed entities, and cross-project connections. Use this FIRST before answering any question about the user's business. Every claim in the world model cites a source ID.",
   {},
@@ -679,7 +687,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_artifact",
   "Find and retrieve artifacts (code, documents, designs) created in Claude conversations. Returns the LATEST VERSION with full content. Use when the user asks about a document, code, design, or anything they created in Claude.",
   {
@@ -719,7 +727,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_send_email",
   "Send an email on behalf of the user via Gmail. Use when the user approves sending a follow-up, reply, or new email. Always confirm with the user before sending. The email is logged in Prime Recall automatically.",
   {
@@ -745,7 +753,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_schedule_meeting",
   "Schedule a meeting on the user's Google Calendar. Use when the user approves scheduling a call or meeting. Always confirm details before creating.",
   {
@@ -809,7 +817,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_update_instructions",
   "Update an AI agent's instructions based on user training. Use when the user gives a general instruction about how an agent should behave — not a specific task, but a RULE to remember. Examples: 'stop showing me employee emails', 'always check Carefront first', 'never mention FGMC unless I ask'. The instruction is permanently added to the agent's prompt.",
   {
@@ -867,7 +875,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_train_knowledge",
   "Give an agent domain expertise by feeding it a knowledge document. The content becomes part of the agent's permanent knowledge base, injected on every run. Use for: industry guides, playbooks, business rules, relationship context, strategic frameworks.",
   {
@@ -928,7 +936,7 @@ server.tool(
 
 // ── Staged Actions: The bridge from intelligence to execution ────
 
-server.tool(
+srv.tool(
   "prime_staged_actions",
   "List pending prepared actions from the dream pipeline. These are ready-to-execute actions (draft emails, calendar blocks) that the user can approve with one click.",
   {},
@@ -954,7 +962,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_approve_action",
   "Approve and execute a staged action. The system sends the email, creates the calendar event, or executes the prepared action.",
   {
@@ -1030,7 +1038,7 @@ server.tool(
   }
 );
 
-server.tool(
+srv.tool(
   "prime_reject_action",
   "Reject a staged action. Records the rejection for the feedback loop — the system learns not to recommend similar actions.",
   {
@@ -1047,6 +1055,12 @@ server.tool(
     }
   }
 );
+
+} // end registerPrimeTools
+
+// ── Stdio mode (Claude Desktop local) ────────────────────
+const server = new McpServer(MCP_SERVER_CONFIG);
+registerPrimeTools(server);
 
 async function main() {
   const transport = new StdioServerTransport();

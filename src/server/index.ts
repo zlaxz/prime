@@ -1,7 +1,10 @@
 import express from 'express';
+import { randomUUID } from 'crypto';
 import { readdirSync, readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { getDb, searchByText, searchByEmbedding, insertKnowledge, getStats, getConfig, type KnowledgeItem } from '../db.js';
 import { generateEmbedding } from '../embedding.js';
 import { extractIntelligence } from '../ai/extract.js';
@@ -9,6 +12,7 @@ import { askWithSources } from '../ai/ask.js';
 import { v4 as uuid } from 'uuid';
 import { processOtterMeeting } from '../connectors/otter.js';
 import { startScheduler } from '../scheduler.js';
+import { registerPrimeTools, MCP_SERVER_CONFIG } from './mcp.js';
 
 export async function startServer(port: number = 3210, options: { sync?: boolean; syncInterval?: number } = {}) {
   const app = express();
@@ -387,9 +391,43 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
 </html>`);
   });
 
-  app.listen(port, () => {
+  // ── MCP over HTTP (for remote Claude Desktop) ──────────
+  const mcpSessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
+
+  app.all('/mcp', async (req, res) => {
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+    if (sessionId && mcpSessions.has(sessionId)) {
+      // Existing session
+      const session = mcpSessions.get(sessionId)!;
+      await session.transport.handleRequest(req, res, req.body);
+    } else if (!sessionId || req.method === 'POST') {
+      // New session — create transport + server
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+      });
+
+      const mcpServer = new McpServer(MCP_SERVER_CONFIG);
+      registerPrimeTools(mcpServer);
+      await mcpServer.connect(transport);
+
+      transport.onclose = () => {
+        if (transport.sessionId) mcpSessions.delete(transport.sessionId);
+      };
+
+      if (transport.sessionId) {
+        mcpSessions.set(transport.sessionId, { transport, server: mcpServer });
+      }
+
+      await transport.handleRequest(req, res, req.body);
+    } else {
+      res.status(404).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Session not found' } });
+    }
+  });
+
+  app.listen(port, '0.0.0.0', () => {
     const stats = getStats(db);
-    console.log(`\n⚡ Prime API server running on http://localhost:${port}`);
+    console.log(`\n⚡ Prime server running on http://0.0.0.0:${port}`);
     console.log(`  Knowledge base: ${stats.total_items} items\n`);
     console.log('  Endpoints:');
     console.log('    POST /api/search    — Semantic search');
@@ -398,6 +436,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     console.log('    POST /api/remember  — Quick capture');
     console.log('    GET  /api/status    — Knowledge base stats');
     console.log('    GET  /api/query/*   — Structured queries');
+    console.log('    ALL  /mcp           — MCP over HTTP (for remote Claude Desktop)');
     console.log('    POST /api/webhooks/otter — Otter.ai webhook\n');
 
     if (options.sync !== false) {
