@@ -45,6 +45,44 @@ export interface ChatResponse {
   actions: any[];
   intent: string;
   threads_linked: string[];
+  suggested_followups: string[];
+}
+
+// ── Speculative Context Cache ─────────────────────────
+// Pre-computed context for predicted follow-up topics.
+// Key = lowercase topic/entity name, value = pre-built context + expiry.
+
+interface CachedContext {
+  context: string;
+  expires: number;
+}
+
+const speculativeCache = new Map<string, CachedContext>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function getCachedContext(key: string): string | null {
+  const entry = speculativeCache.get(key.toLowerCase());
+  if (!entry) return null;
+  if (Date.now() > entry.expires) {
+    speculativeCache.delete(key.toLowerCase());
+    return null;
+  }
+  return entry.context;
+}
+
+function setCachedContext(key: string, context: string): void {
+  speculativeCache.set(key.toLowerCase(), {
+    context,
+    expires: Date.now() + CACHE_TTL_MS,
+  });
+}
+
+/** Evict all expired entries. Called after each response. */
+function evictExpired(): void {
+  const now = Date.now();
+  for (const [key, entry] of speculativeCache) {
+    if (now > entry.expires) speculativeCache.delete(key);
+  }
 }
 
 // ── Intent Classification ─────────────────────────────
@@ -116,6 +154,20 @@ Write for someone with ADHD: be direct, lead with the answer, skip filler.`;
   } else if (session?.primary_project) {
     const threadCtx = getThreadContext(db, session.primary_project);
     if (threadCtx) system += '\n\n' + threadCtx;
+  }
+
+  // Layer 1.5: Check speculative cache for pre-loaded context
+  const cacheHits: string[] = [];
+  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+  for (const [key] of speculativeCache) {
+    // Match if the query contains the cached topic name
+    if (query.toLowerCase().includes(key) || queryWords.some(w => key.includes(w))) {
+      const cached = getCachedContext(key);
+      if (cached) cacheHits.push(cached);
+    }
+  }
+  if (cacheHits.length > 0) {
+    system += '\n\nSPECULATIVE PRE-LOADED CONTEXT (from previous turn analysis):\n' + cacheHits.slice(0, 2).join('\n\n');
   }
 
   // Layer 2: Entity profiles for detected people
@@ -238,6 +290,270 @@ function parseActions(response: string, db: Database.Database, sessionId: string
   return actionIds;
 }
 
+// ── Speculative Pre-loading ───────────────────────────
+// After each response, predict what the user will ask next and
+// pre-compute context for the top 3 likely follow-up topics.
+
+interface MentionedTopic {
+  type: 'entity' | 'project';
+  name: string;
+  id?: string;
+}
+
+/** Scan the response + query for entities and projects mentioned in this turn. */
+function detectMentionedTopics(db: Database.Database, query: string, response: string): MentionedTopic[] {
+  const combined = (query + ' ' + response).toLowerCase();
+  const topics: MentionedTopic[] = [];
+
+  // Detect entities
+  const entities = db.prepare(
+    "SELECT id, canonical_name FROM entities WHERE user_dismissed = 0 AND type = 'person' ORDER BY LENGTH(canonical_name) DESC LIMIT 200"
+  ).all() as any[];
+
+  for (const e of entities) {
+    const name: string = e.canonical_name;
+    const firstName = name.split(' ')[0];
+    if (combined.includes(name.toLowerCase()) || (firstName.length > 3 && combined.includes(firstName.toLowerCase()))) {
+      topics.push({ type: 'entity', name, id: e.id });
+      if (topics.filter(t => t.type === 'entity').length >= 5) break;
+    }
+  }
+
+  // Detect projects
+  const projects = db.prepare(
+    "SELECT DISTINCT project FROM narrative_threads WHERE status = 'active' AND project IS NOT NULL"
+  ).all() as any[];
+
+  for (const p of projects) {
+    if (p.project && combined.includes(p.project.toLowerCase())) {
+      topics.push({ type: 'project', name: p.project });
+    }
+  }
+
+  return topics;
+}
+
+/** For a given entity, find the top related entities via entity_edges. */
+function getRelatedEntities(db: Database.Database, entityId: string, limit: number = 3): { id: string; name: string }[] {
+  return db.prepare(`
+    SELECT e.id, e.canonical_name as name
+    FROM entity_edges ee
+    JOIN entities e ON (
+      CASE WHEN ee.source_entity_id = ? THEN ee.target_entity_id
+           ELSE ee.source_entity_id END = e.id
+    )
+    WHERE (ee.source_entity_id = ? OR ee.target_entity_id = ?)
+      AND e.user_dismissed = 0
+    ORDER BY ee.co_occurrence_count DESC LIMIT ?
+  `).all(entityId, entityId, entityId, limit) as any[];
+}
+
+/** Build a context snippet for a single entity (profile + recent items + threads). */
+function buildEntityContext(db: Database.Database, entityId: string, entityName: string): string {
+  const parts: string[] = [`PRE-LOADED CONTEXT FOR: ${entityName}`];
+
+  // Profile
+  const profile = db.prepare(`
+    SELECT e.canonical_name, e.user_label, e.email, e.relationship_type,
+           ep.communication_nature, ep.alert_verdict
+    FROM entities e LEFT JOIN entity_profiles ep ON e.id = ep.entity_id
+    WHERE e.id = ?
+  `).get(entityId) as any;
+
+  if (profile) {
+    parts.push(`Role: ${profile.user_label || profile.relationship_type || 'unknown'}, Email: ${profile.email || 'unknown'}${profile.communication_nature ? ', Nature: ' + profile.communication_nature : ''}`);
+  }
+
+  // Recent items
+  const recentItems = db.prepare(`
+    SELECT k.title, k.source, k.source_date
+    FROM knowledge_primary k
+    JOIN entity_mentions em ON k.id = em.knowledge_item_id
+    WHERE em.entity_id = ?
+    ORDER BY k.source_date DESC LIMIT 5
+  `).all(entityId) as any[];
+
+  if (recentItems.length > 0) {
+    parts.push('Recent activity:');
+    for (const item of recentItems) {
+      parts.push(`  - [${item.source}] ${item.source_date?.slice(0, 10) || '?'}: ${item.title}`);
+    }
+  }
+
+  // Threads involving this entity
+  const threads = db.prepare(`
+    SELECT title, current_state, project FROM narrative_threads
+    WHERE status = 'active' AND entity_ids LIKE ?
+    ORDER BY latest_source_date DESC LIMIT 3
+  `).all(`%${entityId}%`) as any[];
+
+  if (threads.length > 0) {
+    parts.push('Active threads:');
+    for (const t of threads) {
+      parts.push(`  - ${t.title} (${t.project || 'no project'}): ${t.current_state || 'unknown state'}`);
+    }
+  }
+
+  // Connected entities
+  const connected = getRelatedEntities(db, entityId, 5);
+  if (connected.length > 0) {
+    parts.push('Connected to: ' + connected.map(c => c.name).join(', '));
+  }
+
+  return parts.join('\n');
+}
+
+/** Build a context snippet for a project (threads + stalling comparison). */
+function buildProjectContext(db: Database.Database, project: string): string {
+  const parts: string[] = [`PRE-LOADED CONTEXT FOR PROJECT: ${project}`];
+
+  const threads = db.prepare(`
+    SELECT title, current_state, next_action, latest_source_date
+    FROM narrative_threads WHERE status = 'active' AND project = ?
+    ORDER BY latest_source_date DESC LIMIT 5
+  `).all(project) as any[];
+
+  if (threads.length > 0) {
+    parts.push('Threads:');
+    for (const t of threads) {
+      const age = t.latest_source_date ? Math.round((Date.now() - new Date(t.latest_source_date).getTime()) / 86400000) : '?';
+      parts.push(`  - ${t.title} (${age}d since last activity): ${t.current_state || '?'}`);
+      if (t.next_action) parts.push(`    Next: ${t.next_action}`);
+    }
+  }
+
+  // Stalling projects for comparison
+  const stallingThreads = db.prepare(`
+    SELECT project, title, current_state, latest_source_date
+    FROM narrative_threads
+    WHERE status = 'active' AND project != ? AND project IS NOT NULL
+      AND latest_source_date < datetime('now', '-7 days')
+    ORDER BY latest_source_date ASC LIMIT 5
+  `).all(project) as any[];
+
+  if (stallingThreads.length > 0) {
+    parts.push('Other stalling projects (for comparison):');
+    for (const t of stallingThreads) {
+      const age = t.latest_source_date ? Math.round((Date.now() - new Date(t.latest_source_date).getTime()) / 86400000) : '?';
+      parts.push(`  - [${t.project}] ${t.title}: ${t.current_state || '?'} (${age}d stale)`);
+    }
+  }
+
+  return parts.join('\n');
+}
+
+/**
+ * Fire-and-forget: after responding, pre-compute context for predicted follow-ups.
+ * Populates speculativeCache with the top 3 likely next topics.
+ */
+function preloadSpeculativeContext(db: Database.Database, query: string, response: string): void {
+  try {
+    const topics = detectMentionedTopics(db, query, response);
+    let preloaded = 0;
+
+    for (const topic of topics) {
+      if (preloaded >= 3) break;
+
+      if (topic.type === 'entity' && topic.id) {
+        // Pre-load related entities (the user discussed entity X, they'll likely ask about X's connections)
+        const related = getRelatedEntities(db, topic.id, 3);
+        for (const rel of related) {
+          if (preloaded >= 3) break;
+          const key = rel.name.toLowerCase();
+          if (!speculativeCache.has(key)) {
+            setCachedContext(key, buildEntityContext(db, rel.id, rel.name));
+            preloaded++;
+          }
+        }
+
+        // Also pre-load the entity's own threads (user may ask "what about their threads?")
+        const threadKey = `${topic.name.toLowerCase()}_threads`;
+        if (!speculativeCache.has(threadKey)) {
+          const threads = db.prepare(`
+            SELECT title, current_state, project FROM narrative_threads
+            WHERE status = 'active' AND entity_ids LIKE ?
+            ORDER BY latest_source_date DESC LIMIT 3
+          `).all(`%${topic.id}%`) as any[];
+          if (threads.length > 0) {
+            const ctx = threads.map((t: any) => `- ${t.title} (${t.project || 'no project'}): ${t.current_state || '?'}`).join('\n');
+            setCachedContext(threadKey, `THREADS INVOLVING ${topic.name}:\n${ctx}`);
+          }
+        }
+      }
+
+      if (topic.type === 'project') {
+        const key = topic.name.toLowerCase();
+        if (!speculativeCache.has(key)) {
+          setCachedContext(key, buildProjectContext(db, topic.name));
+          preloaded++;
+        }
+      }
+    }
+
+    evictExpired();
+  } catch {
+    // Pre-loading is best-effort; never block the response
+  }
+}
+
+/** Generate 3 natural-language follow-up suggestions based on detected topics. */
+function generateFollowups(db: Database.Database, query: string, response: string): string[] {
+  const topics = detectMentionedTopics(db, query, response);
+  const followups: string[] = [];
+
+  // Suggestion 1: related entity
+  const entityTopics = topics.filter(t => t.type === 'entity' && t.id);
+  if (entityTopics.length > 0) {
+    const primary = entityTopics[0];
+    const related = getRelatedEntities(db, primary.id!, 1);
+    if (related.length > 0) {
+      followups.push(`What about ${related[0].name}?`);
+    }
+  }
+
+  // Suggestion 2: related project impact
+  const projectTopics = topics.filter(t => t.type === 'project');
+  if (projectTopics.length > 0) {
+    // Find another active project to compare against
+    const otherProjects = db.prepare(`
+      SELECT DISTINCT project FROM narrative_threads
+      WHERE status = 'active' AND project IS NOT NULL AND project != ?
+      ORDER BY latest_source_date DESC LIMIT 1
+    `).all(projectTopics[0].name) as any[];
+    if (otherProjects.length > 0) {
+      followups.push(`How does this affect ${otherProjects[0].project}?`);
+    }
+  } else if (entityTopics.length > 0) {
+    // If no project detected, check the entity's project
+    const entityProject = db.prepare(`
+      SELECT project FROM narrative_threads
+      WHERE status = 'active' AND entity_ids LIKE ? AND project IS NOT NULL
+      LIMIT 1
+    `).get(`%${entityTopics[0].id}%`) as any;
+    if (entityProject) {
+      followups.push(`How does this affect ${entityProject.project}?`);
+    }
+  }
+
+  // Suggestion 3: detected gap / stalling item
+  const stallingThread = db.prepare(`
+    SELECT title FROM narrative_threads
+    WHERE status = 'active' AND latest_source_date < datetime('now', '-7 days')
+      AND project IS NOT NULL
+    ORDER BY latest_source_date ASC LIMIT 1
+  `).get() as any;
+  if (stallingThread) {
+    followups.push(`What should I do about ${stallingThread.title}?`);
+  }
+
+  // If we still have slots, fill with generic entity-based followups
+  if (followups.length < 3 && entityTopics.length > 1) {
+    followups.push(`What about ${entityTopics[1].name}?`);
+  }
+
+  return followups.slice(0, 3);
+}
+
 // ── Main Chat Function ────────────────────────────────
 
 export async function chatMessage(
@@ -338,6 +654,12 @@ export async function chatMessage(
     generateSessionSummary(db, sessionId!).catch(() => {});
   }
 
+  // Generate follow-up suggestions from detected topics
+  const suggested_followups = generateFollowups(db, opts.message, response);
+
+  // Fire-and-forget: speculatively pre-load context for predicted follow-up topics
+  preloadSpeculativeContext(db, opts.message, response);
+
   return {
     session_id: sessionId!,
     message_id: assistantMsgId,
@@ -349,6 +671,7 @@ export async function chatMessage(
     }).filter(Boolean),
     intent,
     threads_linked: linkedThreads,
+    suggested_followups,
   };
 }
 

@@ -492,7 +492,24 @@ Return JSON:
   ]
 }`,
         },
-        { role: 'user', content: projectContext },
+        { role: 'user', content: (() => {
+          // Append detected gaps so DeepSeek generates actions for them
+          let gapBlock = '';
+          try {
+            const gapsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'detected_gaps'").get() as any)?.value;
+            if (gapsRaw) {
+              const gapsList = JSON.parse(gapsRaw) as any[];
+              const criticalHigh = gapsList.filter((g: any) => g.severity === 'critical' || g.severity === 'high');
+              if (criticalHigh.length > 0) {
+                gapBlock = '\n\n## DETECTED GAPS — THINGS FALLING THROUGH CRACKS\nGenerate actions specifically to address these gaps:\n' +
+                  criticalHigh.slice(0, 8).map((g: any) =>
+                    `- [${g.severity.toUpperCase()}] ${g.type}: ${g.description}`
+                  ).join('\n');
+              }
+            }
+          } catch {}
+          return projectContext + gapBlock;
+        })() },
       ],
       { temperature: 0.2, max_tokens: 4000, json: true }
     );
@@ -1765,6 +1782,237 @@ async function task10ConsistencyVerification(db: Database.Database): Promise<Tas
   }
 }
 
+// ── Task 19: Gap Detection ────────────────────────────────────
+// Finds what's MISSING, not what's there. Pure SQL — no LLM needed.
+// Communication gaps, overdue commitments, stale threads, uncovered projects,
+// missed prediction verifications. Highest-value intelligence for ADHD.
+
+interface DetectedGap {
+  type: 'communication' | 'commitment' | 'thread' | 'project' | 'prediction';
+  subject: string;
+  description: string;
+  severity: 'critical' | 'high' | 'medium';
+  days_stale: number;
+}
+
+async function task19GapDetection(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    const gaps: DetectedGap[] = [];
+
+    // ── 1. COMMUNICATION GAPS ──────────────────────────────────
+    // Key people where the last entity_mention is >5 days old
+    // AND there's an active commitment or thread involving them
+    const commGaps = db.prepare(`
+      SELECT e.canonical_name,
+        MAX(em.mention_date) as last_mention,
+        CAST(julianday('now') - julianday(MAX(em.mention_date)) AS INTEGER) as days_silent,
+        e.user_label,
+        e.id as entity_id
+      FROM entities e
+      JOIN entity_mentions em ON e.id = em.entity_id
+      WHERE e.user_label IN ('partner', 'client', 'key')
+        AND e.user_dismissed = 0
+      GROUP BY e.id
+      HAVING days_silent > 5
+      ORDER BY days_silent DESC
+    `).all() as any[];
+
+    for (const cg of commGaps) {
+      // Check if there's an active commitment or thread involving this entity
+      const hasActiveCommitment = db.prepare(`
+        SELECT 1 FROM commitments
+        WHERE state IN ('active', 'overdue')
+          AND (owner LIKE ? OR assigned_to LIKE ? OR text LIKE ?)
+        LIMIT 1
+      `).get(`%${cg.canonical_name}%`, `%${cg.canonical_name}%`, `%${cg.canonical_name}%`);
+
+      const hasActiveThread = db.prepare(`
+        SELECT 1 FROM narrative_threads
+        WHERE status = 'active'
+          AND (entity_ids LIKE ? OR title LIKE ?)
+        LIMIT 1
+      `).get(`%${cg.entity_id}%`, `%${cg.canonical_name}%`);
+
+      if (hasActiveCommitment || hasActiveThread) {
+        gaps.push({
+          type: 'communication',
+          subject: cg.canonical_name,
+          description: `${cg.user_label} "${cg.canonical_name}" — no communication in ${cg.days_silent} days with active commitments/threads open`,
+          severity: cg.days_silent > 14 ? 'critical' : cg.days_silent > 7 ? 'high' : 'medium',
+          days_stale: cg.days_silent,
+        });
+      }
+    }
+
+    // ── 2. COMMITMENT GAPS ─────────────────────────────────────
+    // Active commitments where due_date passed or within 3 days,
+    // with no recent knowledge items referencing them
+    const commitGaps = db.prepare(`
+      SELECT c.id, c.text, c.due_date, c.project, c.owner,
+        CAST(julianday(c.due_date) - julianday('now') AS INTEGER) as days_until_due
+      FROM commitments c
+      WHERE c.state = 'active'
+        AND c.due_date IS NOT NULL
+        AND julianday(c.due_date) - julianday('now') < 3
+      ORDER BY c.due_date ASC
+    `).all() as any[];
+
+    for (const cc of commitGaps) {
+      // Check for recent knowledge items referencing this commitment
+      const recentRef = db.prepare(`
+        SELECT 1 FROM knowledge_primary
+        WHERE source_date >= datetime('now', '-5 days')
+          AND (summary LIKE ? OR title LIKE ? OR commitments LIKE ?)
+        LIMIT 1
+      `).get(`%${cc.text.slice(0, 40)}%`, `%${cc.text.slice(0, 40)}%`, `%${cc.text.slice(0, 40)}%`);
+
+      if (!recentRef) {
+        const isOverdue = cc.days_until_due < 0;
+        gaps.push({
+          type: 'commitment',
+          subject: cc.text.slice(0, 80),
+          description: isOverdue
+            ? `Overdue by ${Math.abs(cc.days_until_due)} days: "${cc.text}"${cc.project ? ` (${cc.project})` : ''} — no recent activity found`
+            : `Due in ${cc.days_until_due} days: "${cc.text}"${cc.project ? ` (${cc.project})` : ''} — no recent activity found`,
+          severity: isOverdue ? 'critical' : cc.days_until_due <= 1 ? 'high' : 'medium',
+          days_stale: isOverdue ? Math.abs(cc.days_until_due) : 0,
+        });
+      }
+    }
+
+    // ── 3. THREAD GAPS ─────────────────────────────────────────
+    // Active narrative_threads where latest_source_date >7 days old
+    // AND current_state contains awaiting/pending/follow-up language
+    const threadGaps = db.prepare(`
+      SELECT t.id, t.title, t.current_state, t.project, t.latest_source_date,
+        CAST(julianday('now') - julianday(t.latest_source_date) AS INTEGER) as days_stale
+      FROM narrative_threads t
+      WHERE t.status = 'active'
+        AND t.latest_source_date IS NOT NULL
+        AND julianday('now') - julianday(t.latest_source_date) > 7
+        AND (
+          t.current_state LIKE '%await%'
+          OR t.current_state LIKE '%pending%'
+          OR t.current_state LIKE '%follow%up%'
+          OR t.current_state LIKE '%follow-up%'
+          OR t.current_state LIKE '%waiting%'
+          OR t.current_state LIKE '%response%needed%'
+          OR t.current_state LIKE '%no reply%'
+        )
+      ORDER BY days_stale DESC
+    `).all() as any[];
+
+    for (const tg of threadGaps) {
+      gaps.push({
+        type: 'thread',
+        subject: tg.title,
+        description: `"${tg.title}" stale ${tg.days_stale} days — state: ${(tg.current_state || '').slice(0, 100)}${tg.project ? ` (${tg.project})` : ''}`,
+        severity: tg.days_stale > 21 ? 'critical' : tg.days_stale > 14 ? 'high' : 'medium',
+        days_stale: tg.days_stale,
+      });
+    }
+
+    // ── 4. PROJECT GAPS ────────────────────────────────────────
+    // Projects with status stalling/stalled and no staged_action for them
+    const profilesRaw = (db.prepare(
+      "SELECT value FROM graph_state WHERE key = 'project_profiles'"
+    ).get() as any)?.value;
+
+    if (profilesRaw) {
+      const profiles = JSON.parse(profilesRaw);
+      const stallingProjects = profiles.filter((p: any) =>
+        p.status === 'stalling' || p.status === 'stalled'
+      );
+
+      for (const sp of stallingProjects) {
+        const hasAction = db.prepare(`
+          SELECT 1 FROM staged_actions
+          WHERE status = 'pending'
+            AND project = ?
+          LIMIT 1
+        `).get(sp.project);
+
+        if (!hasAction) {
+          // Calculate staleness from last knowledge item
+          const lastActivity = db.prepare(`
+            SELECT MAX(source_date) as last_date FROM knowledge_primary WHERE project = ?
+          `).get(sp.project) as any;
+          const daysSinceActivity = lastActivity?.last_date
+            ? Math.round((Date.now() - new Date(lastActivity.last_date).getTime()) / 86400000)
+            : 999;
+
+          gaps.push({
+            type: 'project',
+            subject: sp.project,
+            description: `Project "${sp.project}" is ${sp.status} with no staged actions — ${sp.status_reasoning?.slice(0, 100) || 'no details'}`,
+            severity: sp.status === 'stalled' ? 'critical' : 'high',
+            days_stale: daysSinceActivity,
+          });
+        }
+      }
+    }
+
+    // ── 5. PREDICTION GAPS ─────────────────────────────────────
+    // Predictions where check_by has passed but outcome still pending
+    const predGaps = db.prepare(`
+      SELECT p.id, p.subject, p.prediction, p.check_by, p.confidence, p.domain, p.project,
+        CAST(julianday('now') - julianday(p.check_by) AS INTEGER) as days_overdue
+      FROM predictions p
+      WHERE p.outcome = 'pending'
+        AND julianday(p.check_by) < julianday('now')
+      ORDER BY days_overdue DESC
+    `).all() as any[];
+
+    for (const pg of predGaps) {
+      gaps.push({
+        type: 'prediction',
+        subject: pg.subject,
+        description: `Prediction verification missed (${pg.days_overdue}d overdue): "${pg.prediction.slice(0, 80)}" — check_by was ${pg.check_by}`,
+        severity: pg.days_overdue > 7 ? 'high' : 'medium',
+        days_stale: pg.days_overdue,
+      });
+    }
+
+    // ── Store results ──────────────────────────────────────────
+    // Sort: critical first, then by days_stale descending
+    const severityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2 };
+    gaps.sort((a, b) => {
+      const sev = (severityOrder[a.severity] ?? 3) - (severityOrder[b.severity] ?? 3);
+      if (sev !== 0) return sev;
+      return b.days_stale - a.days_stale;
+    });
+
+    db.prepare(`
+      INSERT OR REPLACE INTO graph_state (key, value, updated_at)
+      VALUES ('detected_gaps', ?, datetime('now'))
+    `).run(JSON.stringify(gaps));
+
+    const summary = {
+      total: gaps.length,
+      critical: gaps.filter(g => g.severity === 'critical').length,
+      high: gaps.filter(g => g.severity === 'high').length,
+      medium: gaps.filter(g => g.severity === 'medium').length,
+      by_type: {
+        communication: gaps.filter(g => g.type === 'communication').length,
+        commitment: gaps.filter(g => g.type === 'commitment').length,
+        thread: gaps.filter(g => g.type === 'thread').length,
+        project: gaps.filter(g => g.type === 'project').length,
+        prediction: gaps.filter(g => g.type === 'prediction').length,
+      },
+    };
+
+    return {
+      task: '19-gap-detection',
+      status: 'success',
+      duration_seconds: (Date.now() - start) / 1000,
+      output: summary,
+    };
+  } catch (err: any) {
+    return { task: '19-gap-detection', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
 // ── Task 11: Claim Verification Loop ─────────────────────────
 // Before presenting ANY claim, verify it against primary sources.
 // Search Gmail for evidence that contradicts the claim.
@@ -2064,6 +2312,20 @@ ${(() => {
 ACTIVE COMMITMENTS (verified against source items):
 ${activeCommitments || '(none verified active)'}
 
+DETECTED GAPS — THINGS FALLING THROUGH THE CRACKS (from Task 19 gap detection):
+${(() => {
+  try {
+    const gapsRaw = db.prepare("SELECT value FROM graph_state WHERE key = 'detected_gaps'").get() as any;
+    if (!gapsRaw) return '(no gaps detected)';
+    const gapsList = JSON.parse(gapsRaw.value) as any[];
+    if (gapsList.length === 0) return '(no gaps — everything is covered)';
+    return gapsList.slice(0, 15).map((g: any) =>
+      \`[\${g.severity.toUpperCase()}] \${g.type}: \${g.description}\`
+    ).join('\\n');
+  } catch { return '(gap data not available)'; }
+})()}
+RULE: If there are critical or high-severity gaps, they MUST appear in the briefing. These are dropped balls — the whole point of this system.
+
 TODAY'S CALENDAR:
 ${calendarSummary || '(no calendar events)'}
 
@@ -2340,6 +2602,12 @@ export async function runDreamPipeline(
   const r11 = await task11ClaimVerification(db);
   results.push(r11);
   console.log(`    ${r11.status === 'success' ? '✓' : '✗'} ${r11.status} (${r11.duration_seconds.toFixed(1)}s)${r11.output ? ` — ${JSON.stringify(r11.output).slice(0, 150)}` : ''}`);
+
+  // Task 19: Gap Detection — find what's MISSING (pure SQL, no LLM)
+  console.log('  Task 19: Gap detection (SQL)...');
+  const r19 = await task19GapDetection(db);
+  results.push(r19);
+  console.log(`    ${r19.status === 'success' ? '✓' : '✗'} ${r19.status} (${r19.duration_seconds.toFixed(1)}s)${r19.output ? ` — ${JSON.stringify(r19.output).slice(0, 150)}` : ''}`);
 
   // Task 04: Structured world rebuild (AFTER all verification — data is now clean)
   console.log('  Task 04: Rebuild structured world model...');

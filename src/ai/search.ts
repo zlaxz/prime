@@ -22,6 +22,11 @@ export interface SearchOptions {
   source?: string;
   since?: string;           // ISO date — only items after this
   rerank?: boolean;         // default true — Claude reranks results
+  recencyBias?: number;     // default 0.05 — higher = more recency preference
+                            // weight = 1 / (1 + days_old * recencyBias)
+                            // 0.05: today=1.0, 7d=0.74, 30d=0.40, 90d=0.18
+                            // 0.10: today=1.0, 7d=0.59, 30d=0.25, 90d=0.10
+                            // 0.00: disabled (pure relevance, no recency boost)
 }
 
 export interface SearchResult {
@@ -99,6 +104,40 @@ function deduplicateById(items: any[]): any[] {
   return result;
 }
 
+// ============================================================
+// Recency weighting
+// ============================================================
+
+/**
+ * Compute a recency multiplier for a given item date.
+ * Formula: 1 / (1 + days_old * bias)
+ *
+ * With default bias=0.05:
+ *   today → 1.00, 1d → 0.95, 7d → 0.74, 30d → 0.40, 90d → 0.18
+ */
+function computeRecencyWeight(sourceDate: string | null | undefined, bias: number): number {
+  if (bias <= 0 || !sourceDate) return 1.0;
+  const itemTime = new Date(sourceDate).getTime();
+  if (isNaN(itemTime)) return 1.0;
+  const daysOld = Math.max(0, (Date.now() - itemTime) / 86400000);
+  return 1 / (1 + daysOld * bias);
+}
+
+/** Apply recency weighting to an array of scored items in-place and return them. */
+function applyRecencyWeighting(items: any[], bias: number): any[] {
+  if (bias <= 0) return items;
+  for (const item of items) {
+    const weight = computeRecencyWeight(item.source_date, bias);
+    item._recency_weight = weight;
+    item._score = (item._score || 0) * weight;
+  }
+  return items;
+}
+
+// ============================================================
+// Temporal helpers
+// ============================================================
+
 const TEMPORAL_WORDS = [
   'today', 'yesterday', 'this week', 'last week', 'this month', 'last month',
   'recently', 'recent', 'latest', 'new', 'changed', 'updated', 'what happened',
@@ -171,17 +210,20 @@ async function semanticSearch(
   query: string,
   limit: number,
   apiKey: string,
+  recencyBias: number = 0.05,
 ): Promise<any[]> {
   const queryEmb = await generateEmbedding(query, apiKey);
   const results = searchByEmbedding(db, queryEmb, limit, 0.2);
   // Normalize: similarity is already 0-1
-  return results.map(r => ({ ...r, _score: r.similarity || 0, _strategy: 'semantic' }));
+  const scored = results.map(r => ({ ...r, _score: r.similarity || 0, _strategy: 'semantic' }));
+  return applyRecencyWeighting(scored, recencyBias);
 }
 
 function keywordSearch(
   db: Database.Database,
   query: string,
   limit: number,
+  recencyBias: number = 0.05,
 ): any[] {
   // Get all knowledge items for BM25 scoring
   const items = db.prepare('SELECT * FROM knowledge_primary').all() as any[];
@@ -222,11 +264,14 @@ function keywordSearch(
     item.embedding = null; // Don't carry blob data
     return { ...item, _score: score, _strategy: 'keyword' };
   })
-  .filter(item => item._score > 0)
-  .sort((a, b) => b._score - a._score)
-  .slice(0, limit);
+  .filter(item => item._score > 0);
 
-  return scored;
+  // Apply recency weighting before final sort
+  applyRecencyWeighting(scored, recencyBias);
+
+  return scored
+    .sort((a, b) => b._score - a._score)
+    .slice(0, limit);
 }
 
 async function graphSearch(
@@ -234,17 +279,18 @@ async function graphSearch(
   query: string,
   limit: number,
   apiKey: string | null,
+  recencyBias: number = 0.05,
 ): Promise<any[]> {
-  // Find seed items via semantic or keyword
+  // Find seed items via semantic or keyword (pass recencyBias through)
   let seedItems: any[];
   if (apiKey) {
     try {
-      seedItems = await semanticSearch(db, query, 5, apiKey);
+      seedItems = await semanticSearch(db, query, 5, apiKey, recencyBias);
     } catch {
-      seedItems = keywordSearch(db, query, 5);
+      seedItems = keywordSearch(db, query, 5, recencyBias);
     }
   } else {
-    seedItems = keywordSearch(db, query, 5);
+    seedItems = keywordSearch(db, query, 5, recencyBias);
   }
 
   const allItems: any[] = [...seedItems];
@@ -273,6 +319,10 @@ async function graphSearch(
     }
   }
 
+  // Apply recency weighting to graph-discovered items (seeds already have it)
+  const graphOnly = allItems.filter(i => i._strategy === 'graph');
+  applyRecencyWeighting(graphOnly, recencyBias);
+
   return allItems
     .sort((a, b) => b._score - a._score)
     .slice(0, limit);
@@ -283,6 +333,7 @@ function temporalSearch(
   query: string,
   limit: number,
   sinceOverride?: string,
+  recencyBias: number = 0.05,
 ): any[] {
   const { since, label } = sinceOverride
     ? { since: sinceOverride, label: 'custom range' }
@@ -298,7 +349,7 @@ function temporalSearch(
   const now = new Date();
   const sevenDaysAgo = new Date(now); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-  return rows.map(row => {
+  const mapped = rows.map(row => {
     parseJsonFields(row);
     row.embedding = null;
 
@@ -318,9 +369,14 @@ function temporalSearch(
     else if (row.importance === 'high') score *= 1.2;
 
     return { ...row, _score: Math.min(score, 1.0), _strategy: 'temporal', _temporal_label: label };
-  })
-  .sort((a, b) => b._score - a._score)
-  .slice(0, limit);
+  });
+
+  // Apply recency weighting on top of temporal's own scoring
+  applyRecencyWeighting(mapped, recencyBias);
+
+  return mapped
+    .sort((a, b) => b._score - a._score)
+    .slice(0, limit);
 }
 
 async function hierarchicalSearch(
@@ -328,6 +384,7 @@ async function hierarchicalSearch(
   query: string,
   limit: number,
   apiKey: string,
+  recencyBias: number = 0.05,
 ): Promise<any[]> {
   const queryEmb = await generateEmbedding(query, apiKey);
 
@@ -347,7 +404,7 @@ async function hierarchicalSearch(
 
   if (scoredThemes.length === 0) {
     // Fallback to semantic search
-    return semanticSearch(db, query, limit, apiKey);
+    return semanticSearch(db, query, limit, apiKey, recencyBias);
   }
 
   // 2. Collect semantic_ids from top themes
@@ -402,13 +459,13 @@ async function hierarchicalSearch(
 
   // 6. Fetch and score knowledge items
   if (itemIds.size === 0) {
-    return semanticSearch(db, query, limit, apiKey);
+    return semanticSearch(db, query, limit, apiKey, recencyBias);
   }
 
   const placeholders = Array.from(itemIds).map(() => '?').join(',');
   const rows = db.prepare(`SELECT * FROM knowledge_primary WHERE id IN (${placeholders})`).all(...Array.from(itemIds)) as any[];
 
-  return rows.map(row => {
+  const scored = rows.map(row => {
     parseJsonFields(row);
     // Score by embedding similarity if available
     let score = 0.5;
@@ -418,9 +475,13 @@ async function hierarchicalSearch(
     }
     row.embedding = null;
     return { ...row, _score: score, _strategy: 'hierarchical' };
-  })
-  .sort((a, b) => b._score - a._score)
-  .slice(0, limit);
+  });
+
+  applyRecencyWeighting(scored, recencyBias);
+
+  return scored
+    .sort((a, b) => b._score - a._score)
+    .slice(0, limit);
 }
 
 // ============================================================
@@ -555,6 +616,7 @@ export async function search(
     source,
     since,
     rerank = true,
+    recencyBias = 0.05,
   } = options;
 
   const apiKey = getConfig(db, 'openai_api_key');
@@ -565,24 +627,24 @@ export async function search(
 
   if (strategy === 'semantic') {
     if (!apiKey) throw new Error('Semantic search requires an OpenAI API key for embeddings.');
-    candidates = await semanticSearch(db, query, limit * 2, apiKey);
+    candidates = await semanticSearch(db, query, limit * 2, apiKey, recencyBias);
     strategyUsed = 'semantic';
 
   } else if (strategy === 'keyword') {
-    candidates = keywordSearch(db, query, limit * 2);
+    candidates = keywordSearch(db, query, limit * 2, recencyBias);
     strategyUsed = 'keyword';
 
   } else if (strategy === 'graph') {
-    candidates = await graphSearch(db, query, limit * 2, apiKey);
+    candidates = await graphSearch(db, query, limit * 2, apiKey, recencyBias);
     strategyUsed = 'graph';
 
   } else if (strategy === 'temporal') {
-    candidates = temporalSearch(db, query, limit * 2, since);
+    candidates = temporalSearch(db, query, limit * 2, since, recencyBias);
     strategyUsed = 'temporal';
 
   } else if (strategy === 'hierarchical') {
     if (!apiKey) throw new Error('Hierarchical search requires an OpenAI API key for embeddings.');
-    candidates = await hierarchicalSearch(db, query, limit * 2, apiKey);
+    candidates = await hierarchicalSearch(db, query, limit * 2, apiKey, recencyBias);
     strategyUsed = 'hierarchical';
 
   } else {
@@ -591,13 +653,13 @@ export async function search(
 
     const promises: Promise<any[]>[] = [];
 
-    // Always run keyword
-    promises.push(Promise.resolve(keywordSearch(db, query, limit * 2)));
+    // Always run keyword (recency weighting applied inside each strategy)
+    promises.push(Promise.resolve(keywordSearch(db, query, limit * 2, recencyBias)));
 
     // Run semantic if API key available
     if (apiKey) {
       promises.push(
-        semanticSearch(db, query, limit * 2, apiKey).catch(() => [])
+        semanticSearch(db, query, limit * 2, apiKey, recencyBias).catch(() => [])
       );
     }
 
@@ -640,7 +702,7 @@ export async function search(
 
     // If temporal words detected, also run temporal and merge
     if (hasTemporalIntent(query)) {
-      const temporalResults = temporalSearch(db, query, limit, since);
+      const temporalResults = temporalSearch(db, query, limit, since, recencyBias);
       for (const tr of temporalResults) {
         if (!candidates.find(c => c.id === tr.id)) {
           candidates.push({ ...tr, _score: tr._score * 0.8 }); // Slightly lower to blend
@@ -652,7 +714,7 @@ export async function search(
     // If query mentions a contact, run graph from that contact's items
     const contactMatch = findContactInQuery(query, db);
     if (contactMatch) {
-      const graphResults = await graphSearch(db, query, limit, apiKey);
+      const graphResults = await graphSearch(db, query, limit, apiKey, recencyBias);
       for (const gr of graphResults) {
         if (!candidates.find(c => c.id === gr.id)) {
           candidates.push({ ...gr, _score: gr._score * 0.7 });
