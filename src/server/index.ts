@@ -392,37 +392,37 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
   });
 
   // ── MCP over HTTP (for remote Claude Desktop) ──────────
-  const mcpSessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
-
-  app.all('/mcp', async (req, res) => {
-    const sessionId = req.headers['mcp-session-id'] as string | undefined;
-
-    if (sessionId && mcpSessions.has(sessionId)) {
-      // Existing session
-      const session = mcpSessions.get(sessionId)!;
-      await session.transport.handleRequest(req, res, req.body);
-    } else if (!sessionId || req.method === 'POST') {
-      // New session — create transport + server
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-      });
-
+  // Stateless pattern: new server+transport per request (single user, no sessions needed)
+  app.post('/mcp', async (req, res) => {
+    try {
       const mcpServer = new McpServer(MCP_SERVER_CONFIG);
       registerPrimeTools(mcpServer);
+
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, // stateless
+      });
+
       await mcpServer.connect(transport);
-
-      transport.onclose = () => {
-        if (transport.sessionId) mcpSessions.delete(transport.sessionId);
-      };
-
-      if (transport.sessionId) {
-        mcpSessions.set(transport.sessionId, { transport, server: mcpServer });
-      }
-
       await transport.handleRequest(req, res, req.body);
-    } else {
-      res.status(404).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Session not found' } });
+
+      res.on('close', () => {
+        transport.close();
+        mcpServer.close();
+      });
+    } catch (error: any) {
+      console.error('MCP request error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
+      }
     }
+  });
+
+  app.get('/mcp', (_req, res) => {
+    res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed. Use POST.' }, id: null });
+  });
+
+  app.delete('/mcp', (_req, res) => {
+    res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null });
   });
 
   app.listen(port, '0.0.0.0', () => {
