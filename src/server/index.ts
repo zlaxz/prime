@@ -179,6 +179,26 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // Retrieve full source content — "go to the shelf"
+  app.post('/api/retrieve', async (req, res) => {
+    try {
+      const { source_ref } = req.body;
+      if (!source_ref) {
+        res.status(400).json({ error: 'source_ref required' });
+        return;
+      }
+      const { retrieveSourceContent } = await import('../source-retrieval.js');
+      const result = await retrieveSourceContent(db, source_ref);
+      if (result) {
+        res.json({ content: result.content, content_type: result.content_type, source: result.source });
+      } else {
+        res.json({ content: null, error: 'Could not retrieve source content' });
+      }
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Query endpoints
   app.get('/api/query/contacts', (_req, res) => {
     const results = searchByText(db, '', 1000);

@@ -300,6 +300,27 @@ server.tool(
 );
 
 server.tool(
+  "prime_retrieve",
+  "Retrieve the FULL original content from a source. Use this when a search result's summary isn't detailed enough and you need the actual email thread, meeting transcript, or conversation. This goes back to the original API (Gmail, Claude.ai, Otter) to get the complete text.",
+  {
+    source_ref: z.string().describe("The source_ref from a search result (e.g., 'claude:uuid', 'thread:id', 'otter:id')"),
+  },
+  async ({ source_ref }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpPost(`${srv}/api/retrieve`, { source_ref }, 60000);
+      if (result.content) {
+        return { content: [{ type: "text" as const, text: `[${result.content_type || 'source'}] Full content (${result.content.length} chars):\n\n${result.content}` }] };
+      }
+      return { content: [{ type: "text" as const, text: `Could not retrieve source content for ${source_ref}. The original API may be unavailable.` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error retrieving source: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
   "prime_notify",
   "Send a notification to the user (iMessage for critical/high, logged for normal/low).",
   {
