@@ -383,6 +383,53 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── Chat API (replaces Claude Desktop as primary interface) ──
+  app.get('/api/v1/chat/sidebar', (_req, res) => {
+    try {
+      const { getChatSidebar } = require('../ai/chat.js');
+      res.json(getChatSidebar(db));
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get('/api/v1/chat/sessions', (req, res) => {
+    try {
+      const project = req.query.project as string | undefined;
+      const query = project
+        ? "SELECT * FROM chat_sessions WHERE status = 'active' AND primary_project = ? ORDER BY updated_at DESC LIMIT 50"
+        : "SELECT * FROM chat_sessions WHERE status = 'active' ORDER BY updated_at DESC LIMIT 50";
+      const sessions = project ? db.prepare(query).all(project) : db.prepare(query).all();
+      res.json({ sessions });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get('/api/v1/chat/sessions/:id', (req, res) => {
+    try {
+      const session = db.prepare('SELECT * FROM chat_sessions WHERE id = ?').get(req.params.id);
+      const messages = db.prepare('SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC').all(req.params.id);
+      res.json({ session, messages });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.post('/api/v1/chat/message', async (req, res) => {
+    try {
+      const { chatMessage } = await import('../ai/chat.js');
+      const { session_id, message, project, thread_id } = req.body;
+      if (!message) { res.status(400).json({ error: 'message required' }); return; }
+      const result = await chatMessage(db, { session_id, message, project, thread_id });
+      res.json(result);
+    } catch (err: any) {
+      console.error('[Chat] Error:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/v1/chat/sessions/:id', (req, res) => {
+    try {
+      db.prepare("UPDATE chat_sessions SET status = 'archived' WHERE id = ?").run(req.params.id);
+      res.json({ ok: true });
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
   // ── Action approval (for ambient display + API clients) ──
   app.post('/api/approve-action', async (req, res) => {
     try {

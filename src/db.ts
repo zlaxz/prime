@@ -548,6 +548,51 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_threads_latest ON narrative_threads(latest_source_date DESC);
     CREATE INDEX IF NOT EXISTS idx_thread_items_thread ON thread_items(thread_id, position);
     CREATE INDEX IF NOT EXISTS idx_thread_items_item ON thread_items(knowledge_item_id);
+
+    -- ============================================================
+    -- CHAT — Persistent multi-turn conversations organized by topic
+    -- ============================================================
+    CREATE TABLE IF NOT EXISTS chat_sessions (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      summary TEXT,
+      session_type TEXT DEFAULT 'general',
+      status TEXT DEFAULT 'active',
+      primary_thread_id TEXT,
+      primary_project TEXT,
+      entity_ids TEXT DEFAULT '[]',
+      last_summary TEXT,
+      last_summary_at TEXT,
+      message_count INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      sources TEXT DEFAULT '[]',
+      actions_generated TEXT DEFAULT '[]',
+      intent TEXT,
+      token_count INTEGER,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_session_threads (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+      thread_id TEXT NOT NULL REFERENCES narrative_threads(id) ON DELETE CASCADE,
+      relevance REAL DEFAULT 1.0,
+      added_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(session_id, thread_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_sessions_project ON chat_sessions(primary_project);
+    CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated ON chat_sessions(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, created_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_chat_session_threads ON chat_session_threads(thread_id);
   `);
 }
 
