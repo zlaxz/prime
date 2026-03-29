@@ -119,12 +119,51 @@ async function buildChatContext(
   const today = new Date();
   const todayStr = today.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
-  // Layer 0: System prompt
-  let system = `You are Prime, an AI Chief of Staff for Zach Stock (Recapture Insurance MGA founder, ADHD).
-Today is ${todayStr}.
-${businessCtx ? '\nBusiness context: ' + businessCtx : ''}
+  // ================================================================
+  // PINNED CONTEXT — Layer 0
+  // Everything in this block is PERMANENT. It must appear at the TOP
+  // of the system prompt and must NEVER be compressed, summarized,
+  // or removed during context-window management. If the window is
+  // too large, trim from the BOTTOM (search results, history) first.
+  // ================================================================
+  let system = `The following context is PERMANENT and takes priority over any contradicting information in the conversation history.
 
-You have access to Zach's complete business knowledge base — emails, meetings, calendar, Claude conversations, and documents. Answer from this data, not general knowledge. Cite specific dates and sources.
+You are Prime, an AI Chief of Staff for Zach Stock (Recapture Insurance MGA founder, ADHD).
+Today is ${todayStr}.
+${businessCtx ? '\nBusiness context: ' + businessCtx : ''}`;
+
+  // PINNED: Entity correction rules — user-verified truth, never contradicted
+  const corrRules = getCorrectionRules(db);
+  if (corrRules) system += '\n\n' + corrRules;
+
+  // PINNED: Active predictions — system's current bets on the future
+  const predictions = db.prepare(
+    "SELECT prediction, confidence, subject FROM predictions WHERE outcome = 'pending' ORDER BY prediction_date DESC LIMIT 5"
+  ).all() as any[];
+  if (predictions.length > 0) {
+    system += '\n\nACTIVE PREDICTIONS:\n' + predictions.map((p: any) =>
+      `- ${p.prediction} (${Math.round(p.confidence * 100)}% confidence)`
+    ).join('\n');
+  }
+
+  // PINNED: Current project state (thread narrative)
+  if (session?.primary_thread_id) {
+    const thread = db.prepare(
+      'SELECT title, narrative_md, current_state, next_action FROM narrative_threads WHERE id = ?'
+    ).get(session.primary_thread_id) as any;
+    if (thread) {
+      system += `\n\nNARRATIVE THREAD: "${thread.title}"\nCurrent state: ${thread.current_state}\nNext action: ${thread.next_action}\n${thread.narrative_md ? thread.narrative_md.slice(0, 1500) : ''}`;
+    }
+  } else if (session?.primary_project) {
+    const threadCtx = getThreadContext(db, session.primary_project);
+    if (threadCtx) system += '\n\n' + threadCtx;
+  }
+
+  // ================================================================
+  // END PINNED CONTEXT — everything below can be trimmed if needed
+  // ================================================================
+
+  system += `\n\nYou have access to Zach's complete business knowledge base — emails, meetings, calendar, Claude conversations, and documents. Answer from this data, not general knowledge. Cite specific dates and sources.
 
 When asked to draft an email, include it as:
 \`\`\`action:email
@@ -142,19 +181,6 @@ When asked to set a reminder, include:
 \`\`\`
 
 Write for someone with ADHD: be direct, lead with the answer, skip filler.`;
-
-  // Layer 1: Thread narrative (if session is linked to a thread)
-  if (session?.primary_thread_id) {
-    const thread = db.prepare(
-      'SELECT title, narrative_md, current_state, next_action FROM narrative_threads WHERE id = ?'
-    ).get(session.primary_thread_id) as any;
-    if (thread) {
-      system += `\n\nNARRATIVE THREAD: "${thread.title}"\nCurrent state: ${thread.current_state}\nNext action: ${thread.next_action}\n${thread.narrative_md ? thread.narrative_md.slice(0, 1500) : ''}`;
-    }
-  } else if (session?.primary_project) {
-    const threadCtx = getThreadContext(db, session.primary_project);
-    if (threadCtx) system += '\n\n' + threadCtx;
-  }
 
   // Layer 1.5: Check speculative cache for pre-loaded context
   const cacheHits: string[] = [];
@@ -183,19 +209,6 @@ Write for someone with ADHD: be direct, lead with the answer, skip filler.`;
         `${p.canonical_name}: ${p.user_label || 'unknown'}, ${p.email || 'no email'}${p.communication_nature ? ', ' + p.communication_nature : ''}`
       ).join('\n');
     }
-  }
-
-  // Layer 3: Predictions + correction rules
-  const corrRules = getCorrectionRules(db);
-  if (corrRules) system += '\n\n' + corrRules;
-
-  const predictions = db.prepare(
-    "SELECT prediction, confidence, subject FROM predictions WHERE outcome = 'pending' ORDER BY prediction_date DESC LIMIT 5"
-  ).all() as any[];
-  if (predictions.length > 0) {
-    system += '\n\nACTIVE PREDICTIONS:\n' + predictions.map((p: any) =>
-      `- ${p.prediction} (${Math.round(p.confidence * 100)}% confidence)`
-    ).join('\n');
   }
 
   // Layer 4: Chat history

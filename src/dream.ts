@@ -19,6 +19,15 @@ import { task17ThreadBuilder, getThreadContext } from './narrative-threads.js';
 //
 // dream.ts is the ORCHESTRATOR. claude -p is the reasoning engine.
 // Each task: pre-query DB → assemble prompt → claude -p → validate → apply.
+//
+// PINNED CONTEXT RULE: When any task builds a prompt that includes
+// business context, entity corrections, or current project state,
+// those sections MUST appear at the TOP of the prompt and MUST be
+// prefixed with a note that they are permanent/authoritative.
+// Entity corrections (user labels, dismissed contacts) are ABSOLUTE
+// and must never be contradicted by LLM reasoning. Business context
+// from getConfig(db, 'business_context') is the ground truth.
+// See buildChatContext() in src/ai/chat.ts for the reference pattern.
 // ============================================================
 
 const DREAM_DIR = join(homedir(), '.prime', 'dream');
