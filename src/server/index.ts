@@ -1258,6 +1258,64 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── Deep Session Suggestions — agents propose, Zach decides ──
+
+  app.get('/api/deep-session-suggestions', (req, res) => {
+    try {
+      const suggestions = db.prepare(
+        `SELECT * FROM deep_session_suggestions WHERE status IN ('pending', 'running') ORDER BY
+          CASE urgency WHEN 'critical' THEN 1 WHEN 'high' THEN 2 ELSE 3 END,
+          created_at DESC
+        LIMIT 20`
+      ).all();
+      res.json({ suggestions });
+    } catch (err: any) {
+      res.json({ suggestions: [], error: err.message });
+    }
+  });
+
+  app.post('/api/deep-session-suggestions', (req, res) => {
+    try {
+      const { suggested_by, topic, project, reasoning, urgency } = req.body;
+      if (!topic || !suggested_by) {
+        res.status(400).json({ error: 'topic and suggested_by are required' });
+        return;
+      }
+      const id = require('crypto').randomUUID();
+      db.prepare(
+        `INSERT INTO deep_session_suggestions (id, suggested_by, topic, project, reasoning, urgency)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(id, suggested_by, topic, project || null, reasoning || null, urgency || 'normal');
+      res.json({ id, status: 'pending' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/deep-session-suggestions/:id/approve', async (req, res) => {
+    try {
+      const suggestion: any = db.prepare('SELECT * FROM deep_session_suggestions WHERE id = ?').get(req.params.id);
+      if (!suggestion) { res.status(404).json({ error: 'Not found' }); return; }
+      db.prepare(`UPDATE deep_session_suggestions SET status = 'running', acted_at = datetime('now') WHERE id = ?`).run(req.params.id);
+      const { runDeepSession } = await import('../deep-session.js');
+      const result = await runDeepSession(db, suggestion.topic, suggestion.suggested_by, suggestion.project);
+      db.prepare(`UPDATE deep_session_suggestions SET status = 'completed', deep_session_id = ? WHERE id = ?`).run(result.id, req.params.id);
+      res.json(result);
+    } catch (err: any) {
+      db.prepare(`UPDATE deep_session_suggestions SET status = 'pending' WHERE id = ?`).run(req.params.id);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/deep-session-suggestions/:id/dismiss', (req, res) => {
+    try {
+      db.prepare(`UPDATE deep_session_suggestions SET status = 'dismissed', acted_at = datetime('now') WHERE id = ?`).run(req.params.id);
+      res.json({ status: 'dismissed' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.listen(port, '0.0.0.0', () => {
     const stats = getStats(db);
     console.log(`\n⚡ Prime server running on http://0.0.0.0:${port}`);

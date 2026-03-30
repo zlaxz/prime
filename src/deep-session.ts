@@ -8,7 +8,6 @@
  */
 
 import Database from 'better-sqlite3';
-import { spawn } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -19,6 +18,7 @@ import { retrieveDeepContext } from './source-retrieval.js';
 import { getEntityProfile } from './entities.js';
 import { getCorrectionRules } from './intelligence-loop.js';
 import { notify } from './notify.js';
+import { runClaude } from './utils/claude-spawn.js';
 
 // ── Types ──
 
@@ -200,66 +200,22 @@ Now solve this problem. Take as long as you need. Use all available tools. Produ
 }
 
 // ── Claude -p Execution ──
+// Uses shared claude-spawn utility which handles:
+// - Mac Mini: routes through claude-gui.sh (GUI Terminal, keychain accessible, MCP tools loaded)
+// - Laptop: direct claude -p (keychain works natively)
 
 async function runClaudeP(
   prompt: string,
-  maxTurns: number = 200,     // Let Claude think as long as it needs
-  timeoutMs: number = 3600000 // 60 minutes
+  maxTurns: number = 200,
+  timeoutMs: number = 3600000
 ): Promise<{ output: string; turns: number; duration: number }> {
   const start = Date.now();
-  // On Mac Mini: use claude-gui.sh which runs claude -p through a GUI Terminal tab
-  // via osascript — keychain accessible from SSH/cron/launchd.
-  // On laptop: use raw claude -p (keychain works directly).
-  const guiScript = join(homedir(), 'GitHub', 'prime', 'scripts', 'claude-gui.sh');
-  const useGui = existsSync(guiScript);
-  const cmd = useGui ? guiScript : 'claude';
-  const args = useGui
-    ? ['--max-turns', String(maxTurns)]  // gui script reads prompt from stdin, passes args through
-    : ['-p', '-', '--output-format', 'json', '--max-turns', String(maxTurns)];
-  const env = { ...process.env };
-  if (!useGui) delete env.ANTHROPIC_API_KEY; // Force Max on laptop
-
-  if (useGui) console.log('  [claude] Using claude-gui.sh (GUI Terminal, keychain accessible)');
-
-  return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args, {
-      timeout: timeoutMs,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    let out = '';
-    let err = '';
-    proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
-    proc.stderr.on('data', (d: Buffer) => { err += d.toString(); });
-
-    proc.on('close', (code) => {
-      const duration = (Date.now() - start) / 1000;
-      if (code === 0) {
-        if (useGui) {
-          // GUI script returns raw text from claude -p
-          resolve({ output: out.trim(), turns: 0, duration });
-        } else {
-          try {
-            const envelope = JSON.parse(out);
-            resolve({
-              output: envelope.result || out,
-              turns: envelope.num_turns || 0,
-              duration,
-            });
-          } catch {
-            resolve({ output: out, turns: 0, duration });
-          }
-        }
-      } else {
-        reject(new Error(`claude -p exited with ${code} after ${duration.toFixed(0)}s: ${err.slice(0, 300)}`));
-      }
-    });
-
-    proc.on('error', reject);
-    proc.stdin.write(prompt);
-    proc.stdin.end();
+  const output = await runClaude(prompt, {
+    maxTurns,
+    timeout: timeoutMs,
   });
+  const duration = (Date.now() - start) / 1000;
+  return { output, turns: 0, duration };
 }
 
 // ── Output Parsing ──

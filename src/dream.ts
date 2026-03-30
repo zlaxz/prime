@@ -1966,51 +1966,91 @@ interface DetectedGap {
   days_stale: number;
 }
 
-// ── Task 20: Deep Session Trigger ─────────────────────────────
-// Scans for projects stalling 14+ days. Triggers max 1 deep session per run.
+// ── Task 20: Deep Session Strategic Triage ────────────────────
+// Asks Claude: "Given everything in Prime, what deep sessions should we suggest?"
+// Produces ranked suggestions for the workspace. Auto-runs #1 only if critical.
 async function task20DeepSessionTrigger(db: Database.Database): Promise<TaskResult> {
   const start = Date.now();
   try {
-    // Find projects stalling for 14+ days
-    const stalling = db.prepare(`
-      SELECT project, status, days_stale, confidence
-      FROM entity_profiles
-      WHERE status IN ('stalling', 'stalled')
-        AND days_stale >= 14
-        AND project IS NOT NULL
-      ORDER BY days_stale DESC
-      LIMIT 5
-    `).all() as any[];
+    // Gather signals for strategic triage
+    const activeProjects = db.prepare(`SELECT project, status, next_action, confidence FROM entity_profiles WHERE status NOT IN ('dormant', 'completed') AND project IS NOT NULL ORDER BY confidence ASC LIMIT 10`).all() as any[];
+    const overdueCommitments = db.prepare(`SELECT text, owner, due_date, project FROM commitments WHERE state = 'overdue' LIMIT 10`).all() as any[];
+    const upcomingCommitments = db.prepare(`SELECT text, owner, due_date, project FROM commitments WHERE state = 'active' AND due_date IS NOT NULL ORDER BY due_date ASC LIMIT 10`).all() as any[];
+    const recentSessions = db.prepare(`SELECT title, project, created_at FROM deep_sessions WHERE created_at > datetime('now', '-7 days') ORDER BY created_at DESC`).all() as any[];
+    const pendingSuggestions = db.prepare(`SELECT topic, project, suggested_by FROM deep_session_suggestions WHERE status = 'pending'`).all() as any[];
 
-    if (stalling.length === 0) {
-      return { task: '20-deep-session-trigger', status: 'skipped', duration_seconds: (Date.now() - start) / 1000, output: { reason: 'no stalling projects' } };
+    const context = [
+      '=== ACTIVE PROJECTS ===',
+      ...activeProjects.map((p: any) => `${p.project} — status: ${p.status}, confidence: ${p.confidence}, next: ${p.next_action || 'none'}`),
+      '', '=== OVERDUE COMMITMENTS ===',
+      ...overdueCommitments.map((c: any) => `${c.text} (due: ${c.due_date}, project: ${c.project})`),
+      '', '=== UPCOMING COMMITMENTS ===',
+      ...upcomingCommitments.map((c: any) => `${c.text} (due: ${c.due_date}, project: ${c.project})`),
+      '', '=== DEEP SESSIONS THIS WEEK ===',
+      recentSessions.length ? recentSessions.map((s: any) => `${s.title} (${s.project})`).join('\n') : 'None',
+      '', '=== PENDING SUGGESTIONS ===',
+      pendingSuggestions.length ? pendingSuggestions.map((s: any) => `${s.topic} (by ${s.suggested_by})`).join('\n') : 'None',
+    ].join('\n');
+
+    const prompt = `You are the strategic triage system for Prime. Look at everything happening and recommend 1-3 deep sessions that would deliver the highest value RIGHT NOW.
+
+A deep session reads everything in Prime about a topic, does web research, and produces a complete strategy with finished deliverables.
+
+Only suggest deep sessions for problems that need STRATEGIC THINKING — not simple tasks. Good reasons:
+- A project needs a unified strategy and doesn't have one
+- A deadline is approaching with no plan
+- New information changes the strategy
+- An opportunity has a closing window
+- Gap between commitments and action
+
+${context}
+
+Return ONLY valid JSON:
+{"suggestions":[{"topic":"...","project":"...","reasoning":"Why this matters RIGHT NOW","urgency":"critical|high|normal"}],"auto_run":false}
+
+Max 3. If nothing needs deep work, return empty suggestions array.`;
+
+    const response = await callClaude(prompt, 60000);
+
+    let parsed: any = null;
+    try {
+      const cleaned = response.replace(/^```(?:json)?\s*\n?/m, '').replace(/\n?```\s*$/m, '').trim();
+      parsed = JSON.parse(cleaned);
+    } catch {
+      try {
+        const match = response.match(/\{[\s\S]*"suggestions"[\s\S]*\}/);
+        if (match) parsed = JSON.parse(match[0]);
+      } catch { /* failed */ }
     }
 
-    // Check if we already ran a deep session for the top project recently (7 days)
-    const topProject = stalling[0].project;
-    const recent = db.prepare(`
-      SELECT id FROM deep_sessions
-      WHERE project = ? AND created_at > datetime('now', '-7 days')
-      LIMIT 1
-    `).get(topProject);
-
-    if (recent) {
-      return { task: '20-deep-session-trigger', status: 'skipped', duration_seconds: (Date.now() - start) / 1000, output: { reason: `recent session exists for ${topProject}` } };
+    if (!parsed?.suggestions?.length) {
+      return { task: '20-deep-session-triage', status: 'skipped', duration_seconds: (Date.now() - start) / 1000, output: { reason: 'no suggestions' } };
     }
 
-    // Trigger deep session
-    console.log(`    Triggering deep session for stalling project: ${topProject} (${stalling[0].days_stale} days)`);
-    const { runDeepSession } = await import('./deep-session.js');
-    const result = await runDeepSession(db, `${topProject} — project stalling for ${stalling[0].days_stale} days, needs strategic intervention`, 'dream', topProject);
+    const { v4: uuidv4 } = await import('uuid');
+    const insert = db.prepare(`INSERT INTO deep_session_suggestions (id, suggested_by, topic, project, reasoning, urgency) VALUES (?, 'dream', ?, ?, ?, ?)`);
+    let written = 0;
+    for (const s of parsed.suggestions.slice(0, 3)) {
+      insert.run(uuidv4(), s.topic, s.project || null, s.reasoning, s.urgency || 'normal');
+      written++;
+    }
+    console.log(`    ${written} deep session suggestions generated`);
 
-    return {
-      task: '20-deep-session-trigger',
-      status: 'success',
-      duration_seconds: (Date.now() - start) / 1000,
-      output: { project: topProject, session_id: result.id, deliverables: result.deliverables.length, actions: result.actions_created },
-    };
+    // Auto-run #1 only if critical urgency
+    if (parsed.auto_run && parsed.suggestions[0]?.urgency === 'critical') {
+      const top = parsed.suggestions[0];
+      const recent = db.prepare(`SELECT id FROM deep_sessions WHERE project = ? AND created_at > datetime('now', '-1 days') LIMIT 1`).get(top.project);
+      if (!recent) {
+        console.log(`    Auto-running critical: ${top.topic}`);
+        const { runDeepSession } = await import('./deep-session.js');
+        const result = await runDeepSession(db, top.topic, 'dream', top.project);
+        return { task: '20-deep-session-triage', status: 'success', duration_seconds: (Date.now() - start) / 1000, output: { suggestions: written, auto_ran: top.topic, session_id: result.id } };
+      }
+    }
+
+    return { task: '20-deep-session-triage', status: 'success', duration_seconds: (Date.now() - start) / 1000, output: { suggestions: written } };
   } catch (err: any) {
-    return { task: '20-deep-session-trigger', status: 'failed', duration_seconds: (Date.now() - start) / 1000, output: { error: err.message?.slice(0, 200) } };
+    return { task: '20-deep-session-triage', status: 'failed', duration_seconds: (Date.now() - start) / 1000, output: { error: err.message?.slice(0, 200) } };
   }
 }
 

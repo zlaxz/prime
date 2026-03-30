@@ -1012,6 +1012,27 @@ srv.tool(
 // ── Sampling-powered investigation (uses Claude Desktop's own LLM) ────
 
 srv.tool(
+  "prime_suggest_deep_session",
+  "Suggest a deep strategic work session for Zach to review. Use when you identify a problem that needs deep thinking — strategic planning, comprehensive research, or complex decision-making. Don't suggest deep sessions for simple tasks (use prime_spawn_agent for those). Suggest when: a project needs a unified strategy, a deadline is approaching with no plan, new information changes everything, or an opportunity has a closing window.",
+  {
+    topic: z.string().describe("The problem to solve — be specific about why this needs deep work"),
+    project: z.string().optional().describe("Project context"),
+    reasoning: z.string().describe("Why this matters RIGHT NOW — what's the urgency, what's at stake"),
+    urgency: z.enum(["critical", "high", "normal"]).describe("How urgent — critical: hours matter, high: days matter, normal: this week"),
+  },
+  async ({ topic, project, reasoning, urgency }) => {
+    const db = getDb();
+    const agentName = 'unknown'; // Will be set by the calling agent's context
+    const id = (await import('uuid')).v4();
+    db.prepare(
+      `INSERT INTO deep_session_suggestions (id, suggested_by, topic, project, reasoning, urgency)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(id, agentName, topic, project || null, reasoning, urgency);
+    return { content: [{ type: "text" as const, text: `✓ Deep session suggestion saved.\nTopic: ${topic}\nUrgency: ${urgency}\nZach will see this in the Deep Session workspace and can approve it to run.` }] };
+  }
+);
+
+srv.tool(
   "prime_retrieve",
   "Retrieve the FULL original content from a source — go to the shelf and read the actual book, not just the index card. Use when a search result's summary isn't detailed enough. Returns the complete email thread, Claude conversation, meeting transcript, or document.",
   {
