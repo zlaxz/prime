@@ -12,8 +12,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
-import { searchByEmbedding, getCommitments, getConfig } from './db.js';
-import { generateEmbedding } from './embedding.js';
+import { getCommitments, getConfig } from './db.js';
+import { search } from './ai/search.js';
 import { retrieveDeepContext } from './source-retrieval.js';
 import { getEntityProfile } from './entities.js';
 import { getCorrectionRules } from './intelligence-loop.js';
@@ -56,21 +56,27 @@ async function assembleContext(
   const apiKey = getConfig(db, 'openai_api_key');
   const parts: string[] = [];
 
-  // 1. Vector search for top 30 relevant items
+  // 1. Multi-strategy search (semantic + keyword + graph + temporal, with reranking)
   let searchResults: any[] = [];
-  if (apiKey) {
-    try {
-      const queryEmb = await generateEmbedding(topic, apiKey);
-      searchResults = searchByEmbedding(db, queryEmb, 30, 0.2);
-    } catch (e: any) {
-      console.log(`  [context] Vector search failed: ${e.message?.slice(0, 50)}`);
-    }
+  try {
+    const result = await search(db, topic, {
+      limit: 30,
+      strategy: 'auto',    // Uses all strategies, Claude-powered reranking
+      rerank: true,
+      recencyBias: 0.1,    // Weight recent items higher
+      graphDepth: 2,        // Follow entity connections 2 hops
+    });
+    searchResults = result.items || [];
+    console.log(`  [context] Search: ${searchResults.length} results via ${result.strategy || 'auto'} strategy`);
+  } catch (e: any) {
+    console.log(`  [context] Search failed: ${e.message?.slice(0, 50)}`);
   }
 
   if (searchResults.length > 0) {
-    parts.push('=== RELEVANT KNOWLEDGE (top matches) ===');
+    parts.push('=== RELEVANT KNOWLEDGE (multi-strategy search, ranked by relevance) ===');
     for (const item of searchResults.slice(0, 30)) {
-      parts.push(`[${item.source}] ${item.title} (${item.source_date || 'undated'}, similarity: ${item.similarity?.toFixed(2)})`);
+      const score = item.score ? ` score:${item.score.toFixed(2)}` : '';
+      parts.push(`[${item.source}] ${item.title} (${item.source_date || 'undated'}${score})`);
       parts.push(item.summary?.slice(0, 500) || '');
       parts.push('');
     }
