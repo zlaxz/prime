@@ -61,24 +61,12 @@ async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessio
   return new Promise((resolve, reject) => {
     const env = { ...process.env };
 
-    // If oauth-token.txt exists (Mac Mini), read it and use --bare mode
-    // This bypasses the keychain which is inaccessible from SSH/cron/launchd
-    let useBare = false;
-    try {
-      const tokenPath = join(homedir(), '.claude', 'oauth-token.txt');
-      if (existsSync(tokenPath)) {
-        const tokenData = JSON.parse(readFileSync(tokenPath, 'utf-8'));
-        env.ANTHROPIC_API_KEY = tokenData.claudeAiOauth?.accessToken || '';
-        useBare = true;
-      } else {
-        delete env.ANTHROPIC_API_KEY; // Force Max subscription OAuth on laptop
-      }
-    } catch {
-      delete env.ANTHROPIC_API_KEY;
-    }
+    // Don't set ANTHROPIC_API_KEY — let claude -p use its native OAuth auth
+    // The dream pipeline must run from a GUI context (cron on macOS, or screen session)
+    // where the Keychain is accessible. --bare mode does NOT accept OAuth tokens.
+    delete env.ANTHROPIC_API_KEY;
 
-    const baseArgs = useBare ? ['-p', '--bare'] : ['-p'];
-    const args = sessionId ? [...baseArgs, '--resume', sessionId] : baseArgs;
+    const args = sessionId ? ['-p', '--resume', sessionId] : ['-p'];
     const proc = spawn('claude', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
@@ -1326,7 +1314,10 @@ ${itemLines || '  (none)'}
       ).join('\n');
       const dismissedLines = userDismissed.map((e: any) => e.canonical_name).join(', ');
 
-      const prompt = `You are the AI Chief of Staff for Zach Stock. You have DEEP knowledge of his business and must evaluate each contact with that understanding.
+      // PINNED CONTEXT at top of prompt — see dream.ts header comment
+      const prompt = `The following context is PERMANENT and takes priority over any contradicting information below.
+
+You are the AI Chief of Staff for Zach Stock. You have DEEP knowledge of his business and must evaluate each contact with that understanding.
 
 BUSINESS CONTEXT:
 Zach Stock is the founder of Recapture Insurance, a Managing General Agency (MGA) in the insurance industry.
