@@ -1,6 +1,6 @@
 import express from 'express';
-import { readdirSync, readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
+import { join, basename } from 'path';
 import { homedir } from 'os';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
@@ -1238,15 +1238,13 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         res.status(404).json({ error: 'Session not found' });
         return;
       }
-      const fs = require('fs');
-      const path = require('path');
-      const safeName = path.basename(req.params.filename); // prevent path traversal
-      const filePath = path.join(session.output_dir, safeName);
-      if (!fs.existsSync(filePath)) {
+      const safeName = basename(req.params.filename);
+      const filePath = join(session.output_dir, safeName);
+      if (!existsSync(filePath)) {
         res.status(404).json({ error: 'File not found' });
         return;
       }
-      res.type('text/markdown').send(fs.readFileSync(filePath, 'utf-8'));
+      res.type('text/markdown').send(readFileSync(filePath, 'utf-8'));
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -1269,11 +1267,9 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     try {
       const session: any = db.prepare('SELECT output_dir FROM deep_sessions WHERE id = ?').get(req.params.id);
       if (!session?.output_dir) { res.status(404).json({ error: 'Session not found' }); return; }
-      const fs = require('fs');
-      const path = require('path');
-      const safeName = path.basename(req.params.filename);
-      const filePath = path.join(session.output_dir, safeName);
-      fs.writeFileSync(filePath, req.body.content || '', 'utf-8');
+      const safeName = basename(req.params.filename);
+      const filePath = join(session.output_dir, safeName);
+      writeFileSync(filePath, req.body.content || '', 'utf-8');
       res.json({ saved: true, filename: safeName });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
