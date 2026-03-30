@@ -9,7 +9,7 @@
 
 import Database from 'better-sqlite3';
 import { spawn } from 'child_process';
-import { mkdirSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
@@ -207,15 +207,33 @@ async function runClaudeP(
   timeoutMs: number = 3600000 // 60 minutes
 ): Promise<{ output: string; turns: number; duration: number }> {
   const start = Date.now();
+  const env = { ...process.env };
+
+  // If oauth-token.txt exists (Mac Mini SSH/cron), use --bare mode
+  // This bypasses the keychain which is inaccessible from SSH/launchd
+  let useBare = false;
+  try {
+    const tokenPath = join(homedir(), '.claude', 'oauth-token.txt');
+    if (existsSync(tokenPath)) {
+      const tokenData = JSON.parse(readFileSync(tokenPath, 'utf-8'));
+      env.ANTHROPIC_API_KEY = tokenData.claudeAiOauth?.accessToken || '';
+      useBare = true;
+      console.log('  [claude] Using --bare mode with OAuth token');
+    } else {
+      delete env.ANTHROPIC_API_KEY; // Force Max subscription OAuth on laptop
+    }
+  } catch {
+    delete env.ANTHROPIC_API_KEY;
+  }
+
+  const args = useBare
+    ? ['-p', '-', '--bare', '--max-turns', String(maxTurns)]
+    : ['-p', '-', '--output-format', 'json', '--max-turns', String(maxTurns)];
 
   return new Promise((resolve, reject) => {
-    const proc = spawn('claude', [
-      '-p', '-',
-      '--output-format', 'json',
-      '--max-turns', String(maxTurns),
-    ], {
+    const proc = spawn('claude', args, {
       timeout: timeoutMs,
-      env: { ...process.env, ANTHROPIC_API_KEY: '' },
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -227,16 +245,20 @@ async function runClaudeP(
     proc.on('close', (code) => {
       const duration = (Date.now() - start) / 1000;
       if (code === 0) {
-        try {
-          const envelope = JSON.parse(out);
-          resolve({
-            output: envelope.result || out,
-            turns: envelope.num_turns || 0,
-            duration,
-          });
-        } catch {
-          // If JSON parse fails, return raw output
-          resolve({ output: out, turns: 0, duration });
+        if (useBare) {
+          // --bare mode returns raw text
+          resolve({ output: out.trim(), turns: 0, duration });
+        } else {
+          try {
+            const envelope = JSON.parse(out);
+            resolve({
+              output: envelope.result || out,
+              turns: envelope.num_turns || 0,
+              duration,
+            });
+          } catch {
+            resolve({ output: out, turns: 0, duration });
+          }
         }
       } else {
         reject(new Error(`claude -p exited with ${code} after ${duration.toFixed(0)}s: ${err.slice(0, 300)}`));
