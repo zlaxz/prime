@@ -1362,6 +1362,80 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── GET endpoints for remote access (claude.ai WebFetch, phone, any browser) ──
+
+  app.get('/api/search', async (req, res) => {
+    try {
+      const q = (req.query.q || req.query.query) as string;
+      if (!q) { res.status(400).json({ error: 'q parameter required' }); return; }
+      const { search } = await import('../ai/search.js');
+      const result = await search(db, q, { limit: 10, strategy: 'auto', rerank: true });
+      res.json({
+        query: q,
+        count: result.items?.length || 0,
+        results: (result.items || []).map((item: any) => ({
+          title: item.title,
+          summary: item.summary?.slice(0, 500),
+          source: item.source,
+          source_ref: item.source_ref,
+          source_date: item.source_date,
+          project: item.project,
+          score: item.score,
+        })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/ask', async (req, res) => {
+    try {
+      const q = (req.query.q || req.query.query) as string;
+      if (!q) { res.status(400).json({ error: 'q parameter required' }); return; }
+      const { askWithSources } = await import('../ai/ask.js');
+      const result = await askWithSources(db, q);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/retrieve', async (req, res) => {
+    try {
+      const ref = req.query.ref as string;
+      if (!ref) { res.status(400).json({ error: 'ref parameter required' }); return; }
+      const { retrieveSourceContent } = await import('../source-retrieval.js');
+      const item = db.prepare('SELECT * FROM knowledge WHERE source_ref = ?').get(ref) as any;
+      if (!item) { res.status(404).json({ error: 'Not found' }); return; }
+      const result = await retrieveSourceContent(db, item);
+      res.json({ title: item.title, source: item.source, content: result?.content?.slice(0, 50000) || item.summary, content_type: result?.content_type });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/briefing', async (req, res) => {
+    try {
+      const { generateBriefing } = await import('../ai/briefing.js');
+      const briefing = await generateBriefing(db);
+      res.json(briefing);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/entity', async (req, res) => {
+    try {
+      const name = req.query.name as string;
+      if (!name) { res.status(400).json({ error: 'name parameter required' }); return; }
+      const { getEntityProfile } = await import('../entities.js');
+      const profile = getEntityProfile(db, name);
+      res.json(profile || { error: 'Entity not found' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.listen(port, '0.0.0.0', () => {
     const stats = getStats(db);
     console.log(`\n⚡ Prime server running on http://0.0.0.0:${port}`);
