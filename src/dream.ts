@@ -599,9 +599,8 @@ async function task18StrategicActions(db: Database.Database): Promise<TaskResult
     // Expire old staged actions (72h max)
     db.prepare("UPDATE staged_actions SET status = 'expired' WHERE status = 'pending' AND created_at < datetime('now', '-72 hours')").run();
 
-    // Build context for DeepSeek
+    // Build context with entity emails and relationship detail
     const projectContext = activeProjects.map((p: any) => {
-      // Get recent items for this project
       const items = db.prepare(
         "SELECT title, source, source_date FROM knowledge WHERE project = ? AND importance != 'noise' ORDER BY source_date DESC LIMIT 5"
       ).all(p.project) as any[];
@@ -610,9 +609,27 @@ async function task18StrategicActions(db: Database.Database): Promise<TaskResult
         "SELECT text, state, due_date, owner FROM commitments WHERE project = ? AND state IN ('active', 'overdue') ORDER BY due_date ASC LIMIT 3"
       ).all(p.project) as any[];
 
+      // Get key people with EMAIL ADDRESSES for this project
+      const people = db.prepare(`
+        SELECT DISTINCT e.canonical_name, e.email, e.relationship_type, e.user_label
+        FROM entities e
+        JOIN entity_mentions em ON e.id = em.entity_id
+        JOIN knowledge_primary k ON em.knowledge_item_id = k.id
+        WHERE k.project = ? AND e.type = 'person' AND e.user_dismissed = 0
+          AND e.canonical_name NOT LIKE '%Zach%Stock%'
+        ORDER BY COUNT(em.id) DESC LIMIT 5
+      `).all(p.project) as any[];
+
+      // Get active threads for this project
+      const threads = db.prepare(
+        "SELECT title, current_state, next_action FROM narrative_threads WHERE status = 'active' AND (title LIKE ? OR project = ?) LIMIT 2"
+      ).all(`%${p.project}%`, p.project) as any[];
+
       return `## ${p.project} [${p.status}]
-Status: ${p.status_reasoning?.slice(0, 200)}
-Next action (from project profile): ${p.next_action}
+Status: ${p.status_reasoning?.slice(0, 300)}
+Next action: ${p.next_action}
+Key people: ${people.map((pe: any) => `${pe.canonical_name}${pe.email ? ' <' + pe.email + '>' : ''}${pe.user_label ? ' (' + pe.user_label + ')' : ''}`).join('; ') || 'unknown'}
+Active threads: ${threads.map((t: any) => `"${t.title}" — ${t.current_state?.slice(0, 150)}`).join('; ') || 'none'}
 Recent activity: ${items.map((i: any) => `${i.source_date?.slice(0, 10)} ${i.source}: ${i.title}`).join('; ')}
 Open commitments: ${commitments.map((c: any) => `${c.text} [${c.state}]${c.due_date ? ' due:' + c.due_date : ''}`).join('; ') || 'none'}`;
     }).join('\n\n');
@@ -635,34 +652,26 @@ Open commitments: ${commitments.map((c: any) => `${c.text} [${c.state}]${c.due_d
       console.log(`    Task 18 source retrieval warning: ${err.message?.slice(0, 100)}`);
     }
 
-    // Use DeepSeek Reasoner for this (bulk work, cheap)
-    const { getBulkProvider } = await import('./ai/providers.js');
-    const provider = await getBulkProvider(getConfig(db, 'openai_api_key') || undefined);
+    // Use Claude for drafts — DeepSeek produces generic corporate-speak
+    const actionPrompt = `You are drafting REAL business communications for Zach Stock, founder of Recapture Insurance (an MGA specializing in senior living/healthcare insurance). Today is ${today}.
 
-    const response = await provider.chat(
-      [
-        {
-          role: 'system',
-          content: `You are a strategic business analyst for a solo insurance entrepreneur with ADHD. Today is ${today}.
+ZACH'S WRITING STYLE:
+- Direct, confident, not corporate. Never "I hope this finds you well."
+- Short sentences. Gets to the point fast.
+- References specific prior conversations: "Following up on our March 24 call..."
+- Uses first names, not "Dear Mr./Ms."
+- Signs off with just "Zach" or "- Zach"
+- When he knows someone well: casual, warm. When cold outreach: professional but not stiff.
 
-Given these active projects, generate 3-5 SPECIFIC, ACTIONABLE work items that Zach should do in the next 48 hours.
+YOUR JOB: Generate 3-5 work items. For EACH email, write a COMPLETE draft that Zach would actually send with minimal editing.
 
 RULES:
-1. Work items must be DELIVERABLES, not "follow up with X" or "reply to Y"
-   Good: "Draft broker outreach email template for the top 10 retail agents"
-   Good: "Finalize Gallagher co-branded marketing PDF — send to Garry for review"
-   Bad: "Follow up with Brayden" (too vague, might be stale)
-   Bad: "Reply to Peter Fine" (might be a solicitation)
-
-2. Each work item must be tied to a specific project and have a clear completion state.
-
-3. Prioritize REVENUE-GENERATING and DEADLINE-DRIVEN items over relationship maintenance.
-
-4. For email actions: include the exact recipient email if you know it, subject line, and draft body.
-
-5. For document actions: describe what the document should contain.
-
-6. Maximum 2 items per project. Focus on the highest-leverage actions.
+1. Every email MUST have: real recipient name, email address (from the Key People data), specific subject line, FULL body text (not an outline).
+2. Reference SPECIFIC details from the source material — dates, numbers, prior conversations, agreements.
+3. If you don't have enough detail to write a real email, say so — don't fake it with placeholders.
+4. Prioritize REVENUE-GENERATING and DEADLINE-DRIVEN items.
+5. Maximum 2 items per project. Highest-leverage only.
+6. For documents: write the ACTUAL content, not bullet point outlines.
 
 Return JSON:
 {
@@ -671,38 +680,36 @@ Return JSON:
       "type": "email|document|calendar|task",
       "summary": "One line description",
       "project": "Project Name",
-      "reasoning": "Why this matters NOW — cite specific evidence",
-      "to": "email@address (for emails) or null",
-      "subject": "Email subject (for emails) or null",
-      "body": "Full draft text (for emails) or document outline (for documents) or null",
+      "reasoning": "Why this matters NOW — cite specific evidence from source material",
+      "to": "email@address",
+      "subject": "Email subject",
+      "body": "COMPLETE draft — ready to send",
       "urgency": "critical|high|medium"
     }
   ]
-}`,
-        },
-        { role: 'user', content: (() => {
-          // Append detected gaps so DeepSeek generates actions for them
-          let gapBlock = '';
-          try {
-            const gapsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'detected_gaps'").get() as any)?.value;
-            if (gapsRaw) {
-              const gapsList = JSON.parse(gapsRaw) as any[];
-              const criticalHigh = gapsList.filter((g: any) => g.severity === 'critical' || g.severity === 'high');
-              if (criticalHigh.length > 0) {
-                gapBlock = '\n\n## DETECTED GAPS — THINGS FALLING THROUGH CRACKS\nGenerate actions specifically to address these gaps:\n' +
-                  criticalHigh.slice(0, 8).map((g: any) =>
-                    `- [${g.severity.toUpperCase()}] ${g.type}: ${g.description}`
-                  ).join('\n');
-              }
-            }
-          } catch {}
-          return projectContext + (deepSourceMaterial ? '\n\nSOURCE MATERIAL:\n' + deepSourceMaterial : '') + gapBlock;
-        })() },
-      ],
-      { temperature: 0.2, max_tokens: 4000, json: true }
-    );
+}`;
 
-    const result = tryParseJSON(response);
+    const response = await runClaude(actionPrompt + '\n\n' + (() => {
+      let gapBlock = '';
+      try {
+        const gapsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'detected_gaps'").get() as any)?.value;
+        if (gapsRaw) {
+          const gapsList = JSON.parse(gapsRaw) as any[];
+          const criticalHigh = gapsList.filter((g: any) => g.severity === 'critical' || g.severity === 'high');
+          if (criticalHigh.length > 0) {
+            gapBlock = '\n\n## DETECTED GAPS\n' + criticalHigh.slice(0, 8).map((g: any) =>
+              `- [${g.severity.toUpperCase()}] ${g.type}: ${g.description}`
+            ).join('\n');
+          }
+        }
+      } catch {}
+      return projectContext + (deepSourceMaterial ? '\n\nSOURCE MATERIAL:\n' + deepSourceMaterial : '') + gapBlock;
+    })(), { timeout: 300000 });
+
+    // Legacy DeepSeek path removed — Claude produces dramatically better drafts
+    const _unused_provider = null; // kept to avoid import warnings
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    const result = jsonMatch ? tryParseJSON(jsonMatch[0]) : null;
     if (!result?.actions?.length) {
       return { task: '18-strategic-actions', status: 'success', duration_seconds: (Date.now() - start) / 1000, output: { actions: 0, reason: 'no actions generated' } };
     }
