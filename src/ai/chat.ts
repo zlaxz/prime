@@ -5,6 +5,7 @@ import { getDefaultProvider } from './providers.js';
 import { search } from './search.js';
 import { getCorrectionRules } from '../intelligence-loop.js';
 import { getThreadContext } from '../narrative-threads.js';
+import { retrieveDeepContext } from '../source-retrieval.js';
 
 // ============================================================
 // Prime Chat Engine — Multi-turn conversational AI
@@ -237,6 +238,19 @@ Write for someone with ADHD: be direct, lead with the answer, skip filler.`;
         const age = item.source_date ? Math.round((Date.now() - new Date(item.source_date).getTime()) / 86400000) : '?';
         return `[${i + 1}] [${item.source}] ${item.source_date?.slice(0, 10)} (${age}d ago): ${item.title}\n  ${item.summary?.slice(0, 200)}`;
       }).join('\n');
+  }
+
+  // Layer 5.5: Deep source retrieval for top search results
+  if (searchResult.items.length > 0) {
+    try {
+      const deepContent = await retrieveDeepContext(db, searchResult.items.slice(0, 3), 3);
+      if (deepContent) {
+        system += '\n\nDETAILED SOURCE MATERIAL:\n' + deepContent;
+      }
+    } catch (err: any) {
+      // Non-fatal — chat still works with summaries only
+      console.log(`  Chat deep retrieval warning: ${err.message?.slice(0, 100)}`);
+    }
   }
 
   // Layer 6: Pending staged actions

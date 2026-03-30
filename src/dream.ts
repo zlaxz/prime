@@ -619,6 +619,22 @@ Open commitments: ${commitments.map((c: any) => `${c.text} [${c.state}]${c.due_d
 
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
+    // SOURCE RETRIEVAL: Get actual content for top projects so DeepSeek has real material
+    let deepSourceMaterial = '';
+    try {
+      for (const p of activeProjects.slice(0, 3)) {
+        const projItems = db.prepare(
+          "SELECT title, source, source_ref, source_date, metadata FROM knowledge_primary WHERE project = ? ORDER BY source_date DESC LIMIT 5"
+        ).all(p.project) as any[];
+        const deepContent = await retrieveDeepContext(db, projItems.slice(0, 5), 3);
+        if (deepContent) {
+          deepSourceMaterial += `\n\n=== FULL SOURCE MATERIAL: ${p.project} ===${deepContent}`;
+        }
+      }
+    } catch (err: any) {
+      console.log(`    Task 18 source retrieval warning: ${err.message?.slice(0, 100)}`);
+    }
+
     // Use DeepSeek Reasoner for this (bulk work, cheap)
     const { getBulkProvider } = await import('./ai/providers.js');
     const provider = await getBulkProvider(getConfig(db, 'openai_api_key') || undefined);
@@ -680,7 +696,7 @@ Return JSON:
               }
             }
           } catch {}
-          return projectContext + gapBlock;
+          return projectContext + (deepSourceMaterial ? '\n\nSOURCE MATERIAL:\n' + deepSourceMaterial : '') + gapBlock;
         })() },
       ],
       { temperature: 0.2, max_tokens: 4000, json: true }
@@ -1077,6 +1093,28 @@ async function task12MeetingPrep(db: Database.Database): Promise<TaskResult> {
   Open commitments: ${commits.map((c: any) => c.text?.slice(0, 60)).join('; ') || 'none'}`;
       }).join('\n\n');
 
+      // SOURCE RETRIEVAL: Get actual content for attendee interactions
+      let attendeeDeepContent = '';
+      try {
+        const allAttendeeItems: any[] = [];
+        for (const name of contacts.slice(0, 3)) {
+          const entity = db.prepare(
+            "SELECT e.id FROM entities e LEFT JOIN entity_aliases ea ON e.id = ea.entity_id WHERE e.canonical_name = ? OR ea.alias_normalized = ? LIMIT 1"
+          ).get(name, name.toLowerCase().replace(/[^a-z\s-]/g, '').trim()) as any;
+          if (entity) {
+            const items = db.prepare(
+              "SELECT k.title, k.source, k.source_ref, k.source_date, k.metadata FROM knowledge_primary k JOIN entity_mentions em ON k.id = em.knowledge_item_id WHERE em.entity_id = ? ORDER BY k.source_date DESC LIMIT 3"
+            ).all(entity.id) as any[];
+            allAttendeeItems.push(...items);
+          }
+        }
+        if (allAttendeeItems.length > 0) {
+          attendeeDeepContent = await retrieveDeepContext(db, allAttendeeItems.slice(0, 3), 2);
+        }
+      } catch (err: any) {
+        console.log(`    Task 12 source retrieval warning: ${err.message?.slice(0, 100)}`);
+      }
+
       const meetingTime = new Date(meeting.source_date);
       const hoursUntil = Math.round((meetingTime.getTime() - now.getTime()) / 3600000);
 
@@ -1086,6 +1124,7 @@ MEETING: ${meeting.title}
 WHEN: ${meetingTime.toLocaleString()} (${hoursUntil} hours from now)
 ATTENDEES:
 ${attendeeContexts}
+${attendeeDeepContent ? '\nSOURCE MATERIAL:\n' + attendeeDeepContent : ''}
 
 Based on the attendee history and relationship context:
 1. What is the likely PURPOSE of this meeting?
