@@ -67,6 +67,11 @@ export function buildClaudeCommand(options: {
 export function buildClaudeEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
+  // Ensure Homebrew paths are available (cron/launchd strip PATH)
+  const homebrew = '/opt/homebrew/bin:/opt/homebrew/sbin';
+  if (!env.PATH?.includes(homebrew)) {
+    env.PATH = `${homebrew}:${env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'}`;
+  }
   return env;
 }
 
