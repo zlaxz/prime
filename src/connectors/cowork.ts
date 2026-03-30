@@ -19,6 +19,8 @@ const COWORK_BASE = join(
   'local-agent-mode-sessions'
 );
 
+const COWORK_LAPTOP_BASE = join(homedir(), 'laptop-sources', 'cowork');
+
 interface CoworkMessage {
   type: string;
   userType?: string;
@@ -42,16 +44,16 @@ interface CoworkSession {
 }
 
 /**
- * Discover all Cowork sessions on disk.
+ * Discover Cowork sessions from a single base path.
  */
-function discoverSessions(): CoworkSession[] {
-  if (!existsSync(COWORK_BASE)) return [];
+function discoverSessionsFromPath(basePath: string): CoworkSession[] {
+  if (!existsSync(basePath)) return [];
 
   const sessions: CoworkSession[] = [];
 
-  // Structure: COWORK_BASE/{device-id}/{org-id}/local_{session-id}/.claude/projects/{session-name}/{uuid}.jsonl
-  for (const deviceDir of safeReaddir(COWORK_BASE)) {
-    const devicePath = join(COWORK_BASE, deviceDir);
+  // Structure: basePath/{device-id}/{org-id}/local_{session-id}/.claude/projects/{session-name}/{uuid}.jsonl
+  for (const deviceDir of safeReaddir(basePath)) {
+    const devicePath = join(basePath, deviceDir);
     if (!statSync(devicePath).isDirectory()) continue;
 
     for (const orgDir of safeReaddir(devicePath)) {
@@ -110,6 +112,31 @@ function discoverSessions(): CoworkSession[] {
         }
       }
     }
+  }
+
+  return sessions;
+}
+
+/**
+ * Discover all Cowork sessions from local + laptop-sources paths, deduped by sessionId.
+ */
+function discoverSessions(): CoworkSession[] {
+  const sessions = discoverSessionsFromPath(COWORK_BASE);
+
+  if (existsSync(COWORK_LAPTOP_BASE)) {
+    console.log(`  Scanning laptop-sources: ${COWORK_LAPTOP_BASE}`);
+    const laptopSessions = discoverSessionsFromPath(COWORK_LAPTOP_BASE);
+    // Dedup: local sessions take priority over laptop-sourced ones
+    const seenIds = new Set(sessions.map(s => s.sessionId));
+    let added = 0;
+    for (const ls of laptopSessions) {
+      if (!seenIds.has(ls.sessionId)) {
+        sessions.push(ls);
+        seenIds.add(ls.sessionId);
+        added++;
+      }
+    }
+    console.log(`  Laptop-sources: ${laptopSessions.length} found, ${added} new after dedup`);
   }
 
   return sessions;
@@ -197,7 +224,7 @@ function extractTaskName(session: CoworkSession): string | null {
  * Connect Cowork — verify sessions exist on disk.
  */
 export async function connectCowork(db: Database.Database): Promise<boolean> {
-  if (!existsSync(COWORK_BASE)) {
+  if (!existsSync(COWORK_BASE) && !existsSync(COWORK_LAPTOP_BASE)) {
     console.log('  ✗ No Cowork sessions found. Is Claude Desktop installed?');
     if (platform() !== 'darwin') {
       console.log('    Note: Cowork connector currently supports macOS only.');
@@ -225,7 +252,7 @@ export async function connectCowork(db: Database.Database): Promise<boolean> {
   ).run(JSON.stringify({ sessions: sessions.length, orgs: byOrg.size }));
 
   console.log(`  ✓ Found ${sessions.length} Cowork sessions`);
-  for (const [orgId, count] of byOrg) {
+  for (const [orgId, count] of Array.from(byOrg.entries())) {
     console.log(`    Org ${orgId.slice(0, 8)}...: ${count} sessions`);
   }
 

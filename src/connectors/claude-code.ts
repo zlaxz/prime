@@ -16,6 +16,7 @@ import { extractIntelligence } from '../ai/extract.js';
 // ============================================================
 
 const CLAUDE_CODE_BASE = join(homedir(), '.claude', 'projects');
+const CLAUDE_CODE_LAPTOP_BASE = join(homedir(), 'laptop-sources', 'claude-code');
 
 interface CodeMessage {
   type: string;
@@ -41,14 +42,14 @@ interface CodeSession {
 // Discovery
 // ============================================================
 
-function discoverSessions(days: number): CodeSession[] {
-  if (!existsSync(CLAUDE_CODE_BASE)) return [];
+function discoverSessionsFromPath(basePath: string, days: number): CodeSession[] {
+  if (!existsSync(basePath)) return [];
 
   const sessions: CodeSession[] = [];
   const cutoff = Date.now() - days * 86400000;
 
-  for (const projDir of safeReaddir(CLAUDE_CODE_BASE)) {
-    const projPath = join(CLAUDE_CODE_BASE, projDir);
+  for (const projDir of safeReaddir(basePath)) {
+    const projPath = join(basePath, projDir);
     if (!statSync(projPath).isDirectory()) continue;
 
     // Skip subagents and tasks directories
@@ -104,16 +105,38 @@ function discoverSessions(days: number): CodeSession[] {
   return sessions;
 }
 
+function discoverSessions(days: number): CodeSession[] {
+  const sessions = discoverSessionsFromPath(CLAUDE_CODE_BASE, days);
+
+  if (existsSync(CLAUDE_CODE_LAPTOP_BASE)) {
+    console.log(`  Scanning laptop-sources: ${CLAUDE_CODE_LAPTOP_BASE}`);
+    const laptopSessions = discoverSessionsFromPath(CLAUDE_CODE_LAPTOP_BASE, days);
+    // Dedup: local sessions take priority over laptop-sourced ones
+    const seenIds = new Set(sessions.map(s => s.sessionId));
+    let added = 0;
+    for (const ls of laptopSessions) {
+      if (!seenIds.has(ls.sessionId)) {
+        sessions.push(ls);
+        seenIds.add(ls.sessionId);
+        added++;
+      }
+    }
+    console.log(`  Laptop-sources: ${laptopSessions.length} found, ${added} new after dedup`);
+  }
+
+  return sessions;
+}
+
 /**
- * Discover memory files across all projects.
+ * Discover memory files from a single base path.
  */
-function discoverMemoryFiles(): { path: string; projectSlug: string; name: string }[] {
-  if (!existsSync(CLAUDE_CODE_BASE)) return [];
+function discoverMemoryFilesFromPath(basePath: string): { path: string; projectSlug: string; name: string }[] {
+  if (!existsSync(basePath)) return [];
 
   const files: { path: string; projectSlug: string; name: string }[] = [];
 
-  for (const projDir of safeReaddir(CLAUDE_CODE_BASE)) {
-    const memoryDir = join(CLAUDE_CODE_BASE, projDir, 'memory');
+  for (const projDir of safeReaddir(basePath)) {
+    const memoryDir = join(basePath, projDir, 'memory');
     if (!existsSync(memoryDir) || !statSync(memoryDir).isDirectory()) continue;
 
     for (const file of safeReaddir(memoryDir)) {
@@ -124,6 +147,31 @@ function discoverMemoryFiles(): { path: string; projectSlug: string; name: strin
         name: file.replace('.md', ''),
       });
     }
+  }
+
+  return files;
+}
+
+/**
+ * Discover memory files from local + laptop-sources paths, deduped by projectSlug:name.
+ */
+function discoverMemoryFiles(): { path: string; projectSlug: string; name: string }[] {
+  const files = discoverMemoryFilesFromPath(CLAUDE_CODE_BASE);
+
+  if (existsSync(CLAUDE_CODE_LAPTOP_BASE)) {
+    console.log(`  Scanning laptop-sources memory: ${CLAUDE_CODE_LAPTOP_BASE}`);
+    const laptopFiles = discoverMemoryFilesFromPath(CLAUDE_CODE_LAPTOP_BASE);
+    const seenKeys = new Set(files.map(f => `${f.projectSlug}:${f.name}`));
+    let added = 0;
+    for (const lf of laptopFiles) {
+      const key = `${lf.projectSlug}:${lf.name}`;
+      if (!seenKeys.has(key)) {
+        files.push(lf);
+        seenKeys.add(key);
+        added++;
+      }
+    }
+    console.log(`  Laptop-sources memory: ${laptopFiles.length} found, ${added} new after dedup`);
   }
 
   return files;
@@ -188,7 +236,7 @@ function projectSlugToName(slug: string): string {
 // ============================================================
 
 export async function connectClaudeCode(db: Database.Database): Promise<boolean> {
-  if (!existsSync(CLAUDE_CODE_BASE)) {
+  if (!existsSync(CLAUDE_CODE_BASE) && !existsSync(CLAUDE_CODE_LAPTOP_BASE)) {
     console.log('  ✗ No Claude Code projects found.');
     return false;
   }
