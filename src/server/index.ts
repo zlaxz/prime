@@ -21,8 +21,8 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
   // CORS for any client
   app.use((_req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, mcp-session-id');
     if (_req.method === 'OPTIONS') return res.sendStatus(200);
     next();
   });
@@ -1435,6 +1435,14 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       res.status(500).json({ error: err.message });
     }
   });
+
+  // ── Mount MCP over HTTP for claude.ai remote access ──
+  try {
+    const { mountMcpHttp } = await import('./mcp-http.js');
+    mountMcpHttp(app);
+  } catch (err: any) {
+    console.log(`  MCP HTTP mount failed: ${err.message?.slice(0, 100)}`);
+  }
 
   app.listen(port, '0.0.0.0', () => {
     const stats = getStats(db);

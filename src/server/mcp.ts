@@ -1172,12 +1172,16 @@ srv.tool(
 } // end registerPrimeTools
 
 // ── Stdio mode (Claude Desktop local) ────────────────────
-const server = new McpServer(MCP_SERVER_CONFIG);
-registerPrimeTools(server);
+// Only run stdio when this file is executed directly, not when imported
+const isMainModule = process.argv[1]?.includes('mcp.ts') || process.argv[1]?.includes('mcp.js');
+if (isMainModule) {
+  const server = new McpServer(MCP_SERVER_CONFIG);
+  registerPrimeTools(server);
 
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  async function main() {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+  }
+
+  main().catch(console.error);
 }
-
-main().catch(console.error);
