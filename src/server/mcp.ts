@@ -1012,6 +1012,36 @@ srv.tool(
 // ── Sampling-powered investigation (uses Claude Desktop's own LLM) ────
 
 srv.tool(
+  "prime_retrieve",
+  "Retrieve the FULL original content from a source — go to the shelf and read the actual book, not just the index card. Use when a search result's summary isn't detailed enough. Returns the complete email thread, Claude conversation, meeting transcript, or document.",
+  {
+    source_ref: z.string().describe("The source_ref from a search result (e.g., 'claude:uuid', 'thread:id', 'otter:id')"),
+  },
+  async ({ source_ref }) => {
+    const db = getDb();
+    try {
+      const { retrieveSourceContent } = await import('../source-retrieval.js');
+      const item = db.prepare('SELECT * FROM knowledge WHERE source_ref = ?').get(source_ref) as any;
+      if (!item) {
+        return { content: [{ type: "text" as const, text: `No item found with source_ref: ${source_ref}` }] };
+      }
+      const result = await retrieveSourceContent(db, item);
+      if (result?.content) {
+        return { content: [{ type: "text" as const, text: `[${result.content_type || 'source'}] Full content for "${item.title}" (${result.content.length} chars):\n\n${result.content}` }] };
+      }
+      // Fallback: check metadata.conversation_text
+      const meta = typeof item.metadata === 'string' ? JSON.parse(item.metadata) : item.metadata;
+      if (meta?.conversation_text) {
+        return { content: [{ type: "text" as const, text: `[conversation] Full text for "${item.title}" (${meta.conversation_text.length} chars):\n\n${meta.conversation_text}` }] };
+      }
+      return { content: [{ type: "text" as const, text: `Could not retrieve full content for ${source_ref}. Summary: ${item.summary}` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error retrieving: ${err.message}` }] };
+    }
+  }
+);
+
+srv.tool(
   "prime_deep_investigate",
   "Deep investigation that uses Claude's own reasoning to analyze Prime's data. Retrieves full source material (emails, transcripts, documents), builds a complete narrative, then asks Claude to reason about it. Use this when you need deep analysis of a relationship, project, or thread — not just data retrieval.",
   {
