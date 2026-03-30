@@ -54,7 +54,7 @@ async function getServer(): Promise<string | null> {
 /**
  * HTTP GET with timeout. Returns parsed JSON or null.
  */
-function httpGet(url: string, timeout = 10000): Promise<any> {
+function httpGet(url: string, timeout = 60000): Promise<any> {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http;
     const req = mod.get(url, { timeout }, (res) => {
@@ -120,7 +120,7 @@ async function proxySearch(query: string, limit: number = 10, strategy?: string)
   if (!srv) return 'Prime Recall server unreachable. Mac Mini may be offline.';
 
   try {
-    const result = await httpPost(`${srv}/api/search`, { query, limit, strategy });
+    const result = await httpPost(`${srv}/api/search`, { query, limit, strategy }, 120000);
     if (result.results) {
       return result.results.map((r: any, i: number) => {
         const sim = r.similarity ? ` (${(r.similarity * 100).toFixed(0)}%)` : '';
