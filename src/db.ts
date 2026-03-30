@@ -443,6 +443,25 @@ function initSchema(db: Database.Database) {
     db.exec(`ALTER TABLE staged_actions ADD COLUMN auto_execute_eligible INTEGER DEFAULT 0`);
   }
 
+  // Add temporal metadata columns to entity_edges (Graphiti pattern: validity windows)
+  const edgeCols = db.pragma('table_info(entity_edges)').map((c: any) => c.name);
+  if (!edgeCols.includes('valid_at')) {
+    db.exec(`ALTER TABLE entity_edges ADD COLUMN valid_at TEXT DEFAULT (datetime('now'))`);
+  }
+  if (!edgeCols.includes('invalid_at')) {
+    db.exec(`ALTER TABLE entity_edges ADD COLUMN invalid_at TEXT`);
+  }
+  if (!edgeCols.includes('source_session')) {
+    db.exec(`ALTER TABLE entity_edges ADD COLUMN source_session TEXT`);
+  }
+  // Backfill: set valid_at = created_at for existing edges that have NULL valid_at
+  db.exec(`UPDATE entity_edges SET valid_at = created_at WHERE valid_at IS NULL`);
+  // Note: confidence column already exists (DEFAULT 0.0). The temporal pattern
+  // bumps it by 0.1 per re-observation (capped at 1.0) and sets it to 1.0 for user-confirmed edges.
+
+  // Index for filtering active edges quickly
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_edges_validity ON entity_edges(invalid_at)`);
+
   db.exec(`
 
     -- ============================================================

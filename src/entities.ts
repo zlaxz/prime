@@ -101,6 +101,10 @@ export function dismissEntity(db: Database.Database, nameOrEmail: string, reason
   db.prepare('UPDATE entities SET user_dismissed = 1, updated_at = datetime(\'now\') WHERE id = ?')
     .run(entity.id);
 
+  // Invalidate all edges involving this entity (temporal: preserve history, don't delete)
+  db.prepare('UPDATE entity_edges SET invalid_at = datetime(\'now\'), updated_at = datetime(\'now\') WHERE (source_entity_id = ? OR target_entity_id = ?) AND invalid_at IS NULL')
+    .run(entity.id, entity.id);
+
   db.prepare('INSERT OR IGNORE INTO dismissals (id, entity_id, reason, dismissed_at) VALUES (?, ?, ?, datetime(\'now\'))')
     .run(uuid(), entity.id, reason || 'user dismissed');
   return true;
@@ -132,6 +136,44 @@ export function mergeEntities(db: Database.Database, fromName: string, toName: s
     } catch {}
   }
 
+  // Temporal edge migration: invalidate source edges, create new ones pointing to target
+  const sourceEdges = db.prepare(
+    'SELECT * FROM entity_edges WHERE (source_entity_id = ? OR target_entity_id = ?) AND invalid_at IS NULL'
+  ).all(fromEntity.id, fromEntity.id) as any[];
+
+  for (const edge of sourceEdges) {
+    // Invalidate the old edge
+    db.prepare('UPDATE entity_edges SET invalid_at = datetime(\'now\'), updated_at = datetime(\'now\') WHERE id = ?')
+      .run(edge.id);
+
+    // Determine the new source/target (replace fromEntity with toEntity)
+    const newSource = edge.source_entity_id === fromEntity.id ? toEntity.id : edge.source_entity_id;
+    const newTarget = edge.target_entity_id === fromEntity.id ? toEntity.id : edge.target_entity_id;
+
+    // Don't create self-referential edges
+    if (newSource === newTarget) continue;
+
+    // Canonical order for co_occurs edges
+    const [a, b] = [newSource, newTarget].sort();
+
+    // Check if target already has this edge
+    const existingTarget = db.prepare(
+      'SELECT id, co_occurrence_count, confidence FROM entity_edges WHERE source_entity_id = ? AND target_entity_id = ? AND edge_type = ? AND invalid_at IS NULL'
+    ).get(a, b, edge.edge_type) as any;
+
+    if (existingTarget) {
+      // Merge counts and bump confidence
+      const mergedCount = existingTarget.co_occurrence_count + edge.co_occurrence_count;
+      const newConf = Math.min(1.0, (existingTarget.confidence || 0.5) + 0.1);
+      db.prepare('UPDATE entity_edges SET co_occurrence_count = ?, confidence = ?, updated_at = datetime(\'now\') WHERE id = ?')
+        .run(mergedCount, newConf, existingTarget.id);
+    } else {
+      db.prepare(
+        'INSERT INTO entity_edges (id, source_entity_id, target_entity_id, edge_type, co_occurrence_count, confidence, valid_at, source_session, created_at) VALUES (?, ?, ?, ?, ?, ?, datetime(\'now\'), ?, datetime(\'now\'))'
+      ).run(uuid(), a, b, edge.edge_type, edge.co_occurrence_count, edge.confidence || 0.5, `merge-${fromName}-into-${toName}`);
+    }
+  }
+
   // Move aliases
   db.prepare('UPDATE entity_aliases SET entity_id = ? WHERE entity_id = ?').run(toEntity.id, fromEntity.id);
 
@@ -147,7 +189,7 @@ export function mergeEntities(db: Database.Database, fromName: string, toName: s
       .run(fromEntity.email, fromEntity.domain, toEntity.id);
   }
 
-  // Delete source entity
+  // Delete source entity (CASCADE deletes old invalidated edges — that's fine, they're historical)
   db.prepare('DELETE FROM entities WHERE id = ?').run(fromEntity.id);
 
   return true;
@@ -328,7 +370,7 @@ export function buildEntityGraph(
   }
   console.log(`\r  Processed: ${items.length}/${items.length}`);
 
-  // Build co-occurrence edges
+  // Build co-occurrence edges (temporal pattern: validity windows, confidence accumulation)
   console.log('  Building co-occurrence edges...');
   for (const [itemId, entityIds] of itemEntities) {
     const ids = Array.from(entityIds);
@@ -336,22 +378,25 @@ export function buildEntityGraph(
       for (let j = i + 1; j < ids.length; j++) {
         const [a, b] = [ids[i], ids[j]].sort(); // canonical order
         try {
+          // Only look at currently-valid edges (invalid_at IS NULL)
           const existing = db.prepare(
-            'SELECT id, co_occurrence_count FROM entity_edges WHERE source_entity_id = ? AND target_entity_id = ? AND edge_type = ?'
+            'SELECT id, co_occurrence_count, confidence FROM entity_edges WHERE source_entity_id = ? AND target_entity_id = ? AND edge_type = ? AND invalid_at IS NULL'
           ).get(a, b, 'co_occurs') as any;
 
           if (existing) {
-            db.prepare('UPDATE entity_edges SET co_occurrence_count = co_occurrence_count + 1, updated_at = datetime(\'now\') WHERE id = ?')
-              .run(existing.id);
+            // Re-observation: bump count and confidence (cap at 1.0)
+            const newConfidence = Math.min(1.0, (existing.confidence || 0.5) + 0.1);
+            db.prepare('UPDATE entity_edges SET co_occurrence_count = co_occurrence_count + 1, confidence = ?, updated_at = datetime(\'now\') WHERE id = ?')
+              .run(newConfidence, existing.id);
           } else {
             const edgeId = uuid();
-            db.prepare('INSERT INTO entity_edges (id, source_entity_id, target_entity_id, edge_type, co_occurrence_count, confidence, created_at) VALUES (?, ?, ?, ?, 1, 0.5, datetime(\'now\'))')
-              .run(edgeId, a, b, 'co_occurs');
+            db.prepare('INSERT INTO entity_edges (id, source_entity_id, target_entity_id, edge_type, co_occurrence_count, confidence, valid_at, source_session, created_at) VALUES (?, ?, ?, ?, 1, 0.5, datetime(\'now\'), ?, datetime(\'now\'))')
+              .run(edgeId, a, b, 'co_occurs', `entity-build-${new Date().toISOString().slice(0, 10)}`);
             stats.edges++;
           }
 
-          // Add evidence
-          db.prepare('INSERT OR IGNORE INTO edge_evidence (id, edge_id, knowledge_item_id, evidence_date) VALUES (?, (SELECT id FROM entity_edges WHERE source_entity_id = ? AND target_entity_id = ? AND edge_type = ?), ?, ?)')
+          // Add evidence (link to current valid edge)
+          db.prepare('INSERT OR IGNORE INTO edge_evidence (id, edge_id, knowledge_item_id, evidence_date) VALUES (?, (SELECT id FROM entity_edges WHERE source_entity_id = ? AND target_entity_id = ? AND edge_type = ? AND invalid_at IS NULL), ?, ?)')
             .run(uuid(), a, b, 'co_occurs', itemId, null);
         } catch {}
       }
@@ -420,7 +465,7 @@ export function getEntityProfile(db: Database.Database, nameOrEmail: string): an
     ORDER BY k.source_date DESC LIMIT 5
   `).all(entity.id) as any[];
 
-  // Get connected entities (co-occurrence)
+  // Get connected entities (co-occurrence) — only current edges
   const connected = db.prepare(`
     SELECT e.canonical_name, e.relationship_type, ee.co_occurrence_count
     FROM entity_edges ee
@@ -429,6 +474,7 @@ export function getEntityProfile(db: Database.Database, nameOrEmail: string): an
            ELSE ee.source_entity_id END = e.id
     )
     WHERE (ee.source_entity_id = ? OR ee.target_entity_id = ?)
+      AND ee.invalid_at IS NULL
       AND e.user_dismissed = 0
     ORDER BY ee.co_occurrence_count DESC LIMIT 10
   `).all(entity.id, entity.id, entity.id) as any[];

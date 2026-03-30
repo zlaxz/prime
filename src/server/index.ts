@@ -392,6 +392,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
           reasoning: a.reasoning,
           project: a.project,
           urgency: 'medium',
+          created_at: a.created_at,
           to: payload.to || null,
           subject: payload.subject || null,
           body: payload.body || null,
@@ -404,7 +405,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       // ---- TIER 3: Entity alerts (genuine concerns only) ----
       try {
         const entityAlerts = db.prepare(`
-          SELECT e.canonical_name, e.user_label, ep.alert_verdict, ep.communication_nature
+          SELECT e.canonical_name, e.user_label, ep.alert_verdict, ep.communication_nature, ep.last_verified_at
           FROM entity_profiles ep
           JOIN entities e ON ep.entity_id = e.id
           WHERE ep.alert_verdict = 'genuine_concern'
@@ -421,18 +422,34 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
             summary: `${ea.canonical_name} — ${ea.communication_nature || 'needs attention'}`,
             reasoning: `Relationship type: ${ea.user_label || 'unknown'}. Alert: ${ea.alert_verdict}`,
             urgency: 'low',
+            created_at: ea.last_verified_at,
           });
         }
       } catch {}
 
-      // Sort: Tier 1 first, then by urgency within tier
-      // Sort by URGENCY first (what matters most), then tier
+      // ---- RECENCY WEIGHTING ----
+      // Same formula as search.ts: score * 1/(1 + days_old * 0.05)
+      // 7-day-old item scores 74% of a fresh one, 30-day-old scores 40%
+      const RECENCY_BIAS = 0.05;
+      for (const p of priorities) {
+        const dateStr = p.due_date || p.created_at || null;
+        if (dateStr) {
+          const daysOld = Math.max(0, (Date.now() - new Date(dateStr).getTime()) / 86400000);
+          p._recency_weight = 1 / (1 + daysOld * RECENCY_BIAS);
+        } else {
+          p._recency_weight = 1.0;
+        }
+      }
+
+      // Sort by URGENCY first (what matters most), then recency within same urgency+tier
       const urgencyOrder: Record<string, number> = { critical: 1, high: 2, medium: 3, low: 4 };
       priorities.sort((a, b) => {
         const urgA = urgencyOrder[a.urgency] ?? 5;
         const urgB = urgencyOrder[b.urgency] ?? 5;
         if (urgA !== urgB) return urgA - urgB;
-        return a.tier - b.tier;
+        if (a.tier !== b.tier) return a.tier - b.tier;
+        // Within same urgency+tier, fresher items rank higher
+        return (b._recency_weight ?? 1) - (a._recency_weight ?? 1);
       });
 
       // ---- THE ONE THING ----

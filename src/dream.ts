@@ -102,7 +102,100 @@ async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessio
   });
 }
 
+// ── Persistent Session Context Management ─────────────────────
+// Tracks turn count per session. At 50+ turns, triggers an anchored
+// summarization pass that compresses history while preserving decisions
+// verbatim. Prevents the 1M context window from filling up.
+
+const SESSION_SUMMARIZE_THRESHOLD = 50;
+
+function getSessionTurnCount(sessionId: string): number {
+  const db = getDb();
+  const key = `session_turns_${sessionId}`;
+  const row = db.prepare("SELECT value FROM graph_state WHERE key = ?").get(key) as any;
+  return row ? parseInt(row.value, 10) || 0 : 0;
+}
+
+function incrementSessionTurnCount(sessionId: string): number {
+  const db = getDb();
+  const key = `session_turns_${sessionId}`;
+  const current = getSessionTurnCount(sessionId);
+  const next = current + 1;
+  db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(key, String(next));
+  return next;
+}
+
+function resetSessionTurnCount(sessionId: string): void {
+  const db = getDb();
+  const key = `session_turns_${sessionId}`;
+  db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(key, '0');
+}
+
+function getSessionSummary(sessionId: string): string | null {
+  const db = getDb();
+  const key = `session_summary_${sessionId}`;
+  const row = db.prepare("SELECT value FROM graph_state WHERE key = ?").get(key) as any;
+  return row?.value || null;
+}
+
+function storeSessionSummary(sessionId: string, summary: string): void {
+  const db = getDb();
+  const key = `session_summary_${sessionId}`;
+  db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES (?, ?, datetime('now'))").run(key, summary);
+}
+
+async function summarizeSession(sessionId: string): Promise<string> {
+  // Ask the session itself to produce an anchored summary
+  const summarizationPrompt = `You have been running for many turns. Produce a compressed summary of this session so far using this EXACT format:
+
+## SESSION SUMMARY (anchored)
+
+### Intent
+What is the overall goal of this session? 1-2 sentences.
+
+### Changes Made
+Bullet list of concrete changes/outputs produced so far.
+
+### Decisions Taken (verbatim)
+Copy the EXACT text of every decision, conclusion, or judgment made. Do NOT paraphrase — these must be word-for-word from the session. Include reasoning if it was stated.
+
+### Next Steps
+What remains to be done? Bullet list.
+
+### Key Context
+Any facts, numbers, or state that future prompts will need.
+
+Be thorough on Decisions Taken — that section preserves institutional memory. Compress everything else aggressively.`;
+
+  const summary = await callClaudeOnce(summarizationPrompt, 120000, sessionId);
+  storeSessionSummary(sessionId, summary);
+  resetSessionTurnCount(sessionId);
+  console.log(`    Session ${sessionId.slice(0, 8)}... summarized at turn threshold (${summary.length} chars)`);
+  return summary;
+}
+
 async function callClaude(prompt: string, timeoutMs: number = 300000, sessionId?: string): Promise<string> {
+  // For persistent sessions: track turns and inject summary when context gets large
+  if (sessionId) {
+    const turnCount = incrementSessionTurnCount(sessionId);
+
+    if (turnCount >= SESSION_SUMMARIZE_THRESHOLD) {
+      // Trigger summarization pass before the real prompt
+      await summarizeSession(sessionId);
+      // Now inject the summary as context prefix for the next prompt
+      const summary = getSessionSummary(sessionId);
+      if (summary) {
+        prompt = `CONTEXT FROM PREVIOUS SESSION STATE (anchored summary — treat as authoritative):\n${summary}\n\n---\n\n${prompt}`;
+      }
+    } else {
+      // Below threshold but a summary exists from a previous compaction — inject it
+      const existingSummary = getSessionSummary(sessionId);
+      if (existingSummary) {
+        prompt = `CONTEXT FROM PREVIOUS SESSION STATE (anchored summary — treat as authoritative):\n${existingSummary}\n\n---\n\n${prompt}`;
+      }
+    }
+  }
+
   try {
     return await callClaudeOnce(prompt, timeoutMs, sessionId);
   } catch (err: any) {
@@ -1225,6 +1318,7 @@ async function task06EntityUnderstanding(db: Database.Database): Promise<TaskRes
           FROM entity_edges ee
           JOIN entities e2 ON (CASE WHEN ee.source_entity_id = ? THEN ee.target_entity_id ELSE ee.source_entity_id END = e2.id)
           WHERE (ee.source_entity_id = ? OR ee.target_entity_id = ?)
+            AND ee.invalid_at IS NULL
             AND e2.user_dismissed = 0 AND e2.canonical_name NOT LIKE '%Zach%Stock%'
           ORDER BY ee.co_occurrence_count DESC LIMIT 5
         `).all(entity.id, entity.id, entity.id) as any[];

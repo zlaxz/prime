@@ -81,7 +81,8 @@ test('zero edge evidence from derived sources', () => {
 test('no phantom edges (zero evidence)', () => {
   const r = db.prepare(`
     SELECT COUNT(*) as cnt FROM entity_edges
-    WHERE id NOT IN (SELECT DISTINCT edge_id FROM edge_evidence)
+    WHERE invalid_at IS NULL
+      AND id NOT IN (SELECT DISTINCT edge_id FROM edge_evidence)
   `).get() as any;
   return r.cnt === 0;
 });

@@ -376,6 +376,7 @@ function graphTraversalSearch(
        JOIN entities e2 ON e2.id = ee.target_entity_id
        WHERE (ee.source_entity_id IN (${ph}) OR ee.target_entity_id IN (${ph}))
          AND ee.user_denied = 0
+         AND ee.invalid_at IS NULL
        ORDER BY ee.co_occurrence_count DESC
        LIMIT 30`
     ).all(...seedEntityIds, ...seedEntityIds) as {
@@ -440,6 +441,7 @@ function graphTraversalSearch(
        JOIN entities e2 ON e2.id = ee.target_entity_id
        WHERE (ee.source_entity_id IN (${ph}) OR ee.target_entity_id IN (${ph}))
          AND ee.user_denied = 0
+         AND ee.invalid_at IS NULL
        ORDER BY ee.co_occurrence_count DESC
        LIMIT 20`
     ).all(...hop1Ids, ...hop1Ids) as {

@@ -346,7 +346,7 @@ function detectMentionedTopics(db: Database.Database, query: string, response: s
   return topics;
 }
 
-/** For a given entity, find the top related entities via entity_edges. */
+/** For a given entity, find the top related entities via entity_edges (current edges only). */
 function getRelatedEntities(db: Database.Database, entityId: string, limit: number = 3): { id: string; name: string }[] {
   return db.prepare(`
     SELECT e.id, e.canonical_name as name
@@ -356,6 +356,7 @@ function getRelatedEntities(db: Database.Database, entityId: string, limit: numb
            ELSE ee.source_entity_id END = e.id
     )
     WHERE (ee.source_entity_id = ? OR ee.target_entity_id = ?)
+      AND ee.invalid_at IS NULL
       AND e.user_dismissed = 0
     ORDER BY ee.co_occurrence_count DESC LIMIT ?
   `).all(entityId, entityId, entityId, limit) as any[];
