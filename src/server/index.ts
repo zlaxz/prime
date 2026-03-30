@@ -888,6 +888,62 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
 </html>`);
   });
 
+  // ── Claude.ai live conversation access (all orgs) ──────
+
+  app.get('/api/claude/conversations', async (req, res) => {
+    try {
+      const sessionKey = getConfig(db, 'claude_session_key');
+      if (!sessionKey) return res.status(400).json({ error: 'No claude session key' });
+      const { claudeApiGet } = await import('../connectors/claude.js');
+      const orgs = getConfig(db, 'claude_organizations') || [];
+      const q = (req.query.q as string || '').toLowerCase();
+      const allConvos: any[] = [];
+
+      for (const org of (orgs as any[])) {
+        try {
+          const convos = await (claudeApiGet as any)(`/organizations/${org.uuid}/chat_conversations`, sessionKey, db) as any[];
+          for (const c of (convos || [])) {
+            allConvos.push({ uuid: c.uuid, name: c.name, summary: c.summary, created_at: c.created_at, updated_at: c.updated_at, project: c.project?.name, org: org.name });
+          }
+        } catch {}
+      }
+
+      const filtered = q
+        ? allConvos.filter(c => c.name?.toLowerCase().includes(q) || c.summary?.toLowerCase().includes(q))
+        : allConvos.slice(0, 50);
+      res.json({ conversations: filtered, total: allConvos.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message?.slice(0, 200) });
+    }
+  });
+
+  app.get('/api/claude/conversations/:uuid', async (req, res) => {
+    try {
+      const sessionKey = getConfig(db, 'claude_session_key');
+      if (!sessionKey) return res.status(400).json({ error: 'No claude session key' });
+      const { claudeApiGet } = await import('../connectors/claude.js');
+      const orgs = getConfig(db, 'claude_organizations') || [];
+
+      let convo: any = null;
+      for (const org of (orgs as any[])) {
+        try {
+          convo = await (claudeApiGet as any)(`/organizations/${org.uuid}/chat_conversations/${req.params.uuid}`, sessionKey, db);
+          if (convo?.chat_messages) break;
+        } catch {}
+      }
+      if (!convo?.chat_messages) return res.status(404).json({ error: 'Conversation not found' });
+
+      const messages = convo.chat_messages.map((m: any) => ({
+        sender: m.sender,
+        text: typeof m.text === 'string' ? m.text : (Array.isArray(m.text) ? m.text.map((t: any) => t.text || t.content || '').join('\n') : String(m.text || '')),
+        created_at: m.created_at,
+      }));
+      res.json({ uuid: convo.uuid, name: convo.name, message_count: messages.length, messages });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message?.slice(0, 200) });
+    }
+  });
+
   // ── MCP over SSE (for remote Claude Desktop) ───────────
   // GET /mcp establishes SSE stream, POST /mcp/messages sends JSON-RPC
   const mcpTransports = new Map<string, SSEServerTransport>();

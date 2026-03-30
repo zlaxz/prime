@@ -458,6 +458,58 @@ server.tool(
   }
 );
 
+server.tool(
+  "prime_claude_conversations",
+  "Search and list Claude.ai conversations across ALL organizations. Use this to find prior conversations about a topic, person, or project. Returns conversation titles, summaries, and UUIDs you can use with prime_claude_read.",
+  {
+    query: z.string().optional().describe("Search term to filter conversations by title/summary"),
+  },
+  async ({ query }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const url = query ? `${srv}/api/claude/conversations?q=${encodeURIComponent(query)}` : `${srv}/api/claude/conversations`;
+      const result = await httpGet(url);
+      const convos = result.conversations || result || [];
+      if (convos.length === 0) return { content: [{ type: "text" as const, text: query ? `No conversations matching "${query}".` : 'No conversations found.' }] };
+      const text = convos.slice(0, 20).map((c: any, i: number) => {
+        let entry = `[${i + 1}] ${c.name || 'Untitled'}`;
+        if (c.org) entry += ` (${c.org})`;
+        if (c.project) entry += ` [${c.project}]`;
+        if (c.summary) entry += `\n   ${c.summary.slice(0, 150)}`;
+        entry += `\n   UUID: ${c.uuid}`;
+        return entry;
+      }).join('\n\n');
+      return { content: [{ type: "text" as const, text: `${result.total || convos.length} conversations${query ? ` matching "${query}"` : ''}:\n\n${text}` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_claude_read",
+  "Read the FULL content of a Claude.ai conversation. Use after prime_claude_conversations to get the UUID. Returns all messages in the conversation. This gives you access to the actual conversation content from Claude Chat.",
+  {
+    uuid: z.string().describe("The conversation UUID from prime_claude_conversations"),
+  },
+  async ({ uuid }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpGet(`${srv}/api/claude/conversations/${uuid}`);
+      if (!result.messages?.length) return { content: [{ type: "text" as const, text: 'Conversation not found or empty.' }] };
+      const text = `Conversation: "${result.name}" (${result.message_count} messages)\n\n` +
+        result.messages.map((m: any) =>
+          `[${m.sender}] ${m.text?.slice(0, 2000)}`
+        ).join('\n\n---\n\n');
+      return { content: [{ type: "text" as const, text: text.slice(0, 50000) }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
 // ============================================================
 // Start
 // ============================================================
