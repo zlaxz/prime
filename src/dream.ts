@@ -176,23 +176,28 @@ Be thorough on Decisions Taken — that section preserves institutional memory. 
 
 async function callClaude(prompt: string, timeoutMs: number = 300000, sessionId?: string): Promise<string> {
   // For persistent sessions: track turns and inject summary when context gets large
+  // Wrapped in try/catch so session management failures don't skip the retry logic below
   if (sessionId) {
-    const turnCount = incrementSessionTurnCount(sessionId);
+    try {
+      const turnCount = incrementSessionTurnCount(sessionId);
 
-    if (turnCount >= SESSION_SUMMARIZE_THRESHOLD) {
-      // Trigger summarization pass before the real prompt
-      await summarizeSession(sessionId);
-      // Now inject the summary as context prefix for the next prompt
-      const summary = getSessionSummary(sessionId);
-      if (summary) {
-        prompt = `CONTEXT FROM PREVIOUS SESSION STATE (anchored summary — treat as authoritative):\n${summary}\n\n---\n\n${prompt}`;
+      if (turnCount >= SESSION_SUMMARIZE_THRESHOLD) {
+        // Trigger summarization pass before the real prompt
+        await summarizeSession(sessionId);
+        // Now inject the summary as context prefix for the next prompt
+        const summary = getSessionSummary(sessionId);
+        if (summary) {
+          prompt = `CONTEXT FROM PREVIOUS SESSION STATE (anchored summary — treat as authoritative):\n${summary}\n\n---\n\n${prompt}`;
+        }
+      } else {
+        // Below threshold but a summary exists from a previous compaction — inject it
+        const existingSummary = getSessionSummary(sessionId);
+        if (existingSummary) {
+          prompt = `CONTEXT FROM PREVIOUS SESSION STATE (anchored summary — treat as authoritative):\n${existingSummary}\n\n---\n\n${prompt}`;
+        }
       }
-    } else {
-      // Below threshold but a summary exists from a previous compaction — inject it
-      const existingSummary = getSessionSummary(sessionId);
-      if (existingSummary) {
-        prompt = `CONTEXT FROM PREVIOUS SESSION STATE (anchored summary — treat as authoritative):\n${existingSummary}\n\n---\n\n${prompt}`;
-      }
+    } catch (sessionErr: any) {
+      console.log(`    Session management error (continuing without summary): ${sessionErr.message?.slice(0, 100)}`);
     }
   }
 
@@ -1973,7 +1978,10 @@ async function task20DeepSessionTrigger(db: Database.Database): Promise<TaskResu
   const start = Date.now();
   try {
     // Gather signals for strategic triage
-    const activeProjects = db.prepare(`SELECT project, status, next_action, confidence FROM entity_profiles WHERE status NOT IN ('dormant', 'completed') AND project IS NOT NULL ORDER BY confidence ASC LIMIT 10`).all() as any[];
+    const projectProfilesRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'project_profiles'").get() as any)?.value;
+    const activeProjects = projectProfilesRaw
+      ? (JSON.parse(projectProfilesRaw) as any[]).filter((p: any) => p.status && !['dormant', 'completed'].includes(p.status)).slice(0, 10)
+      : [];
     const overdueCommitments = db.prepare(`SELECT text, owner, due_date, project FROM commitments WHERE state = 'overdue' LIMIT 10`).all() as any[];
     const upcomingCommitments = db.prepare(`SELECT text, owner, due_date, project FROM commitments WHERE state = 'active' AND due_date IS NOT NULL ORDER BY due_date ASC LIMIT 10`).all() as any[];
     const recentSessions = db.prepare(`SELECT title, project, created_at FROM deep_sessions WHERE created_at > datetime('now', '-7 days') ORDER BY created_at DESC`).all() as any[];
@@ -1981,7 +1989,7 @@ async function task20DeepSessionTrigger(db: Database.Database): Promise<TaskResu
 
     const context = [
       '=== ACTIVE PROJECTS ===',
-      ...activeProjects.map((p: any) => `${p.project} — status: ${p.status}, confidence: ${p.confidence}, next: ${p.next_action || 'none'}`),
+      ...activeProjects.map((p: any) => `${p.project} — status: ${p.status}, next: ${p.next_action || 'none'}`),
       '', '=== OVERDUE COMMITMENTS ===',
       ...overdueCommitments.map((c: any) => `${c.text} (due: ${c.due_date}, project: ${c.project})`),
       '', '=== UPCOMING COMMITMENTS ===',
@@ -2777,7 +2785,7 @@ async function task21QuestionGenerator(db: Database.Database): Promise<TaskResul
     const gaps = gapsRaw ? JSON.parse(gapsRaw).slice(0, 10) : [];
     const profiles = profilesRaw ? JSON.parse(profilesRaw) : [];
     const investigations = investigationsRaw ? JSON.parse(investigationsRaw) : [];
-    const narrative = narrativeRaw ? JSON.parse(narrativeRaw)?.narrative?.slice(0, 2000) || '' : '';
+    const narrative = narrativeRaw ? narrativeRaw.slice(0, 2000) : '';
 
     // Check for existing pending questions to avoid duplicates
     const existingQs = db.prepare("SELECT question FROM prime_questions WHERE status = 'pending'").all() as any[];
