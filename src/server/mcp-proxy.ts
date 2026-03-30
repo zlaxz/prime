@@ -365,6 +365,56 @@ server.tool(
 );
 
 server.tool(
+  "prime_actions",
+  "Get pending action items from the dream pipeline. These are staged actions waiting for user review — emails to send, documents to create, follow-ups to make. Use this to brief the user on what needs doing and walk through them one at a time.",
+  {
+    project: z.string().optional().describe("Filter by project name"),
+    status: z.string().optional().default("pending").describe("Filter: pending, approved, rejected, executed"),
+  },
+  async ({ project, status }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpGet(`${srv}/api/ambient`);
+      let actions = result.actions || [];
+      if (project) actions = actions.filter((a: any) => a.project?.toLowerCase().includes(project.toLowerCase()));
+      if (actions.length === 0) return { content: [{ type: "text" as const, text: 'No pending actions.' }] };
+      const text = actions.map((a: any, i: number) => {
+        let entry = `[${i + 1}] (${a.type}) ${a.summary}`;
+        if (a.project) entry += `\n   Project: ${a.project}`;
+        if (a.to) entry += `\n   To: ${a.to}`;
+        if (a.subject) entry += `\n   Subject: ${a.subject}`;
+        if (a.body) entry += `\n   Body preview: ${a.body.slice(0, 200)}`;
+        if (a.reasoning) entry += `\n   Why: ${a.reasoning}`;
+        entry += `\n   ID: ${a.id}`;
+        return entry;
+      }).join('\n\n');
+      return { content: [{ type: "text" as const, text: `${actions.length} pending actions:\n\n${text}` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_approve",
+  "Approve and execute a staged action — send an email, create a calendar event, etc. Use after reviewing the action with the user.",
+  {
+    action_id: z.string().describe("The action ID from prime_actions"),
+  },
+  async ({ action_id }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpPost(`${srv}/api/approve-action`, { id: action_id }, 30000);
+      return { content: [{ type: "text" as const, text: result.message || `Action ${action_id} executed.` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
   "prime_notify",
   "Send a notification to the user (iMessage for critical/high, logged for normal/low).",
   {

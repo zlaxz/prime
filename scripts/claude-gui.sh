@@ -18,7 +18,7 @@ if [ -f "$MCP_CONFIG" ]; then
   MCP_FLAG="--mcp-config $MCP_CONFIG"
 fi
 
-osascript -e "tell application \"Terminal\" to do script \"cat /tmp/claude-gui-prompt-$$.txt | claude -p $MCP_FLAG $ARGS > $OUTFILE 2>&1; echo __DONE__ >> $OUTFILE\"" > /dev/null 2>&1
+osascript -e "tell application \"Terminal\" to do script \"cat /tmp/claude-gui-prompt-$$.txt | claude -p $MCP_FLAG $ARGS > $OUTFILE 2>&1; echo __DONE__ >> $OUTFILE; exit\"" > /dev/null 2>&1
 
 # Wait for completion — 60 minutes max for deep sessions
 for i in $(seq 1 720); do
