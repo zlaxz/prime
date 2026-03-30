@@ -61,13 +61,26 @@ async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessio
   return new Promise((resolve, reject) => {
     const env = { ...process.env };
 
-    // Don't set ANTHROPIC_API_KEY — let claude -p use its native OAuth auth
-    // The dream pipeline must run from a GUI context (cron on macOS, or screen session)
-    // where the Keychain is accessible. --bare mode does NOT accept OAuth tokens.
+    // On Mac Mini, claude -p needs GUI context for Keychain access.
+    // Use claude-gui.sh wrapper which runs via osascript "tell Terminal".
+    // On laptop, claude -p works directly (already in GUI session).
     delete env.ANTHROPIC_API_KEY;
 
-    const args = sessionId ? ['-p', '--resume', sessionId] : ['-p'];
-    const proc = spawn('claude', args, {
+    const guiWrapper = join(homedir(), 'GitHub', 'prime', 'scripts', 'claude-gui.sh');
+    const useGuiWrapper = existsSync(guiWrapper) && existsSync(join(homedir(), '.claude', 'oauth-token.txt'));
+
+    let cmd: string;
+    let cmdArgs: string[];
+    if (useGuiWrapper) {
+      // Mac Mini: route through GUI wrapper
+      cmd = guiWrapper;
+      cmdArgs = sessionId ? ['--resume', sessionId] : [];
+    } else {
+      // Laptop: direct claude -p
+      cmd = 'claude';
+      cmdArgs = sessionId ? ['-p', '--resume', sessionId] : ['-p'];
+    }
+    const proc = spawn(cmd, cmdArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
       timeout: timeoutMs,
