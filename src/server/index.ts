@@ -897,21 +897,52 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       const { claudeApiGet } = await import('../connectors/claude.js');
       const orgs = getConfig(db, 'claude_organizations') || [];
       const q = (req.query.q as string || '').toLowerCase();
-      const allConvos: any[] = [];
+      const results: any[] = [];
+      const seenUuids = new Set<string>();
 
-      for (const org of (orgs as any[])) {
+      // SOURCE 1: Knowledge base (semantic + keyword search — finds indexed convos by content)
+      if (q) {
         try {
-          const convos = await (claudeApiGet as any)(`/organizations/${org.uuid}/chat_conversations`, sessionKey, db) as any[];
-          for (const c of (convos || [])) {
-            allConvos.push({ uuid: c.uuid, name: c.name, summary: c.summary, created_at: c.created_at, updated_at: c.updated_at, project: c.project?.name, org: org.name });
+          const { search } = await import('../ai/search.js');
+          const searchResults = await search(db, q, { limit: 15, source: 'claude' });
+          for (const item of (searchResults?.items || [])) {
+            const ref = item.source_ref;
+            if (ref?.startsWith('claude:')) {
+              const uuid = ref.replace('claude:', '').split(':')[0];
+              if (!seenUuids.has(uuid)) {
+                seenUuids.add(uuid);
+                results.push({
+                  uuid, name: item.title, summary: item.summary?.slice(0, 200),
+                  source_date: item.source_date, project: item.project,
+                  match_source: 'knowledge_base', similarity: item.similarity,
+                });
+              }
+            }
           }
         } catch {}
       }
 
-      const filtered = q
-        ? allConvos.filter(c => c.name?.toLowerCase().includes(q) || c.summary?.toLowerCase().includes(q))
-        : allConvos.slice(0, 50);
-      res.json({ conversations: filtered, total: allConvos.length });
+      // SOURCE 2: Live Claude.ai API (finds un-indexed + title/summary matches)
+      for (const org of (orgs as any[])) {
+        try {
+          const convos = await (claudeApiGet as any)(`/organizations/${org.uuid}/chat_conversations`, sessionKey, db) as any[];
+          for (const c of (convos || [])) {
+            if (seenUuids.has(c.uuid)) continue;
+            const matches = !q || c.name?.toLowerCase().includes(q) || c.summary?.toLowerCase().includes(q);
+            if (matches) {
+              seenUuids.add(c.uuid);
+              results.push({
+                uuid: c.uuid, name: c.name, summary: c.summary,
+                created_at: c.created_at, updated_at: c.updated_at,
+                project: c.project?.name, org: org.name,
+                match_source: 'live_api',
+              });
+            }
+          }
+        } catch {}
+      }
+
+      res.json({ conversations: results.slice(0, 50), total: results.length, sources: { knowledge_base: results.filter(r => r.match_source === 'knowledge_base').length, live_api: results.filter(r => r.match_source === 'live_api').length } });
     } catch (err: any) {
       res.status(500).json({ error: err.message?.slice(0, 200) });
     }
