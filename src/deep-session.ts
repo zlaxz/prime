@@ -12,10 +12,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
-import { getCommitments, getConfig } from './db.js';
-import { search } from './ai/search.js';
-import { retrieveDeepContext } from './source-retrieval.js';
-import { getEntityProfile } from './entities.js';
+import { getCommitments } from './db.js';
 import { getCorrectionRules } from './intelligence-loop.js';
 import { notify } from './notify.js';
 import { runClaude } from './utils/claude-spawn.js';
@@ -49,107 +46,81 @@ interface Deliverable {
 
 // ── Context Assembly ──
 
-async function assembleContext(
+async function assembleOrientation(
   db: Database.Database,
-  topic: string
 ): Promise<string> {
-  const apiKey = getConfig(db, 'openai_api_key');
   const parts: string[] = [];
 
-  // 1. Multi-strategy search (semantic + keyword + graph + temporal, with reranking)
-  let searchResults: any[] = [];
+  // Live system state
   try {
-    const result = await search(db, topic, {
-      limit: 30,
-      strategy: 'auto',    // Uses all strategies, Claude-powered reranking
-      rerank: true,
-      recencyBias: 0.1,    // Weight recent items higher
-      graphDepth: 2,        // Follow entity connections 2 hops
-    });
-    searchResults = result.items || [];
-    console.log(`  [context] Search: ${searchResults.length} results via ${result.strategy || 'auto'} strategy`);
-  } catch (e: any) {
-    console.log(`  [context] Search failed: ${e.message?.slice(0, 50)}`);
-  }
+    const sources = db.prepare(`SELECT source, count(*) as cnt FROM knowledge GROUP BY source ORDER BY cnt DESC`).all() as any[];
+    const total = sources.reduce((sum: number, s: any) => sum + s.cnt, 0);
+    const entities = db.prepare(`SELECT count(*) as cnt FROM entities WHERE user_dismissed = 0`).get() as any;
+    const connections = db.prepare(`SELECT count(*) as cnt FROM entity_edges`).get() as any;
+    parts.push(`PRIME SYSTEM STATE:`);
+    parts.push(`  Knowledge: ${total} items across ${sources.length} sources`);
+    parts.push(sources.map((s: any) => `    ${s.source}: ${s.cnt}`).join('\n'));
+    parts.push(`  Entities: ${entities?.cnt || 0} tracked people/orgs`);
+    parts.push(`  Connections: ${connections?.cnt || 0} relationship edges`);
+  } catch { /* skip */ }
 
-  if (searchResults.length > 0) {
-    parts.push('=== RELEVANT KNOWLEDGE (multi-strategy search, ranked by relevance) ===');
-    for (const item of searchResults.slice(0, 30)) {
-      const score = item.score ? ` score:${item.score.toFixed(2)}` : '';
-      parts.push(`[${item.source}] ${item.title} (${item.source_date || 'undated'}${score})`);
-      parts.push(item.summary?.slice(0, 500) || '');
-      parts.push('');
-    }
-  }
+  // Connected resources — what you can access
+  parts.push(`\nCONNECTED RESOURCES (accessible via tools):`);
+  parts.push(`  Gmail — full email threads via prime_retrieve`);
+  parts.push(`  Claude.ai — full conversation history via prime_retrieve`);
+  parts.push(`  Otter.ai — meeting transcripts via prime_retrieve`);
+  parts.push(`  Calendar — events and scheduling`);
+  parts.push(`  Web — external research via WebSearch/WebFetch`);
 
-  // 2. Full source retrieval for top 5
-  if (searchResults.length > 0) {
-    try {
-      const deepContext = await retrieveDeepContext(db, searchResults.slice(0, 5), 5);
-      if (deepContext) {
-        parts.push(deepContext);
+  // Active projects with status
+  try {
+    const projects = db.prepare(`SELECT project, status, next_action, confidence FROM entity_profiles WHERE status NOT IN ('dormant', 'completed') AND project IS NOT NULL ORDER BY confidence ASC`).all() as any[];
+    if (projects.length > 0) {
+      parts.push(`\nACTIVE PROJECTS:`);
+      for (const p of projects) {
+        parts.push(`  ${p.project} — ${p.status} (confidence: ${p.confidence || '?'})`);
       }
-    } catch (e: any) {
-      console.log(`  [context] Deep retrieval failed: ${e.message?.slice(0, 50)}`);
     }
-  }
+  } catch { /* skip */ }
 
-  // 3. Entity profiles for people mentioned in top results
-  const entityNames = new Set<string>();
-  for (const item of searchResults.slice(0, 10)) {
-    try {
-      const contacts = typeof item.contacts === 'string' ? JSON.parse(item.contacts) : item.contacts;
-      if (Array.isArray(contacts)) {
-        contacts.forEach((c: string) => entityNames.add(c));
-      }
-    } catch { /* skip */ }
-  }
-
-  if (entityNames.size > 0) {
-    parts.push('=== KEY PEOPLE ===');
-    for (const name of Array.from(entityNames).slice(0, 10)) {
-      try {
-        const profile = getEntityProfile(db, name);
-        if (profile) {
-          parts.push(`${profile.canonical_name} (${profile.type || 'contact'}) — ${profile.status}, ${profile.mention_count} mentions`);
-          if (profile.projects?.length) parts.push(`  Projects: ${profile.projects.join(', ')}`);
-          if (profile.commitments?.length) {
-            parts.push(`  Open commitments: ${profile.commitments.map((c: any) => c.text).join('; ')}`);
-          }
-        }
-      } catch { /* skip */ }
+  // Key entities — who matters most right now
+  try {
+    const topEntities = db.prepare(`
+      SELECT e.canonical_name, e.type, count(em.id) as mentions
+      FROM entities e JOIN entity_mentions em ON e.id = em.entity_id
+      WHERE e.user_dismissed = 0
+      GROUP BY e.id ORDER BY mentions DESC LIMIT 15
+    `).all() as any[];
+    if (topEntities.length > 0) {
+      parts.push(`\nKEY PEOPLE/ORGS (by activity): ${topEntities.map((e: any) => `${e.canonical_name} (${e.mentions})`).join(', ')}`);
     }
-    parts.push('');
-  }
+  } catch { /* skip */ }
 
-  // 4. Active commitments
-  const commitments = getCommitments(db, { state: 'active' });
+  // Overdue + upcoming commitments — the urgent stuff
   const overdueCommitments = getCommitments(db, { overdue: true });
-  if (commitments.length > 0 || overdueCommitments.length > 0) {
-    parts.push('=== ACTIVE COMMITMENTS ===');
-    for (const c of [...overdueCommitments, ...commitments].slice(0, 15)) {
-      const due = c.due_date ? ` (due: ${c.due_date})` : '';
-      const overdue = c.state === 'overdue' ? ' [OVERDUE]' : '';
-      parts.push(`- ${c.text}${due}${overdue} — ${c.project || 'no project'}`);
+  const upcomingCommitments = getCommitments(db, { state: 'active' }).filter((c: any) => c.due_date).slice(0, 10);
+  if (overdueCommitments.length > 0) {
+    parts.push(`\nOVERDUE COMMITMENTS:`);
+    for (const c of overdueCommitments) {
+      parts.push(`  - ${c.text} (due: ${c.due_date}) — ${c.project || 'no project'}`);
     }
-    parts.push('');
+  }
+  if (upcomingCommitments.length > 0) {
+    parts.push(`\nUPCOMING DEADLINES:`);
+    for (const c of upcomingCommitments.slice(0, 5)) {
+      parts.push(`  - ${c.text} (due: ${c.due_date}) — ${c.project || 'no project'}`);
+    }
   }
 
-  // 5. Correction rules
+  // Correction rules — past mistakes to avoid
   const corrections = getCorrectionRules(db);
   if (corrections) {
-    parts.push(corrections);
-    parts.push('');
+    parts.push(`\n${corrections}`);
   }
 
-  // Cap at ~50K tokens (~200K chars)
-  let context = parts.join('\n');
-  if (context.length > 200000) {
-    context = context.slice(0, 200000) + '\n\n[Context truncated at 200K chars]';
-  }
-
-  console.log(`  [context] Assembled: ${context.length} chars, ${searchResults.length} search results, ${entityNames.size} entities, ${commitments.length + overdueCommitments.length} commitments`);
-  return context;
+  const orientation = parts.join('\n');
+  console.log(`  [orientation] ${orientation.length} chars — projects, commitments, corrections only`);
+  return orientation;
 }
 
 // ── Prompt Construction ──
@@ -223,11 +194,11 @@ At the very end, output a JSON block wrapped in \`\`\`json fences with this stru
 
 Include ALL deliverables in the JSON with their FULL content from the agents. Every email must have complete, polished, ready-to-send copy. Every document must be complete and formatted.
 
-=== PRIME KNOWLEDGE BASE CONTEXT ===
-
+=== PRIME SYSTEM ORIENTATION ===
 ${context}
+=== END ORIENTATION ===
 
-=== END CONTEXT ===
+This is ORIENTATION, not research. It tells you what exists and where to look. Your job is to SEARCH, RETRIEVE, and VERIFY using the tools. Do NOT treat any of the above as research results — go find the actual data yourself.
 
 Now solve this problem. Take as long as you need. Use all available tools. Produce finished work.`;
 }
@@ -348,7 +319,7 @@ export async function runDeepSession(
   try {
     // Step 1: Assemble context
     console.log('\n  Assembling context...');
-    const context = await assembleContext(db, topic);
+    const context = await assembleOrientation(db);
 
     db.prepare(`UPDATE deep_sessions SET context_assembled = ? WHERE id = ?`)
       .run(context.slice(0, 500000), sessionId);
