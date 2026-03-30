@@ -13,6 +13,7 @@ import { generateBriefingDoc } from './briefing-doc.js';
 import { autoExecuteLowRisk } from './actions.js';
 import { task15PredictionVerification, task16StrategicReflection, getCorrectionRules } from './intelligence-loop.js';
 import { task17ThreadBuilder, getThreadContext } from './narrative-threads.js';
+import { runClaude } from './utils/claude-spawn.js';
 
 // ============================================================
 // Dream State Pipeline — Phase 5 of v1.0 Brain Architecture
@@ -636,6 +637,15 @@ Open commitments: ${commitments.map((c: any) => `${c.text} [${c.state}]${c.due_d
 
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
+    // Sample Zach's actual sent emails for voice/tone reference
+    const sentSamples = db.prepare(
+      "SELECT title, summary FROM knowledge_primary WHERE source = 'gmail-sent' ORDER BY source_date DESC LIMIT 5"
+    ).all() as any[];
+    const voiceReference = sentSamples.length > 0
+      ? '\n\nZACH\'S ACTUAL WRITING STYLE (from recent sent emails — match this tone, improve where possible, keep it human and authentic):\n' +
+        sentSamples.map((s: any) => `Subject: ${s.title}\n${s.summary?.slice(0, 300)}`).join('\n---\n')
+      : '';
+
     // SOURCE RETRIEVAL: Get actual content for top projects so DeepSeek has real material
     let deepSourceMaterial = '';
     try {
@@ -689,7 +699,7 @@ Return JSON:
   ]
 }`;
 
-    const response = await runClaude(actionPrompt + '\n\n' + (() => {
+    const response = await runClaude(actionPrompt + voiceReference + '\n\n' + (() => {
       let gapBlock = '';
       try {
         const gapsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'detected_gaps'").get() as any)?.value;
