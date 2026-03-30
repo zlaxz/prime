@@ -7,7 +7,7 @@ import { getDb, getConfig } from './db.js';
 import { generateWorldModel, saveWorldModel, worldModelToMarkdown } from './ai/world.js';
 import { getAlerts } from './ai/intelligence.js';
 import { buildEntityGraph } from './entities.js';
-import { retrieveDeepContext } from './source-retrieval.js';
+import { retrieveDeepContext, retrieveGmailThread } from './source-retrieval.js';
 import { notify } from './notify.js';
 import { generateBriefingDoc } from './briefing-doc.js';
 import { autoExecuteLowRisk } from './actions.js';

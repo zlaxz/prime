@@ -423,7 +423,7 @@ function initSchema(db: Database.Database) {
   `);
 
   // Add deep session columns to staged_actions (safe to run multiple times)
-  const stagedCols = db.pragma('table_info(staged_actions)').map((c: any) => c.name);
+  const stagedCols = (db.pragma('table_info(staged_actions)') as any[]).map((c: any) => c.name);
   if (!stagedCols.includes('deep_session_id')) {
     db.exec(`ALTER TABLE staged_actions ADD COLUMN deep_session_id TEXT`);
   }
@@ -444,7 +444,7 @@ function initSchema(db: Database.Database) {
   }
 
   // Add temporal metadata columns to entity_edges (Graphiti pattern: validity windows)
-  const edgeCols = db.pragma('table_info(entity_edges)').map((c: any) => c.name);
+  const edgeCols = (db.pragma('table_info(entity_edges)') as any[]).map((c: any) => c.name);
   if (!edgeCols.includes('valid_at')) {
     db.exec(`ALTER TABLE entity_edges ADD COLUMN valid_at TEXT`);
   }

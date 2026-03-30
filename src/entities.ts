@@ -789,7 +789,7 @@ export function buildEntityUnderstanding(db: Database.Database, entityId: string
   const typeList = [...emailTypes.entries()].sort((a, b) => b[1] - a[1]).map(([t, c]) => t);
 
   // ── Determine communication nature ─────────────────────────
-  let nature: EntityUnderstanding['communication_nature'] = 'unknown';
+  let nature = 'unknown' as EntityUnderstanding['communication_nature'];
   if (spamCount > items.length * 0.5) {
     nature = 'spam';
   } else if (transactionalCount > items.length * 0.5) {
@@ -845,7 +845,7 @@ export function buildEntityUnderstanding(db: Database.Database, entityId: string
   }
 
   // ── Business importance ────────────────────────────────────
-  let importance: EntityUnderstanding['importance_to_business'] = 'unknown';
+  let importance = 'unknown' as EntityUnderstanding['importance_to_business'];
   let importEvidence = '';
 
   const userLabel = entity.user_label;

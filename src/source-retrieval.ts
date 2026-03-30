@@ -131,7 +131,7 @@ export async function retrieveFirefliesTranscript(db: Database.Database, meeting
     });
 
     if (!response.ok) return null;
-    const data = await response.json();
+    const data = await response.json() as any;
     const transcript = data.data?.transcript;
     if (!transcript) return null;
 

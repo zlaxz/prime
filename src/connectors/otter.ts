@@ -231,8 +231,8 @@ function flattenOutline(segments: OtterOutlineSegment[] | undefined): string[] {
  */
 export async function scanOtter(
   db: Database.Database,
-  options: { days?: number; maxMeetings?: number } = {}
-): Promise<{ meetings: number; items: number }> {
+  options: { days?: number; maxMeetings?: number; verbose?: boolean } = {}
+): Promise<{ meetings: number; items: number; skipped: number }> {
   const days = options.days || 90;
   const maxMeetings = options.maxMeetings || 200;
 
@@ -244,7 +244,7 @@ export async function scanOtter(
   if (!apiKey) throw new Error('No API key. Run: recall init');
 
   const creds: OtterCredentials = { sessionId, csrfToken };
-  const stats = { meetings: 0, items: 0 };
+  const stats = { meetings: 0, items: 0, skipped: 0 };
   const cutoff = Date.now() - days * 86400000;
 
   // Fetch all meetings via paginated speeches endpoint
