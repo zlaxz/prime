@@ -207,18 +207,19 @@ async function runClaudeP(
   timeoutMs: number = 3600000 // 60 minutes
 ): Promise<{ output: string; turns: number; duration: number }> {
   const start = Date.now();
-  // Use the wrapper script on Mac Mini (handles OAuth token + --bare mode)
-  // Falls back to raw `claude -p` on laptop (where keychain works)
-  const wrapperScript = join(homedir(), 'GitHub', 'prime', 'scripts', 'claude-p.sh');
-  const useWrapper = existsSync(wrapperScript);
-  const cmd = useWrapper ? wrapperScript : 'claude';
-  const args = useWrapper
-    ? ['-', '--max-turns', String(maxTurns)]  // wrapper already has -p --bare
+  // On Mac Mini: use claude-gui.sh which runs claude -p through a GUI Terminal tab
+  // via osascript — keychain accessible from SSH/cron/launchd.
+  // On laptop: use raw claude -p (keychain works directly).
+  const guiScript = join(homedir(), 'GitHub', 'prime', 'scripts', 'claude-gui.sh');
+  const useGui = existsSync(guiScript);
+  const cmd = useGui ? guiScript : 'claude';
+  const args = useGui
+    ? ['--max-turns', String(maxTurns)]  // gui script reads prompt from stdin, passes args through
     : ['-p', '-', '--output-format', 'json', '--max-turns', String(maxTurns)];
   const env = { ...process.env };
-  if (!useWrapper) delete env.ANTHROPIC_API_KEY; // Force Max on laptop
+  if (!useGui) delete env.ANTHROPIC_API_KEY; // Force Max on laptop
 
-  if (useWrapper) console.log('  [claude] Using claude-p.sh wrapper');
+  if (useGui) console.log('  [claude] Using claude-gui.sh (GUI Terminal, keychain accessible)');
 
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, args, {
@@ -235,8 +236,8 @@ async function runClaudeP(
     proc.on('close', (code) => {
       const duration = (Date.now() - start) / 1000;
       if (code === 0) {
-        if (useWrapper) {
-          // --bare mode returns raw text
+        if (useGui) {
+          // GUI script returns raw text from claude -p
           resolve({ output: out.trim(), turns: 0, duration });
         } else {
           try {
