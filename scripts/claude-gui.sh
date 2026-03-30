@@ -11,11 +11,11 @@ ARGS="$@"
 
 echo "$PROMPT" > "/tmp/claude-gui-prompt-$$.txt"
 
-# Always load Prime MCP tools + auto-approve them
+# Always load Prime MCP tools (permissions in ~/.claude/settings.json handle auto-approve)
 MCP_CONFIG="$HOME/.claude/.mcp.json"
 MCP_FLAG=""
 if [ -f "$MCP_CONFIG" ]; then
-  MCP_FLAG="--mcp-config $MCP_CONFIG --allowedTools 'mcp__prime-recall__*'"
+  MCP_FLAG="--mcp-config $MCP_CONFIG"
 fi
 
 osascript -e "tell application \"Terminal\" to do script \"cat /tmp/claude-gui-prompt-$$.txt | claude -p $MCP_FLAG $ARGS > $OUTFILE 2>&1; echo __DONE__ >> $OUTFILE\"" > /dev/null 2>&1
