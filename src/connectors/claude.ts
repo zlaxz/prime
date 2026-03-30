@@ -116,7 +116,7 @@ async function claudeApiGetRaw<T>(path: string, sessionKey: string): Promise<T> 
  */
 let _sessionRefreshAttempted = false;
 
-async function claudeApiGet<T>(path: string, sessionKey: string, db?: import('better-sqlite3').Database): Promise<T> {
+export async function claudeApiGet<T>(path: string, sessionKey: string, db?: import('better-sqlite3').Database): Promise<T> {
   try {
     return await claudeApiGetRaw<T>(path, sessionKey);
   } catch (err: any) {
