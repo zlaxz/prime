@@ -637,14 +637,14 @@ Open commitments: ${commitments.map((c: any) => `${c.text} [${c.state}]${c.due_d
 
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
-    // Sample Zach's actual sent emails for voice/tone reference
-    const sentSamples = db.prepare(
-      "SELECT title, summary FROM knowledge_primary WHERE source = 'gmail-sent' ORDER BY source_date DESC LIMIT 5"
-    ).all() as any[];
-    const voiceReference = sentSamples.length > 0
-      ? '\n\nZACH\'S ACTUAL WRITING STYLE (from recent sent emails — match this tone, improve where possible, keep it human and authentic):\n' +
-        sentSamples.map((s: any) => `Subject: ${s.title}\n${s.summary?.slice(0, 300)}`).join('\n---\n')
-      : '';
+    // Load voice profile for authentic drafts
+    let voiceReference = '';
+    try {
+      const voicePath = join(homedir(), 'GitHub', 'prime', 'prompts', 'voice-profile.md');
+      if (existsSync(voicePath)) {
+        voiceReference = '\n\n' + readFileSync(voicePath, 'utf-8');
+      }
+    } catch {}
 
     // SOURCE RETRIEVAL: Get actual content for top projects so DeepSeek has real material
     let deepSourceMaterial = '';
