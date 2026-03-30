@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { v4 as uuid } from 'uuid';
 import { getConfig } from './db.js';
 import { getBulkProvider, getDefaultProvider } from './ai/providers.js';
+import { runClaude } from './utils/claude-spawn.js';
 
 // ============================================================
 // Recursive Intelligence Loop
@@ -263,20 +264,7 @@ Return JSON:
 }`;
 
     // Use Claude for strategic reflection (highest quality reasoning)
-    const { spawn } = await import('child_process');
-    const response = await new Promise<string>((resolve, reject) => {
-      const env = { ...process.env };
-      delete env.ANTHROPIC_API_KEY;
-      const proc = spawn('claude', ['-p'], { stdio: ['pipe', 'pipe', 'pipe'], env, timeout: 180000 });
-      let stdout = '';
-      let stderr = '';
-      proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-      proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-      proc.on('close', (code) => { if (code === 0) resolve(stdout.trim()); else reject(new Error(`claude exited ${code}`)); });
-      proc.on('error', reject);
-      proc.stdin.write(prompt);
-      proc.stdin.end();
-    });
+    const response = await runClaude(prompt, { timeout: 180000 });
 
     // Parse response
     const cleaned = response.replace(/```json?\s*\n?/g, '').replace(/\n?```/g, '').trim();

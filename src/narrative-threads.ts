@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid';
 import { getConfig } from './db.js';
 import { getBulkProvider } from './ai/providers.js';
 import { retrieveDeepContext } from './source-retrieval.js';
+import { runClaude } from './utils/claude-spawn.js';
 
 // ============================================================
 // Cross-Source Narrative Threading
@@ -321,18 +322,7 @@ Write:
 Return JSON:
 {"summary": "...", "narrative_md": "## ...", "current_state": "...", "next_action": "..."}`;
 
-        const { spawn } = await import('child_process');
-        const synthResponse = await new Promise<string>((resolve, reject) => {
-          const env = { ...process.env };
-          delete env.ANTHROPIC_API_KEY;
-          const proc = spawn('claude', ['-p'], { stdio: ['pipe', 'pipe', 'pipe'], env, timeout: 120000 });
-          let stdout = '';
-          proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-          proc.on('close', (code) => { if (code === 0) resolve(stdout.trim()); else reject(new Error(`claude exited ${code}`)); });
-          proc.on('error', reject);
-          proc.stdin.write(synthPrompt);
-          proc.stdin.end();
-        });
+        const synthResponse = await runClaude(synthPrompt, { timeout: 120000 });
 
         const jsonMatch = synthResponse.match(/\{[\s\S]*\}/);
         if (jsonMatch) {

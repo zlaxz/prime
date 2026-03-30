@@ -1,10 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { execFile, spawn } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import type Database from 'better-sqlite3';
 import { getConfig } from './db.js';
+import { spawnClaudeBackground, runClaude, isClaudeAvailable, buildClaudeEnv } from './utils/claude-spawn.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -565,9 +566,7 @@ export async function runAgent(
   ].filter(Boolean).join('\n');
 
   // Check claude CLI
-  try {
-    await execFileAsync('which', ['claude'], { timeout: 3000 });
-  } catch {
+  if (!(await isClaudeAvailable())) {
     return { status: 'error', output: 'Claude Code CLI not found' };
   }
 
@@ -575,37 +574,26 @@ export async function runAgent(
 
   // Run agent via claude -p (Max subscription, OAuth, free)
   // CRITICAL: unset ANTHROPIC_API_KEY so claude uses OAuth, not the stale API key
+  // GUI wrapper handles Mac Mini headless Keychain access automatically.
   const { writeFileSync: writeTmp, unlinkSync: unlinkTmp } = await import('fs');
   const { tmpdir } = await import('os');
   const promptPath = join(tmpdir(), `prime-agent-${name}-${Date.now()}.txt`);
   writeTmp(promptPath, prompt);
 
-  // Build env without ANTHROPIC_API_KEY (forces OAuth)
-  const cleanEnv = { ...process.env };
-  delete cleanEnv.ANTHROPIC_API_KEY;
-
   if (background) {
-    const child = spawn('sh', [
-      '-c',
-      `cat '${promptPath}' | claude -p --allowedTools 'mcp__prime-recall__*' 2>/dev/null; rm -f '${promptPath}'`,
-    ], {
-      detached: true,
-      stdio: 'ignore',
-      env: cleanEnv,
+    spawnClaudeBackground({
+      promptPath,
+      extraArgs: ['--allowedTools', 'mcp__prime-recall__*'],
     });
-    child.unref();
 
     agent.last_run = new Date().toISOString();
     saveAgent(agent);
     return { status: 'running' };
   } else {
     try {
-      const { stdout } = await execFileAsync('sh', [
-        '-c',
-        `cat '${promptPath}' | claude -p --allowedTools 'mcp__prime-recall__*' 2>/dev/null`,
-      ], {
-        timeout: 300000, // 5 min max
-        env: cleanEnv,
+      const stdout = await runClaude(prompt, {
+        timeout: 300000,
+        extraArgs: ['--allowedTools', 'mcp__prime-recall__*'],
       });
 
       agent.last_run = new Date().toISOString();

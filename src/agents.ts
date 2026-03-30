@@ -1,9 +1,10 @@
-import { execFile, spawn } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { v4 as uuid } from 'uuid';
 import type Database from 'better-sqlite3';
 import { insertKnowledge, getConfig, setConfig, type KnowledgeItem } from './db.js';
 import { notify, type NotifyUrgency } from './notify.js';
+import { spawnClaudeBackground, isClaudeAvailable, buildClaudeEnv } from './utils/claude-spawn.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -144,38 +145,26 @@ Start by searching Prime Recall for relevant context, then complete the task.
 When done, save your report using prime_remember with these exact tags: ['agent:${agentName}', 'agent-report', 'task:${taskId}']`;
 
   // Check if claude CLI is available
-  let claudePath = 'claude';
-  try {
-    await execFileAsync('which', ['claude'], { timeout: 3000 });
-  } catch {
+  if (!(await isClaudeAvailable())) {
     return { taskId, status: 'error', result: 'Claude Code CLI not found. Install: npm install -g @anthropic-ai/claude-code' };
   }
 
   if (background) {
     // Spawn in background — don't wait for result
-    const child = spawn(claudePath, ['-p', prompt, '--allowedTools', 'mcp__prime-recall__*'], {
-      detached: true,
-      stdio: 'ignore',
-      env: {
-        ...process.env,
-        HOME: process.env.HOME || '',
-        PATH: process.env.PATH || '',
-      },
+    spawnClaudeBackground({
+      prompt,
+      extraArgs: ['--allowedTools', 'mcp__prime-recall__*'],
     });
-    child.unref();
 
     console.log(`  Agent "${agentName}" spawned (task: ${taskId.slice(0, 8)}...)`);
     return { taskId, status: 'spawned' };
   } else {
     // Run synchronously — wait for result
     try {
-      const { stdout } = await execFileAsync(claudePath, ['-p', prompt, '--allowedTools', 'mcp__prime-recall__*'], {
-        timeout: 300000, // 5 min max
-        env: {
-          ...process.env,
-          HOME: process.env.HOME || '',
-          PATH: process.env.PATH || '',
-        },
+      const { runClaude } = await import('./utils/claude-spawn.js');
+      const stdout = await runClaude(prompt, {
+        timeout: 300000,
+        extraArgs: ['--allowedTools', 'mcp__prime-recall__*'],
       });
       return { taskId, status: 'completed', result: stdout };
     } catch (err: any) {
