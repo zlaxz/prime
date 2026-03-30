@@ -446,7 +446,7 @@ function initSchema(db: Database.Database) {
   // Add temporal metadata columns to entity_edges (Graphiti pattern: validity windows)
   const edgeCols = db.pragma('table_info(entity_edges)').map((c: any) => c.name);
   if (!edgeCols.includes('valid_at')) {
-    db.exec(`ALTER TABLE entity_edges ADD COLUMN valid_at TEXT DEFAULT (datetime('now'))`);
+    db.exec(`ALTER TABLE entity_edges ADD COLUMN valid_at TEXT`);
   }
   if (!edgeCols.includes('invalid_at')) {
     db.exec(`ALTER TABLE entity_edges ADD COLUMN invalid_at TEXT`);
