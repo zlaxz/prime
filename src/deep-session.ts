@@ -207,31 +207,21 @@ async function runClaudeP(
   timeoutMs: number = 3600000 // 60 minutes
 ): Promise<{ output: string; turns: number; duration: number }> {
   const start = Date.now();
-  const env = { ...process.env };
-
-  // If oauth-token.txt exists (Mac Mini SSH/cron), use --bare mode
-  // This bypasses the keychain which is inaccessible from SSH/launchd
-  let useBare = false;
-  try {
-    const tokenPath = join(homedir(), '.claude', 'oauth-token.txt');
-    if (existsSync(tokenPath)) {
-      const tokenData = JSON.parse(readFileSync(tokenPath, 'utf-8'));
-      env.ANTHROPIC_API_KEY = tokenData.claudeAiOauth?.accessToken || '';
-      useBare = true;
-      console.log('  [claude] Using --bare mode with OAuth token');
-    } else {
-      delete env.ANTHROPIC_API_KEY; // Force Max subscription OAuth on laptop
-    }
-  } catch {
-    delete env.ANTHROPIC_API_KEY;
-  }
-
-  const args = useBare
-    ? ['-p', '-', '--bare', '--max-turns', String(maxTurns)]
+  // Use the wrapper script on Mac Mini (handles OAuth token + --bare mode)
+  // Falls back to raw `claude -p` on laptop (where keychain works)
+  const wrapperScript = join(homedir(), 'GitHub', 'prime', 'scripts', 'claude-p.sh');
+  const useWrapper = existsSync(wrapperScript);
+  const cmd = useWrapper ? wrapperScript : 'claude';
+  const args = useWrapper
+    ? ['-', '--max-turns', String(maxTurns)]  // wrapper already has -p --bare
     : ['-p', '-', '--output-format', 'json', '--max-turns', String(maxTurns)];
+  const env = { ...process.env };
+  if (!useWrapper) delete env.ANTHROPIC_API_KEY; // Force Max on laptop
+
+  if (useWrapper) console.log('  [claude] Using claude-p.sh wrapper');
 
   return new Promise((resolve, reject) => {
-    const proc = spawn('claude', args, {
+    const proc = spawn(cmd, args, {
       timeout: timeoutMs,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -245,7 +235,7 @@ async function runClaudeP(
     proc.on('close', (code) => {
       const duration = (Date.now() - start) / 1000;
       if (code === 0) {
-        if (useBare) {
+        if (useWrapper) {
           // --bare mode returns raw text
           resolve({ output: out.trim(), turns: 0, duration });
         } else {
