@@ -3,7 +3,6 @@ import {
   searchByText,
   searchByEmbedding,
   getConfig,
-  getConnectionsForItem,
   getThemes,
   getSemantics,
   cosineSimilarity,
@@ -27,6 +26,7 @@ export interface SearchOptions {
                             // 0.05: today=1.0, 7d=0.74, 30d=0.40, 90d=0.18
                             // 0.10: today=1.0, 7d=0.59, 30d=0.25, 90d=0.10
                             // 0.00: disabled (pure relevance, no recency boost)
+  graphDepth?: number;      // default 2 (entity + 1 hop). Set to 3 for a second hop.
 }
 
 export interface SearchResult {
@@ -274,56 +274,293 @@ function keywordSearch(
     .slice(0, limit);
 }
 
-async function graphSearch(
+// ============================================================
+// Graph traversal — entity graph search
+// ============================================================
+
+/**
+ * Match entities from the query string using canonical names and aliases.
+ * Returns entity IDs that appear in the query text (case-insensitive).
+ * Pure SQL — no LLM calls.
+ */
+function matchEntitiesFromQuery(db: Database.Database, query: string): { id: string; name: string }[] {
+  const qLower = query.toLowerCase();
+
+  // Fetch all entities with their canonical names
+  const entities = db.prepare(
+    `SELECT id, canonical_name FROM entities WHERE user_dismissed = 0`
+  ).all() as { id: string; canonical_name: string }[];
+
+  const matched = new Map<string, string>();
+
+  // Match against canonical names (multi-word names matched first for specificity)
+  const sorted = entities.slice().sort((a, b) => b.canonical_name.length - a.canonical_name.length);
+  for (const e of sorted) {
+    if (qLower.includes(e.canonical_name.toLowerCase())) {
+      matched.set(e.id, e.canonical_name);
+    }
+  }
+
+  // Match against aliases
+  const aliases = db.prepare(
+    `SELECT ea.entity_id, ea.alias, e.canonical_name
+     FROM entity_aliases ea
+     JOIN entities e ON e.id = ea.entity_id
+     WHERE e.user_dismissed = 0`
+  ).all() as { entity_id: string; alias: string; canonical_name: string }[];
+
+  const sortedAliases = aliases.slice().sort((a, b) => b.alias.length - a.alias.length);
+  for (const a of sortedAliases) {
+    if (!matched.has(a.entity_id) && qLower.includes(a.alias.toLowerCase())) {
+      matched.set(a.entity_id, a.canonical_name);
+    }
+  }
+
+  return Array.from(matched.entries()).map(([id, name]) => ({ id, name }));
+}
+
+/**
+ * Graph traversal search: follows entity relationships through the entity graph.
+ *
+ * SEED:   Extract entity names from query via matchEntitiesFromQuery
+ * HOP 1:  Find all knowledge items mentioning those entities (entity_mentions)
+ * HOP 2:  Find connected entities (entity_edges, ordered by co_occurrence_count)
+ * HOP 3:  Find knowledge items for connected entities
+ * THREAD: If items belong to narrative_threads, pull thread siblings
+ * SCORE:  Direct=0.9, Connected=0.6*(co_occ/max_co_occ), Thread=+0.15
+ *
+ * All SQL, no LLM calls. Target: <100ms on local SQLite.
+ */
+function graphTraversalSearch(
   db: Database.Database,
   query: string,
   limit: number,
-  apiKey: string | null,
   recencyBias: number = 0.05,
-): Promise<any[]> {
-  // Find seed items via semantic or keyword (pass recencyBias through)
-  let seedItems: any[];
-  if (apiKey) {
-    try {
-      seedItems = await semanticSearch(db, query, 5, apiKey, recencyBias);
-    } catch {
-      seedItems = keywordSearch(db, query, 5, recencyBias);
+  graphDepth: number = 2,
+): any[] {
+  // ── SEED: extract entities from query ──────────────────────
+  const seedEntities = matchEntitiesFromQuery(db, query);
+  if (seedEntities.length === 0) return [];
+
+  const seedEntityIds = seedEntities.map(e => e.id);
+  const itemScores = new Map<string, { score: number; via: string }>();
+
+  // ── HOP 1: knowledge items directly mentioning seed entities ──
+  if (seedEntityIds.length > 0) {
+    const ph = seedEntityIds.map(() => '?').join(',');
+    const directMentions = db.prepare(
+      `SELECT DISTINCT em.knowledge_item_id
+       FROM entity_mentions em
+       WHERE em.entity_id IN (${ph})`
+    ).all(...seedEntityIds) as { knowledge_item_id: string }[];
+
+    for (const m of directMentions) {
+      itemScores.set(m.knowledge_item_id, {
+        score: 0.9,
+        via: `direct mention of ${seedEntities.map(e => e.name).join(', ')}`,
+      });
     }
-  } else {
-    seedItems = keywordSearch(db, query, 5, recencyBias);
   }
 
-  const allItems: any[] = [...seedItems];
-  const seenIds = new Set(seedItems.map(i => i.id));
+  // ── HOP 2: connected entities via entity_edges ─────────────
+  let connectedEntities: { id: string; name: string; coOccurrence: number }[] = [];
+  let maxCoOccurrence = 1;
 
-  // For each seed, fetch connected items
-  for (const seed of seedItems) {
-    const connections = getConnectionsForItem(db, seed.id);
-    for (const conn of connections) {
-      const connectedId = conn.source_id === seed.id ? conn.target_id : conn.source_id;
-      if (seenIds.has(connectedId)) continue;
-      seenIds.add(connectedId);
+  if (graphDepth >= 2 && seedEntityIds.length > 0) {
+    const ph = seedEntityIds.map(() => '?').join(',');
+    const edges = db.prepare(
+      `SELECT ee.source_entity_id, ee.target_entity_id, ee.co_occurrence_count,
+              e1.canonical_name AS source_name, e2.canonical_name AS target_name
+       FROM entity_edges ee
+       JOIN entities e1 ON e1.id = ee.source_entity_id
+       JOIN entities e2 ON e2.id = ee.target_entity_id
+       WHERE (ee.source_entity_id IN (${ph}) OR ee.target_entity_id IN (${ph}))
+         AND ee.user_denied = 0
+       ORDER BY ee.co_occurrence_count DESC
+       LIMIT 30`
+    ).all(...seedEntityIds, ...seedEntityIds) as {
+      source_entity_id: string; target_entity_id: string; co_occurrence_count: number;
+      source_name: string; target_name: string;
+    }[];
 
-      const row = db.prepare('SELECT * FROM knowledge_primary WHERE id = ?').get(connectedId) as any;
-      if (row) {
-        parseJsonFields(row);
-        row.embedding = null;
-        const derivedScore = (seed._score || 0.5) * conn.confidence * 0.5;
-        allItems.push({
-          ...row,
-          _score: derivedScore,
-          _strategy: 'graph',
-          _via: `${conn.relationship} (from "${seed.title}")`,
-        });
+    const seedSet = new Set(seedEntityIds);
+    const seen = new Set<string>();
+
+    for (const edge of edges) {
+      const connId = seedSet.has(edge.source_entity_id) ? edge.target_entity_id : edge.source_entity_id;
+      const connName = seedSet.has(edge.source_entity_id) ? edge.target_name : edge.source_name;
+      if (seedSet.has(connId) || seen.has(connId)) continue;
+      seen.add(connId);
+      connectedEntities.push({ id: connId, name: connName, coOccurrence: edge.co_occurrence_count });
+      if (edge.co_occurrence_count > maxCoOccurrence) maxCoOccurrence = edge.co_occurrence_count;
+    }
+
+    // HOP 2 items: knowledge items mentioning connected entities
+    if (connectedEntities.length > 0) {
+      const connIds = connectedEntities.map(c => c.id);
+      const ph2 = connIds.map(() => '?').join(',');
+      const connMentions = db.prepare(
+        `SELECT DISTINCT em.knowledge_item_id, em.entity_id
+         FROM entity_mentions em
+         WHERE em.entity_id IN (${ph2})`
+      ).all(...connIds) as { knowledge_item_id: string; entity_id: string }[];
+
+      // Build a lookup for co_occurrence by entity id
+      const coOccMap = new Map(connectedEntities.map(c => [c.id, c.coOccurrence]));
+      const nameMap = new Map(connectedEntities.map(c => [c.id, c.name]));
+
+      for (const m of connMentions) {
+        const coOcc = coOccMap.get(m.entity_id) || 1;
+        const hopScore = 0.6 * (coOcc / maxCoOccurrence);
+        const existing = itemScores.get(m.knowledge_item_id);
+        if (!existing || existing.score < hopScore) {
+          // Don't downgrade a direct hit
+          if (!existing) {
+            itemScores.set(m.knowledge_item_id, {
+              score: hopScore,
+              via: `connected entity: ${nameMap.get(m.entity_id) || 'unknown'} (${coOcc} co-occurrences)`,
+            });
+          }
+        }
       }
     }
   }
 
-  // Apply recency weighting to graph-discovered items (seeds already have it)
-  const graphOnly = allItems.filter(i => i._strategy === 'graph');
-  applyRecencyWeighting(graphOnly, recencyBias);
+  // ── HOP 3 (optional): second degree connections ────────────
+  if (graphDepth >= 3 && connectedEntities.length > 0) {
+    const hop1Ids = connectedEntities.map(c => c.id);
+    const ph = hop1Ids.map(() => '?').join(',');
+    const allSeedAndHop1 = new Set([...seedEntityIds, ...hop1Ids]);
 
-  return allItems
+    const hop2Edges = db.prepare(
+      `SELECT ee.source_entity_id, ee.target_entity_id, ee.co_occurrence_count,
+              e1.canonical_name AS source_name, e2.canonical_name AS target_name
+       FROM entity_edges ee
+       JOIN entities e1 ON e1.id = ee.source_entity_id
+       JOIN entities e2 ON e2.id = ee.target_entity_id
+       WHERE (ee.source_entity_id IN (${ph}) OR ee.target_entity_id IN (${ph}))
+         AND ee.user_denied = 0
+       ORDER BY ee.co_occurrence_count DESC
+       LIMIT 20`
+    ).all(...hop1Ids, ...hop1Ids) as {
+      source_entity_id: string; target_entity_id: string; co_occurrence_count: number;
+      source_name: string; target_name: string;
+    }[];
+
+    const hop2Entities: { id: string; name: string; coOccurrence: number }[] = [];
+    const hop2Seen = new Set<string>();
+
+    for (const edge of hop2Edges) {
+      const hop1Set = new Set(hop1Ids);
+      const connId = hop1Set.has(edge.source_entity_id) ? edge.target_entity_id : edge.source_entity_id;
+      const connName = hop1Set.has(edge.source_entity_id) ? edge.target_name : edge.source_name;
+      if (allSeedAndHop1.has(connId) || hop2Seen.has(connId)) continue;
+      hop2Seen.add(connId);
+      hop2Entities.push({ id: connId, name: connName, coOccurrence: edge.co_occurrence_count });
+    }
+
+    if (hop2Entities.length > 0) {
+      const hop2Ids = hop2Entities.map(c => c.id);
+      const ph2 = hop2Ids.map(() => '?').join(',');
+      const hop2Mentions = db.prepare(
+        `SELECT DISTINCT em.knowledge_item_id, em.entity_id
+         FROM entity_mentions em
+         WHERE em.entity_id IN (${ph2})`
+      ).all(...hop2Ids) as { knowledge_item_id: string; entity_id: string }[];
+
+      const coOccMap2 = new Map(hop2Entities.map(c => [c.id, c.coOccurrence]));
+      const nameMap2 = new Map(hop2Entities.map(c => [c.id, c.name]));
+      const maxCoOcc2 = Math.max(...hop2Entities.map(c => c.coOccurrence), 1);
+
+      for (const m of hop2Mentions) {
+        const coOcc = coOccMap2.get(m.entity_id) || 1;
+        // 2nd hop scores lower: 0.3 base instead of 0.6
+        const hopScore = 0.3 * (coOcc / maxCoOcc2);
+        const existing = itemScores.get(m.knowledge_item_id);
+        if (!existing) {
+          itemScores.set(m.knowledge_item_id, {
+            score: hopScore,
+            via: `2nd-hop entity: ${nameMap2.get(m.entity_id) || 'unknown'}`,
+          });
+        }
+      }
+    }
+  }
+
+  if (itemScores.size === 0) return [];
+
+  // ── THREAD EXPANSION: pull siblings from narrative threads ──
+  const allItemIds = Array.from(itemScores.keys());
+  const threadBoostIds = new Set<string>();
+
+  if (allItemIds.length > 0) {
+    // Find which threads these items belong to (batched)
+    const batchSize = 400;
+    const threadIds = new Set<string>();
+    for (let i = 0; i < allItemIds.length; i += batchSize) {
+      const batch = allItemIds.slice(i, i + batchSize);
+      const ph = batch.map(() => '?').join(',');
+      const rows = db.prepare(
+        `SELECT DISTINCT thread_id FROM thread_items WHERE knowledge_item_id IN (${ph})`
+      ).all(...batch) as { thread_id: string }[];
+      for (const r of rows) threadIds.add(r.thread_id);
+    }
+
+    // Pull all items from those threads
+    if (threadIds.size > 0) {
+      const tph = Array.from(threadIds).map(() => '?').join(',');
+      const threadItemRows = db.prepare(
+        `SELECT knowledge_item_id, thread_id FROM thread_items WHERE thread_id IN (${tph})`
+      ).all(...Array.from(threadIds)) as { knowledge_item_id: string; thread_id: string }[];
+
+      for (const ti of threadItemRows) {
+        threadBoostIds.add(ti.knowledge_item_id);
+        const existing = itemScores.get(ti.knowledge_item_id);
+        if (existing) {
+          // Boost existing items that share a thread
+          existing.score = Math.min(existing.score + 0.15, 1.0);
+        } else {
+          // New item discovered via thread — base score 0.4 + thread boost
+          itemScores.set(ti.knowledge_item_id, {
+            score: 0.4 + 0.15,
+            via: `thread sibling (thread ${ti.thread_id})`,
+          });
+        }
+      }
+    }
+  }
+
+  // ── FETCH knowledge items and build results ────────────────
+  const finalItemIds = Array.from(itemScores.keys());
+  if (finalItemIds.length === 0) return [];
+
+  const results: any[] = [];
+  const batchSize = 400;
+  for (let i = 0; i < finalItemIds.length; i += batchSize) {
+    const batch = finalItemIds.slice(i, i + batchSize);
+    const ph = batch.map(() => '?').join(',');
+    const rows = db.prepare(
+      `SELECT * FROM knowledge_primary WHERE id IN (${ph})`
+    ).all(...batch) as any[];
+
+    for (const row of rows) {
+      parseJsonFields(row);
+      row.embedding = null;
+      const scoreInfo = itemScores.get(row.id)!;
+      results.push({
+        ...row,
+        _score: scoreInfo.score,
+        _strategy: 'graph',
+        _via: scoreInfo.via,
+        _thread_boost: threadBoostIds.has(row.id),
+      });
+    }
+  }
+
+  // Apply recency weighting
+  applyRecencyWeighting(results, recencyBias);
+
+  return results
     .sort((a, b) => b._score - a._score)
     .slice(0, limit);
 }
@@ -617,6 +854,7 @@ export async function search(
     since,
     rerank = true,
     recencyBias = 0.05,
+    graphDepth = 2,
   } = options;
 
   const apiKey = getConfig(db, 'openai_api_key');
@@ -635,7 +873,7 @@ export async function search(
     strategyUsed = 'keyword';
 
   } else if (strategy === 'graph') {
-    candidates = await graphSearch(db, query, limit * 2, apiKey, recencyBias);
+    candidates = graphTraversalSearch(db, query, limit * 2, recencyBias, graphDepth);
     strategyUsed = 'graph';
 
   } else if (strategy === 'temporal') {
@@ -648,12 +886,12 @@ export async function search(
     strategyUsed = 'hierarchical';
 
   } else {
-    // ── Auto strategy: semantic + keyword in parallel, plus extras ──
+    // ── Auto strategy: semantic + keyword + graph in parallel, plus extras ──
     strategyUsed = 'auto';
 
     const promises: Promise<any[]>[] = [];
 
-    // Always run keyword (recency weighting applied inside each strategy)
+    // Always run keyword (synchronous, wrapped in Promise.resolve)
     promises.push(Promise.resolve(keywordSearch(db, query, limit * 2, recencyBias)));
 
     // Run semantic if API key available
@@ -663,20 +901,29 @@ export async function search(
       );
     }
 
-    const [keywordResults, semanticResults] = await Promise.all(promises);
+    // Always run graph traversal in parallel (synchronous, no LLM calls)
+    promises.push(
+      Promise.resolve(graphTraversalSearch(db, query, limit * 2, recencyBias, graphDepth))
+    );
 
-    // Merge: normalize scores and combine
-    // Find max scores for normalization
+    const results = await Promise.all(promises);
+    const keywordResults = results[0];
+    const semanticResults = apiKey ? results[1] : [];
+    const graphResults = apiKey ? results[2] : results[1];
+
+    // Merge: normalize scores per strategy and combine
     const maxKeyword = keywordResults.length > 0 ? Math.max(...keywordResults.map((r: any) => r._score)) : 1;
     const maxSemantic = semanticResults?.length > 0 ? Math.max(...semanticResults.map((r: any) => r._score)) : 1;
+    const maxGraph = graphResults?.length > 0 ? Math.max(...graphResults.map((r: any) => r._score)) : 1;
 
-    const scoreMap = new Map<string, { item: any; semanticScore: number; keywordScore: number }>();
+    // scoreMap tracks per-strategy normalized scores per item
+    const scoreMap = new Map<string, { item: any; semanticScore: number; keywordScore: number; graphScore: number }>();
 
     // Add semantic results
     if (semanticResults) {
       for (const item of semanticResults) {
         const normScore = maxSemantic > 0 ? item._score / maxSemantic : 0;
-        scoreMap.set(item.id, { item, semanticScore: normScore, keywordScore: 0 });
+        scoreMap.set(item.id, { item, semanticScore: normScore, keywordScore: 0, graphScore: 0 });
       }
     }
 
@@ -687,18 +934,49 @@ export async function search(
       if (existing) {
         existing.keywordScore = normScore;
       } else {
-        scoreMap.set(item.id, { item, semanticScore: 0, keywordScore: normScore });
+        scoreMap.set(item.id, { item, semanticScore: 0, keywordScore: normScore, graphScore: 0 });
       }
     }
 
-    // Combined score: 0.7 semantic + 0.3 keyword
+    // Add/merge graph results
+    if (graphResults) {
+      for (const item of graphResults) {
+        const normScore = maxGraph > 0 ? item._score / maxGraph : 0;
+        const existing = scoreMap.get(item.id);
+        if (existing) {
+          existing.graphScore = normScore;
+          // Preserve graph metadata on the item if graph scored higher
+          if (normScore > existing.item._score) {
+            existing.item._via = item._via;
+            existing.item._thread_boost = item._thread_boost;
+          }
+        } else {
+          scoreMap.set(item.id, { item, semanticScore: 0, keywordScore: 0, graphScore: normScore });
+        }
+      }
+    }
+
+    // Combined score: 0.55 semantic + 0.2 keyword + 0.25 graph
+    // When semantic is unavailable, reweight: 0.5 keyword + 0.5 graph
+    const hasSemantic = apiKey && semanticResults && semanticResults.length > 0;
     candidates = Array.from(scoreMap.values())
-      .map(({ item, semanticScore, keywordScore }) => ({
-        ...item,
-        _score: 0.7 * semanticScore + 0.3 * keywordScore,
-        _strategy: 'auto',
-      }))
+      .map(({ item, semanticScore, keywordScore, graphScore }) => {
+        const combined = hasSemantic
+          ? 0.55 * semanticScore + 0.2 * keywordScore + 0.25 * graphScore
+          : 0.5 * keywordScore + 0.5 * graphScore;
+        return {
+          ...item,
+          _score: combined,
+          _strategy: 'auto',
+        };
+      })
       .sort((a, b) => b._score - a._score);
+
+    // Track which strategies contributed
+    const hasGraphHits = graphResults && graphResults.length > 0;
+    if (hasGraphHits) {
+      strategyUsed = 'auto+graph';
+    }
 
     // If temporal words detected, also run temporal and merge
     if (hasTemporalIntent(query)) {
@@ -708,19 +986,7 @@ export async function search(
           candidates.push({ ...tr, _score: tr._score * 0.8 }); // Slightly lower to blend
         }
       }
-      strategyUsed = 'auto+temporal';
-    }
-
-    // If query mentions a contact, run graph from that contact's items
-    const contactMatch = findContactInQuery(query, db);
-    if (contactMatch) {
-      const graphResults = await graphSearch(db, query, limit, apiKey, recencyBias);
-      for (const gr of graphResults) {
-        if (!candidates.find(c => c.id === gr.id)) {
-          candidates.push({ ...gr, _score: gr._score * 0.7 });
-        }
-      }
-      strategyUsed = strategyUsed.includes('+') ? `${strategyUsed}+graph` : 'auto+graph';
+      strategyUsed = strategyUsed.includes('+') ? `${strategyUsed}+temporal` : 'auto+temporal';
     }
   }
 
