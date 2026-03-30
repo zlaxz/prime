@@ -350,7 +350,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
 
       // ---- TIER 2: Staged actions (quality-gated) ----
       const rawActions = db.prepare(
-        "SELECT id, type, summary, reasoning, project, payload, created_at FROM staged_actions WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY id"
+        "SELECT id, type, summary, reasoning, project, payload, created_at, deep_session_id, theme, sequence_order, status FROM staged_actions WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY sequence_order, id"
       ).all() as any[];
 
       for (const a of rawActions) {
@@ -377,9 +377,10 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
           }
         }
 
-        // QUALITY GATE: Skip actions older than 72 hours
+        // QUALITY GATE: Expire old actions (7 days for deep session actions, 72h for others)
         const ageHours = (Date.now() - new Date(a.created_at).getTime()) / 3600000;
-        if (ageHours > 72) {
+        const maxAge = a.deep_session_id ? 168 : 72; // 7 days vs 72 hours
+        if (ageHours > maxAge) {
           db.prepare("UPDATE staged_actions SET status = 'expired' WHERE id = ?").run(a.id);
           continue;
         }
@@ -398,7 +399,11 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
           body: payload.body || null,
           gmail_link: payload.to ? `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(payload.to)}&su=${encodeURIComponent(payload.subject || '')}&body=${encodeURIComponent(payload.body || '')}` : null,
           stale: a._stale || false,
-          action_id: a.id, // for approve/dismiss
+          action_id: a.id,
+          deep_session_id: a.deep_session_id || null,
+          theme: a.theme || null,
+          sequence_order: a.sequence_order || null,
+          status: a.status || 'pending',
         });
       }
 
@@ -1255,6 +1260,51 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       res.json({ sessions });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Deep Session File Save — persist edited deliverables ──
+
+  app.put('/api/deep-session/:id/files/:filename', (req, res) => {
+    try {
+      const session: any = db.prepare('SELECT output_dir FROM deep_sessions WHERE id = ?').get(req.params.id);
+      if (!session?.output_dir) { res.status(404).json({ error: 'Session not found' }); return; }
+      const fs = require('fs');
+      const path = require('path');
+      const safeName = path.basename(req.params.filename);
+      const filePath = path.join(session.output_dir, safeName);
+      fs.writeFileSync(filePath, req.body.content || '', 'utf-8');
+      res.json({ saved: true, filename: safeName });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Deep Session Actions — get staged actions for a specific session ──
+
+  app.get('/api/deep-session/:id/actions', (req, res) => {
+    try {
+      const actions = db.prepare(`
+        SELECT id, type, summary, payload, reasoning, project, status, theme, sequence_order, deep_session_id, created_at
+        FROM staged_actions WHERE deep_session_id = ? ORDER BY sequence_order, id
+      `).all(req.params.id) as any[];
+
+      const mapped = actions.map((a: any) => {
+        let payload: any = {};
+        try { payload = typeof a.payload === 'string' ? JSON.parse(a.payload) : (a.payload || {}); } catch {}
+        return {
+          ...a,
+          action_id: a.id,
+          to: payload.to || null,
+          subject: payload.subject || null,
+          body: payload.body || null,
+          gmail_link: payload.to ? `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(payload.to)}&su=${encodeURIComponent(payload.subject || '')}&body=${encodeURIComponent(payload.body || '')}` : null,
+        };
+      });
+
+      res.json({ actions: mapped });
+    } catch (err: any) {
+      res.json({ actions: [], error: err.message });
     }
   });
 
