@@ -279,6 +279,50 @@ server.tool(
 );
 
 server.tool(
+  "prime_questions",
+  "Get pending questions that Prime needs the user to answer. These are strategic questions only the user can answer — about deal status, relationship context, business decisions. When questions exist, ASK THEM. When the user answers, call prime_answer_question with the answer.",
+  {},
+  async () => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpGet(`${srv}/api/v1/questions`);
+      const questions = result.questions || result || [];
+      if (questions.length === 0) return { content: [{ type: "text" as const, text: 'No pending questions.' }] };
+      const text = questions.map((q: any, i: number) => {
+        let entry = `[${i + 1}] (${q.priority || 'medium'}) ${q.question}`;
+        if (q.project) entry += `\n   Project: ${q.project}`;
+        if (q.context) entry += `\n   Context: ${q.context}`;
+        entry += `\n   ID: ${q.id}`;
+        return entry;
+      }).join('\n\n');
+      return { content: [{ type: "text" as const, text: `${questions.length} pending questions:\n\n${text}` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_answer_question",
+  "Submit the user's answer to a pending Prime question. The answer becomes knowledge that improves future reasoning.",
+  {
+    question_id: z.string().describe("The question ID from prime_questions"),
+    answer: z.string().describe("The user's answer"),
+  },
+  async ({ question_id, answer }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpPost(`${srv}/api/v1/questions/${question_id}/answer`, { answer }, 30000);
+      return { content: [{ type: "text" as const, text: `Answer saved. Prime will use this in future reasoning.` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
   "prime_briefing",
   "Generate a daily intelligence briefing — priorities, commitments, dropped balls, relationship health.",
   {
