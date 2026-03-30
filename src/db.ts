@@ -459,8 +459,46 @@ function initSchema(db: Database.Database) {
   // Note: confidence column already exists (DEFAULT 0.0). The temporal pattern
   // bumps it by 0.1 per re-observation (capped at 1.0) and sets it to 1.0 for user-confirmed edges.
 
+  // Migrate UNIQUE constraint: allow multiple edges per source+target+type (old invalidated + new valid).
+  // Only enforce uniqueness on ACTIVE edges via partial unique index.
+  // Check if migration needed by looking for the old sqlite_autoindex constraint.
+  const edgeIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='entity_edges' AND name LIKE 'sqlite_autoindex%'").all() as any[];
+  if (edgeIndexes.length > 0) {
+    // Rebuild table without the inline UNIQUE constraint
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS entity_edges_new (
+        id TEXT PRIMARY KEY,
+        source_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        target_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+        edge_type TEXT NOT NULL,
+        co_occurrence_count INTEGER DEFAULT 0,
+        confidence REAL DEFAULT 0.0,
+        user_confirmed INTEGER DEFAULT 0,
+        user_denied INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        valid_at TEXT DEFAULT (datetime('now')),
+        invalid_at TEXT,
+        source_session TEXT
+      );
+      INSERT INTO entity_edges_new SELECT
+        id, source_entity_id, target_entity_id, edge_type, co_occurrence_count,
+        confidence, user_confirmed, user_denied, created_at, updated_at,
+        valid_at, invalid_at, source_session
+      FROM entity_edges;
+      DROP TABLE entity_edges;
+      ALTER TABLE entity_edges_new RENAME TO entity_edges;
+    `);
+  }
+
+  // Partial unique index: only one active edge per source+target+type
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_active_unique ON entity_edges(source_entity_id, target_entity_id, edge_type) WHERE invalid_at IS NULL`);
+
   // Index for filtering active edges quickly
   db.exec(`CREATE INDEX IF NOT EXISTS idx_edges_validity ON entity_edges(invalid_at)`);
+  // Recreate source/target indexes (may have been dropped during table rebuild)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_edges_source ON entity_edges(source_entity_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_edges_target ON entity_edges(target_entity_id)`);
 
   db.exec(`
 
