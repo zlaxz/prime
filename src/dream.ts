@@ -3127,7 +3127,8 @@ export async function runDreamPipeline(
         `${i + 1}. [${a.type}] ${a.summary}${a.project ? ` (${a.project})` : ''}`
       ).join('\n');
 
-      const body = `${pendingActions.length} action${pendingActions.length === 1 ? '' : 's'} need approval:\n\n${actionLines}\n\nReply YES to approve all, or # for specific.`;
+      const topAction = pendingActions[0];
+      const body = `${pendingActions.length} action${pendingActions.length === 1 ? '' : 's'} ready. Top: ${topAction.summary?.slice(0, 80)}. Open COS to review.`;
 
       const result = await notify(db, {
         title: 'Prime Dream Complete',
