@@ -3116,40 +3116,8 @@ export async function runDreamPipeline(
     console.error(`  ✗ Auto-execute failed: ${err.message?.slice(0, 100)}`);
   }
 
-  // ── Push remaining staged actions (emails) via iMessage ──
-  try {
-    const pendingActions = db.prepare(
-      "SELECT id, type, summary, reasoning, project FROM staged_actions WHERE status = 'pending' AND (expires_at IS NULL OR expires_at > datetime('now')) ORDER BY id"
-    ).all() as any[];
-
-    if (pendingActions.length > 0) {
-      const actionLines = pendingActions.map((a: any, i: number) =>
-        `${i + 1}. [${a.type}] ${a.summary}${a.project ? ` (${a.project})` : ''}`
-      ).join('\n');
-
-      const topAction = pendingActions[0];
-      const body = `${pendingActions.length} action${pendingActions.length === 1 ? '' : 's'} ready. Top: ${topAction.summary?.slice(0, 80)}. Open COS to review.`;
-
-      const result = await notify(db, {
-        title: 'Prime Dream Complete',
-        body,
-        urgency: pendingActions.length >= 3 ? 'high' : 'normal',
-        agent: 'dream-pipeline',
-        actionRequired: `${pendingActions.length} staged actions awaiting approval`,
-      });
-
-      if (result.channels.length > 0) {
-        console.log(`  ✓ Notified via: ${result.channels.join(', ')}`);
-      }
-      if (result.errors.length > 0) {
-        console.log(`  ⚠ Notification errors: ${result.errors.join('; ')}`);
-      }
-    } else {
-      console.log('  ○ No pending actions to notify');
-    }
-  } catch (err: any) {
-    console.error(`  ✗ Notification failed: ${err.message?.slice(0, 100)}`);
-  }
+  // ── iMessage notifications DISABLED — use COS instead ──
+  console.log('  ○ iMessage notifications disabled (use COS for action review)');
 
   console.log('');
 
