@@ -18,6 +18,18 @@ const DAYS = 425; // ~14 months
 const MAX_THREADS = 10000;
 const EXTRACTION_CONCURRENCY = 100; // DeepSeek swarm
 
+// Ensure DeepSeek API key is available
+if (!process.env.DEEPSEEK_API_KEY) {
+  const dbKey = db.prepare("SELECT value FROM config WHERE key = 'deepseek_api_key'").get() as any;
+  if (dbKey?.value) {
+    process.env.DEEPSEEK_API_KEY = dbKey.value;
+    console.log('Loaded DeepSeek key from DB config');
+  } else {
+    console.error('No DEEPSEEK_API_KEY in env or DB. Set it in .env or run: recall config deepseek_api_key <key>');
+    process.exit(1);
+  }
+}
+
 const CLIENT_ID = getConfig(db, 'google_client_id') || process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = getConfig(db, 'google_client_secret') || process.env.GOOGLE_CLIENT_SECRET || '';
 const REDIRECT_URI = 'http://localhost:3210/auth/google/callback';
