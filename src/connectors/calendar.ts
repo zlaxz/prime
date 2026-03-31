@@ -90,8 +90,23 @@ export async function scanCalendar(
   const events = response.data.items || [];
   let items = 0;
 
+  // Pre-pass: count recurring event instances to filter noise
+  const recurringCounts = new Map<string, number>();
+  for (const ev of events) {
+    if (ev.recurringEventId) {
+      recurringCounts.set(ev.recurringEventId, (recurringCounts.get(ev.recurringEventId) || 0) + 1);
+    }
+  }
+
   for (const event of events) {
     if (!event.summary) continue;
+
+    // Skip noisy recurring events (>5 instances = weekly recurring)
+    if (event.recurringEventId && (recurringCounts.get(event.recurringEventId) || 0) > 5) continue;
+
+    // Skip all-day events with generic titles
+    const GENERIC = ['home', 'ooo', 'out of office', 'pto', 'holiday', 'vacation', 'block', 'focus time', 'busy', 'lunch'];
+    if (event.start?.date && !event.start?.dateTime && GENERIC.some(g => event.summary!.toLowerCase().includes(g))) continue;
 
     const start = event.start?.dateTime || event.start?.date || '';
     const attendees = (event.attendees || []).map(a => a.displayName || a.email || '').filter(Boolean);
