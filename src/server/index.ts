@@ -975,6 +975,66 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── Claude.ai file listing per conversation ──────
+  app.get('/api/claude/conversations/:uuid/files', async (req, res) => {
+    try {
+      const sessionKey = getConfig(db, 'claude_session_key');
+      if (!sessionKey) return res.status(400).json({ error: 'No session key' });
+      const { claudeApiGet } = await import('../connectors/claude.js');
+      const orgs = getConfig(db, 'claude_organizations') || [];
+
+      let convo: any = null;
+      let orgId: string = '';
+      for (const org of (orgs as any[])) {
+        try {
+          convo = await (claudeApiGet as any)(`/organizations/${org.uuid}/chat_conversations/${req.params.uuid}`, sessionKey, db);
+          if (convo?.chat_messages) { orgId = org.uuid; break; }
+        } catch {}
+      }
+      if (!convo?.chat_messages) return res.status(404).json({ error: 'Not found' });
+
+      const files: any[] = [];
+      for (const msg of convo.chat_messages) {
+        if (msg.files?.length) {
+          for (const f of msg.files) {
+            files.push({
+              uuid: f.file_uuid,
+              name: f.file_name,
+              kind: f.file_kind,
+              created_at: f.created_at,
+              download_url: `/api/claude/files/${orgId}/${f.file_uuid}`,
+            });
+          }
+        }
+      }
+      res.json({ conversation: convo.name, files, total: files.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message?.slice(0, 200) });
+    }
+  });
+
+  // ── Claude.ai file proxy (download files from conversations) ──────
+  app.get('/api/claude/files/:orgId/:fileId', async (req, res) => {
+    try {
+      const sessionKey = getConfig(db, 'claude_session_key');
+      if (!sessionKey) return res.status(400).json({ error: 'No session key' });
+      const url = `https://claude.ai/api/${req.params.orgId}/files/${req.params.fileId}/preview`;
+      const response = await fetch(url, {
+        headers: {
+          'Cookie': `sessionKey=${sessionKey}`,
+          'User-Agent': 'Mozilla/5.0',
+        },
+      });
+      if (!response.ok) return res.status(response.status).json({ error: 'File not found' });
+      const contentType = response.headers.get('content-type') || 'application/octet-stream';
+      res.setHeader('Content-Type', contentType);
+      const buffer = Buffer.from(await response.arrayBuffer());
+      res.send(buffer);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message?.slice(0, 200) });
+    }
+  });
+
   // ── MCP over SSE (for remote Claude Desktop) ───────────
   // GET /mcp establishes SSE stream, POST /mcp/messages sends JSON-RPC
   const mcpTransports = new Map<string, SSEServerTransport>();

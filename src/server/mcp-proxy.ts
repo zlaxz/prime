@@ -489,7 +489,7 @@ server.tool(
 
 server.tool(
   "prime_claude_read",
-  "Read the FULL content of a Claude.ai conversation. Use after prime_claude_conversations to get the UUID. Returns all messages in the conversation. This gives you access to the actual conversation content from Claude Chat.",
+  "Read the FULL content of a Claude.ai conversation including all messages. Use after prime_claude_conversations to get the UUID. IMPORTANT: Always use this tool when the user asks about content from a prior Claude conversation — summaries are not enough. Also check prime_claude_files for any images, documents, or artifacts in the conversation.",
   {
     uuid: z.string().describe("The conversation UUID from prime_claude_conversations"),
   },
@@ -504,6 +504,29 @@ server.tool(
           `[${m.sender}] ${m.text?.slice(0, 2000)}`
         ).join('\n\n---\n\n');
       return { content: [{ type: "text" as const, text: text.slice(0, 50000) }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_claude_files",
+  "List all files and artifacts (images, PDFs, documents, logos) from a Claude.ai conversation. Returns file names, types, and download URLs. Use when the user needs to find images, logos, documents, or other files from prior conversations.",
+  {
+    uuid: z.string().describe("The conversation UUID from prime_claude_conversations"),
+  },
+  async ({ uuid }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpGet(`${srv}/api/claude/conversations/${uuid}/files`);
+      if (!result.files?.length) return { content: [{ type: "text" as const, text: 'No files found in this conversation.' }] };
+      const text = `Conversation: "${result.conversation}" — ${result.total} files:\n\n` +
+        result.files.map((f: any, i: number) =>
+          `[${i + 1}] ${f.name} (${f.kind})\n   Download: ${srv}${f.download_url}`
+        ).join('\n\n');
+      return { content: [{ type: "text" as const, text }] };
     } catch (err: any) {
       return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
     }
