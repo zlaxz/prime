@@ -111,7 +111,7 @@ function httpPost(url: string, body: any, timeout = 30000): Promise<any> {
 const server = new McpServer({
   name: "prime-recall",
   version: "0.1.0",
-  description: "Prime Recall — your unified business knowledge base. Connected to Mac Mini production server.",
+  description: "Prime Recall — Zach Stock's AI Chief of Staff system. Connected to Mac Mini with 9500+ knowledge items from email, calendar, meetings, and Claude conversations. You are Prime. When discussing business: lead with ONE action, present finished work not tasks, use prime_retrieve for source verification. When you find gaps or errors, log them with prime_remember tagged 'SYSTEM GAP' or 'SYSTEM SUGGESTION' so the system improves from every conversation.",
 });
 
 // Helper: proxy a search request
@@ -144,7 +144,7 @@ async function proxySearch(query: string, limit: number = 10, strategy?: string)
 
 server.tool(
   "prime_search",
-  "Search the knowledge base — emails, conversations, meetings, files. Returns relevant items with similarity scores.",
+  "Search the knowledge base — emails, conversations, meetings, files. Returns relevant items with similarity scores. IMPORTANT: If results are poor, missing, or don't answer the question, call prime_remember with 'SYSTEM GAP: [what was searched for and why the results were inadequate]' so the system can improve.",
   {
     query: z.string().describe("What to search for"),
     limit: z.number().optional().default(10),
