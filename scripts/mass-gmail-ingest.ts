@@ -20,15 +20,29 @@ const EXTRACTION_CONCURRENCY = 100; // DeepSeek swarm
 
 // Ensure DeepSeek API key is available
 if (!process.env.DEEPSEEK_API_KEY) {
+  // Try DB first
   const dbKey = db.prepare("SELECT value FROM config WHERE key = 'deepseek_api_key'").get() as any;
   if (dbKey?.value) {
-    process.env.DEEPSEEK_API_KEY = dbKey.value;
+    process.env.DEEPSEEK_API_KEY = dbKey.value.replace(/^"|"$/g, ''); // strip quotes if JSON-wrapped
     console.log('Loaded DeepSeek key from DB config');
-  } else {
-    console.error('No DEEPSEEK_API_KEY in env or DB. Set it in .env or run: recall config deepseek_api_key <key>');
+  }
+  // Try .env file directly
+  if (!process.env.DEEPSEEK_API_KEY) {
+    try {
+      const envFile = require('fs').readFileSync(require('path').join(require('os').homedir(), 'GitHub', 'prime', '.env'), 'utf-8');
+      const match = envFile.match(/DEEPSEEK_API_KEY=(.+)/);
+      if (match) {
+        process.env.DEEPSEEK_API_KEY = match[1].trim();
+        console.log('Loaded DeepSeek key from .env file');
+      }
+    } catch {}
+  }
+  if (!process.env.DEEPSEEK_API_KEY) {
+    console.error('No DEEPSEEK_API_KEY found anywhere');
     process.exit(1);
   }
 }
+console.log('DeepSeek key:', process.env.DEEPSEEK_API_KEY?.slice(0, 10) + '...');
 
 const CLIENT_ID = getConfig(db, 'google_client_id') || process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = getConfig(db, 'google_client_secret') || process.env.GOOGLE_CLIENT_SECRET || '';
