@@ -199,7 +199,8 @@ async function main() {
         });
         const v1 = toV1(result);
 
-        const embedding = await generateEmbedding(`${v1.title} ${v1.summary}`);
+        // Skip embedding for mass ingest — will batch-generate after
+        const embedding: number[] = [];
 
         const item: KnowledgeItem = {
           id: uuid(),
