@@ -478,8 +478,14 @@ export async function scanSentMail(
   console.log('  Phase C: Correcting existing items...');
 
   for (const td of threadData) {
+    // Try matching by thread ID first, then by subject (thread IDs differ between inbox/sent views)
     const sourceRef = `thread:${td.id}`;
-    const existing = db.prepare('SELECT id, metadata, tags FROM knowledge WHERE source_ref = ?').get(sourceRef) as any;
+    let existing = db.prepare('SELECT id, metadata, tags FROM knowledge WHERE source_ref = ?').get(sourceRef) as any;
+    if (!existing && td.subject) {
+      // Fallback: match by subject in inbox items
+      existing = db.prepare('SELECT id, metadata, tags FROM knowledge WHERE source = ? AND title LIKE ? ORDER BY source_date DESC LIMIT 1')
+        .get('gmail', `%${td.subject.replace(/^(Re:|Fwd:)\s*/gi, '').trim().slice(0, 50)}%`) as any;
+    }
 
     if (existing && td.userSentLast) {
       const meta = typeof existing.metadata === 'string' ? JSON.parse(existing.metadata) : (existing.metadata || {});
