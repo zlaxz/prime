@@ -24,7 +24,7 @@ import { indexDirectory } from './connectors/files.js';
 import { importClaudeConversations, connectClaude, scanClaude } from './connectors/claude.js';
 import { connectOtter, scanOtter } from './connectors/otter.js';
 import { connectFireflies, scanFireflies } from './connectors/fireflies.js';
-import { connectCowork, scanCowork } from './connectors/cowork.js';
+import { connectCowork, scanCowork, backfillCoworkRawContent } from './connectors/cowork.js';
 import { connectClaudeCode, scanClaudeCode } from './connectors/claude-code.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -484,6 +484,13 @@ program
 
         console.log(`\n  ✓ ${sessions} sessions → ${items} knowledge items`);
         if (skipped > 0) console.log(`    ${skipped} sessions skipped (already indexed or too short)`);
+
+        // Backfill raw_content for previously indexed sessions missing it
+        console.log('\n  Backfilling raw_content for existing sessions...');
+        const backfill = backfillCoworkRawContent(db);
+        if (backfill.updated > 0) {
+          console.log(`  ✓ Backfilled ${backfill.updated} sessions with raw_content`);
+        }
 
         const stats = getStats(db);
         console.log(`\n  Total knowledge: ${stats.total_items} items\n`);

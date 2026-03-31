@@ -200,7 +200,55 @@ function extractConversationText(session: CoworkSession): string {
     }
   }
 
-  return parts.join('\n\n').slice(0, 10000);
+  return parts.join('\n\n');
+}
+
+/**
+ * Extract searchable domain terms from conversation text.
+ * Catches financial/legal/deal terms and entity names that AI extraction often misses.
+ */
+function extractSearchTerms(text: string): string[] {
+  const terms: string[] = [];
+
+  // Financial/deal terms
+  const DOMAIN_TERMS: [RegExp, string][] = [
+    [/\bgp\s*[\/&]\s*lp\b/i, 'GP/LP'],
+    [/\bgeneral partner/i, 'general-partner'],
+    [/\blimited partner/i, 'limited-partner'],
+    [/\bterm\s*sheet/i, 'term-sheet'],
+    [/\bspv\b/i, 'SPV'],
+    [/\bequity\b/i, 'equity'],
+    [/\bacquisition/i, 'acquisition'],
+    [/\bmerger/i, 'merger'],
+    [/\bvaluation/i, 'valuation'],
+    [/\bcap\s*table/i, 'cap-table'],
+    [/\bdue\s*diligence/i, 'due-diligence'],
+    [/\bipo\b/i, 'IPO'],
+    [/\bseries\s*[a-d]\b/i, 'fundraising'],
+    [/\bloi\b/i, 'LOI'],
+    [/\bletter\s*of\s*intent/i, 'LOI'],
+    [/\bescrow\b/i, 'escrow'],
+    [/\bdebt\b/i, 'debt'],
+    [/\bcollateral\b/i, 'collateral'],
+    [/\binsurance/i, 'insurance'],
+    [/\bpolicy\b/i, 'policy'],
+    [/\bunderwriting/i, 'underwriting'],
+    [/\bcompliance/i, 'compliance'],
+    [/\bregulat/i, 'regulatory'],
+    [/\bcontract\b/i, 'contract'],
+    [/\binvoice/i, 'invoice'],
+    [/\bbudget/i, 'budget'],
+    [/\brevenue/i, 'revenue'],
+    [/\bprofit/i, 'profit'],
+    [/\bcash\s*flow/i, 'cash-flow'],
+    [/\bROI\b/, 'ROI'],
+  ];
+
+  for (const [pattern, tag] of DOMAIN_TERMS) {
+    if (pattern.test(text)) terms.push(tag);
+  }
+
+  return [...new Set(terms)];
 }
 
 /**
@@ -303,9 +351,10 @@ export async function scanCowork(
   // ── Phase 1: Extract conversation text (local, fast) ──
   console.log('  Phase 1: Extracting conversation text...');
   const sessionTexts = toProcess.map(session => {
-    const text = extractConversationText(session);
+    const fullText = extractConversationText(session);
+    const text = fullText.slice(0, 10000); // Truncated for AI extraction (token limits)
     const taskName = extractTaskName(session);
-    return { session, text, taskName };
+    return { session, text, fullText, taskName };
   }).filter(s => s.text.length > 50); // Skip near-empty sessions
 
   // ── Phase 2: AI extraction in parallel (5 concurrent) ──
@@ -317,16 +366,17 @@ export async function scanCowork(
     extracted: Awaited<ReturnType<typeof extractIntelligence>>;
     taskName: string | null;
     text: string;
+    fullText: string;
   }
 
   const processed: ProcessedSession[] = [];
 
   for (let i = 0; i < sessionTexts.length; i += CONCURRENCY) {
     const batch = sessionTexts.slice(i, i + CONCURRENCY);
-    const results = await Promise.all(batch.map(async ({ session, text, taskName }): Promise<ProcessedSession | null> => {
+    const results = await Promise.all(batch.map(async ({ session, text, fullText, taskName }): Promise<ProcessedSession | null> => {
       try {
         const extracted = await extractIntelligence(text, apiKey);
-        return { session, extracted, taskName, text };
+        return { session, extracted, taskName, text, fullText };
       } catch (err: any) {
         console.error(`\n    ✗ Extraction failed for ${session.sessionName}: ${err.message?.slice(0, 100)}`);
         return null;
@@ -361,7 +411,7 @@ export async function scanCowork(
   console.log('  Phase 4: Saving to knowledge base...');
 
   for (let i = 0; i < processed.length; i++) {
-    const { session, extracted, taskName } = processed[i];
+    const { session, extracted, taskName, fullText } = processed[i];
     const embedding = embeddings[i];
 
     const title = taskName
@@ -370,6 +420,9 @@ export async function scanCowork(
 
     const isScheduled = !!taskName;
     const msgCount = session.messages.length;
+
+    // Extract domain-specific search terms from full conversation text
+    const searchTerms = extractSearchTerms(fullText);
 
     const item: KnowledgeItem = {
       id: uuid(),
@@ -387,6 +440,7 @@ export async function scanCowork(
         ...extracted.tags,
         'cowork',
         ...(isScheduled ? ['scheduled-task', `task:${taskName}`] : []),
+        ...searchTerms,
       ],
       project: extracted.project,
       importance: extracted.importance,
@@ -406,6 +460,13 @@ export async function scanCowork(
     };
 
     insertKnowledge(db, item);
+
+    // Store full conversation text as raw_content for source retrieval via prime_retrieve
+    if (fullText) {
+      db.prepare('UPDATE knowledge SET raw_content = ?, extraction_version = 3 WHERE id = ?')
+        .run(fullText, item.id);
+    }
+
     stats.items++;
     stats.sessions++;
   }
@@ -416,6 +477,72 @@ export async function scanCowork(
      VALUES ('cowork', datetime('now'), ?, 'idle', datetime('now'))`
   ).run(stats.items);
 
+  return stats;
+}
+
+// ============================================================
+// Backfill raw_content for already-indexed sessions
+// ============================================================
+
+/**
+ * Re-reads JSONL files for already-indexed Cowork sessions that are missing raw_content.
+ * Does NOT re-extract or re-embed — only populates raw_content for prime_retrieve.
+ */
+export function backfillCoworkRawContent(db: Database.Database): { updated: number; skipped: number; missing: number } {
+  const stats = { updated: 0, skipped: 0, missing: 0 };
+
+  // Find cowork items missing raw_content
+  const rows = db.prepare(
+    "SELECT id, source_ref, metadata FROM knowledge WHERE source = 'cowork' AND (raw_content IS NULL OR raw_content = '')"
+  ).all() as { id: string; source_ref: string; metadata: string }[];
+
+  if (rows.length === 0) {
+    console.log('  All cowork items already have raw_content');
+    return stats;
+  }
+
+  console.log(`  ${rows.length} cowork items missing raw_content, scanning sessions...`);
+
+  // Build a map of sessionId -> session for quick lookup
+  const allSessions = discoverSessions();
+  const sessionMap = new Map<string, CoworkSession>();
+  for (const s of allSessions) {
+    sessionMap.set(s.sessionId, s);
+  }
+
+  for (const row of rows) {
+    const sessionId = row.source_ref.replace('cowork:', '');
+    const session = sessionMap.get(sessionId);
+
+    if (!session) {
+      stats.missing++;
+      continue;
+    }
+
+    const fullText = extractConversationText(session);
+    if (fullText.length < 50) {
+      stats.skipped++;
+      continue;
+    }
+
+    // Also backfill search terms into tags
+    const searchTerms = extractSearchTerms(fullText);
+    if (searchTerms.length > 0) {
+      try {
+        // Existing tags are stored in the tags column as JSON array
+        const existingTags = db.prepare('SELECT tags FROM knowledge WHERE id = ?').get(row.id) as { tags: string } | undefined;
+        const tags: string[] = existingTags?.tags ? JSON.parse(existingTags.tags) : [];
+        const mergedTags = [...new Set([...tags, ...searchTerms])];
+        db.prepare('UPDATE knowledge SET tags = ? WHERE id = ?').run(JSON.stringify(mergedTags), row.id);
+      } catch {}
+    }
+
+    db.prepare('UPDATE knowledge SET raw_content = ?, extraction_version = 3 WHERE id = ?')
+      .run(fullText, row.id);
+    stats.updated++;
+  }
+
+  console.log(`  Backfill: ${stats.updated} updated, ${stats.skipped} skipped (too short), ${stats.missing} sessions not found on disk`);
   return stats;
 }
 
