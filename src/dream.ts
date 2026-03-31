@@ -63,9 +63,12 @@ async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessio
     const env = { ...process.env };
 
     // On Mac Mini, claude -p needs GUI context for Keychain access.
-    // Use claude-gui.sh wrapper which runs via osascript "tell Terminal".
-    // On laptop, claude -p works directly (already in GUI session).
     delete env.ANTHROPIC_API_KEY;
+    // Ensure Homebrew paths (cron/launchd strip PATH)
+    const homebrew = '/opt/homebrew/bin:/opt/homebrew/sbin';
+    if (!env.PATH?.includes(homebrew)) {
+      env.PATH = `${homebrew}:${env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'}`;
+    }
 
     const guiWrapper = join(homedir(), 'GitHub', 'prime', 'scripts', 'claude-gui.sh');
     const useGuiWrapper = existsSync(guiWrapper) && existsSync(join(homedir(), '.claude', 'oauth-token.txt'));
@@ -612,12 +615,13 @@ async function task18StrategicActions(db: Database.Database): Promise<TaskResult
 
       // Get key people with EMAIL ADDRESSES for this project
       const people = db.prepare(`
-        SELECT DISTINCT e.canonical_name, e.email, e.relationship_type, e.user_label
+        SELECT e.canonical_name, e.email, e.relationship_type, e.user_label
         FROM entities e
         JOIN entity_mentions em ON e.id = em.entity_id
         JOIN knowledge_primary k ON em.knowledge_item_id = k.id
         WHERE k.project = ? AND e.type = 'person' AND e.user_dismissed = 0
           AND e.canonical_name NOT LIKE '%Zach%Stock%'
+        GROUP BY e.id
         ORDER BY COUNT(em.id) DESC LIMIT 5
       `).all(p.project) as any[];
 
