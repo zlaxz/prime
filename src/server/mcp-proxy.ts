@@ -345,23 +345,31 @@ server.tool(
 
 server.tool(
   "prime_retrieve",
-  "Retrieve the FULL original content from ANY source — emails, conversations, meeting transcripts, manual entries, cowork sessions, documents. Works for ALL source types. Use this whenever a search result's summary isn't detailed enough. Pass the source_ref from the search result.",
+  "Retrieve the FULL original content from ANY source — emails, conversations, meeting transcripts, manual entries, cowork sessions, documents. Works for ALL source types. For large content, use offset/limit to paginate (e.g., offset=0 limit=50000 for first 50K chars, then offset=50000 for the next chunk).",
   {
-    source_ref: z.string().describe("The source_ref from a search result (e.g., 'claude:uuid', 'thread:id', 'otter:id')"),
+    source_ref: z.string().describe("The source_ref from a search result"),
+    offset: z.number().optional().default(0).describe("Character offset to start reading from (for pagination)"),
+    limit: z.number().optional().default(50000).describe("Max characters to return (default 50000)"),
   },
-  async ({ source_ref }) => {
+  async ({ source_ref, offset, limit }) => {
     const srv = await getServer();
     if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
     try {
       const result = await httpPost(`${srv}/api/retrieve`, { source_ref }, 60000);
       if (result.content) {
-        // Cap at 50K chars to avoid overwhelming Claude's context
-        const content = result.content.length > 50000
-          ? result.content.slice(0, 50000) + `\n\n[... TRUNCATED at 50K of ${result.content.length} chars. Full content available via API.]`
-          : result.content;
-        return { content: [{ type: "text" as const, text: `[${result.content_type || 'source'}] Full content (${result.content.length} chars):\n\n${content}` }] };
+        const total = result.content.length;
+        const chunk = result.content.slice(offset, offset + limit);
+        const hasMore = (offset + limit) < total;
+        let header = `[${result.content_type || 'source'}] ${total} chars total`;
+        if (offset > 0 || hasMore) {
+          header += ` | showing ${offset}-${offset + chunk.length}`;
+        }
+        if (hasMore) {
+          header += ` | MORE AVAILABLE: call again with offset=${offset + limit}`;
+        }
+        return { content: [{ type: "text" as const, text: `${header}\n\n${chunk}` }] };
       }
-      return { content: [{ type: "text" as const, text: `Could not retrieve source content for ${source_ref}. The original API may be unavailable.` }] };
+      return { content: [{ type: "text" as const, text: `Could not retrieve source content for ${source_ref}.` }] };
     } catch (err: any) {
       return { content: [{ type: "text" as const, text: `Error retrieving source: ${err.message}` }] };
     }
