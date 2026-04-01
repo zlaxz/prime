@@ -355,7 +355,11 @@ server.tool(
     try {
       const result = await httpPost(`${srv}/api/retrieve`, { source_ref }, 60000);
       if (result.content) {
-        return { content: [{ type: "text" as const, text: `[${result.content_type || 'source'}] Full content (${result.content.length} chars):\n\n${result.content}` }] };
+        // Cap at 50K chars to avoid overwhelming Claude's context
+        const content = result.content.length > 50000
+          ? result.content.slice(0, 50000) + `\n\n[... TRUNCATED at 50K of ${result.content.length} chars. Full content available via API.]`
+          : result.content;
+        return { content: [{ type: "text" as const, text: `[${result.content_type || 'source'}] Full content (${result.content.length} chars):\n\n${content}` }] };
       }
       return { content: [{ type: "text" as const, text: `Could not retrieve source content for ${source_ref}. The original API may be unavailable.` }] };
     } catch (err: any) {
