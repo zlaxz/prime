@@ -541,6 +541,24 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         meta_insight: metaInsight,
         dream_age_hours: Math.round(dreamAge),
         knowledge_items: stats.total_items,
+        upcoming_meetings: (() => {
+          try {
+            const raw = (db.prepare("SELECT value FROM graph_state WHERE key = 'upcoming_meeting_prep'").get() as any)?.value;
+            return raw ? JSON.parse(raw) : [];
+          } catch { return []; }
+        })(),
+        cross_project_patterns: (() => {
+          try {
+            const raw = (db.prepare("SELECT value FROM graph_state WHERE key = 'cross_project_patterns'").get() as any)?.value;
+            return raw ? JSON.parse(raw) : [];
+          } catch { return []; }
+        })(),
+        detected_contradictions: (() => {
+          try {
+            const raw = (db.prepare("SELECT value FROM graph_state WHERE key = 'detected_contradictions'").get() as any)?.value;
+            return raw ? JSON.parse(raw) : [];
+          } catch { return []; }
+        })(),
         proactive_alerts: (() => {
           try {
             const raw = (db.prepare("SELECT value FROM graph_state WHERE key = 'proactive_alerts'").get() as any)?.value;
@@ -2023,6 +2041,140 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── Stripe Webhook ─────────────────────────────────────────
+  // Handles checkout.session.completed, customer.subscription.deleted,
+  // and invoice.payment_failed for managed installation customers.
+  // Stripe sends raw body — we parse JSON ourselves for signature verification later.
+  // ────────────────────────────────────────────────────────────
+  app.post('/api/stripe/webhook', async (req, res) => {
+    try {
+      const event = req.body;
+      if (!event || !event.type) {
+        res.status(400).json({ error: 'Invalid webhook payload' });
+        return;
+      }
+
+      const eventType = event.type as string;
+
+      if (eventType === 'checkout.session.completed') {
+        const session = event.data?.object;
+        if (!session) {
+          res.status(400).json({ error: 'Missing session data' });
+          return;
+        }
+
+        const customerId = uuid();
+        const apiKey = `prime_${uuid().replace(/-/g, '')}`;
+        const trialEnd = new Date(Date.now() + 14 * 86400000).toISOString();
+
+        db.prepare(`
+          INSERT OR IGNORE INTO customers (id, email, name, stripe_customer_id, stripe_subscription_id, plan, status, trial_ends_at, api_key)
+          VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+        `).run(
+          customerId,
+          session.customer_email || session.customer_details?.email || '',
+          session.customer_details?.name || null,
+          session.customer || null,
+          session.subscription || null,
+          session.metadata?.plan || 'professional',
+          trialEnd,
+          apiKey
+        );
+
+        console.log(`[stripe] New customer: ${session.customer_email} (${customerId})`);
+        res.json({ ok: true, event: eventType, customer_id: customerId });
+
+      } else if (eventType === 'customer.subscription.deleted') {
+        const subscription = event.data?.object;
+        if (subscription?.id) {
+          db.prepare(`UPDATE customers SET status = 'cancelled' WHERE stripe_subscription_id = ?`).run(subscription.id);
+          console.log(`[stripe] Subscription cancelled: ${subscription.id}`);
+        }
+        res.json({ ok: true, event: eventType });
+
+      } else if (eventType === 'invoice.payment_failed') {
+        const invoice = event.data?.object;
+        if (invoice?.customer) {
+          db.prepare(`UPDATE customers SET status = 'past_due' WHERE stripe_customer_id = ?`).run(invoice.customer);
+          console.log(`[stripe] Payment failed for customer: ${invoice.customer}`);
+        }
+        res.json({ ok: true, event: eventType });
+
+      } else {
+        // Unhandled event type — acknowledge receipt
+        res.json({ ok: true, event: eventType, handled: false });
+      }
+    } catch (err: any) {
+      console.error(`[stripe] Webhook error: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── API Key Authentication ────────────────────────────────
+  // Validates customer API keys for managed installation access.
+  // ──────────────────────────────────────────────────────────
+  app.post('/api/v1/auth/key', (req, res) => {
+    try {
+      const { api_key } = req.body;
+      if (!api_key) {
+        res.status(400).json({ error: 'api_key required' });
+        return;
+      }
+
+      const customer = db.prepare(`
+        SELECT id, email, name, plan, status, trial_ends_at, created_at
+        FROM customers WHERE api_key = ? AND status IN ('active', 'trial')
+      `).get(api_key) as any;
+
+      if (!customer) {
+        res.status(401).json({ error: 'Invalid or inactive API key' });
+        return;
+      }
+
+      // Check trial expiration
+      if (customer.status === 'trial' && customer.trial_ends_at) {
+        if (new Date(customer.trial_ends_at) < new Date()) {
+          db.prepare(`UPDATE customers SET status = 'cancelled' WHERE id = ?`).run(customer.id);
+          res.status(401).json({ error: 'Trial expired' });
+          return;
+        }
+      }
+
+      res.json({ valid: true, customer });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // API key middleware for /api/v1/* routes (excluding auth)
+  app.use('/api/v1', (req, res, next) => {
+    if (req.path === '/auth/key') return next();
+
+    const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
+    if (!apiKey) {
+      res.status(401).json({ error: 'API key required. Pass via x-api-key header.' });
+      return;
+    }
+
+    const customer = db.prepare(`
+      SELECT id, email, plan, status, trial_ends_at FROM customers WHERE api_key = ?
+    `).get(apiKey) as any;
+
+    if (!customer || !['active', 'trial'].includes(customer.status)) {
+      res.status(401).json({ error: 'Invalid or inactive API key' });
+      return;
+    }
+
+    if (customer.status === 'trial' && customer.trial_ends_at && new Date(customer.trial_ends_at) < new Date()) {
+      res.status(401).json({ error: 'Trial expired' });
+      return;
+    }
+
+    // Attach customer to request for downstream use
+    (req as any).customer = customer;
+    next();
+  });
+
   // ── Mount MCP over HTTP for claude.ai remote access ──
   try {
     const { mountMcpHttp } = await import('./mcp-http.js');
@@ -2043,7 +2195,9 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     console.log('    GET  /api/status    — Knowledge base stats');
     console.log('    GET  /api/query/*   — Structured queries');
     console.log('    ALL  /mcp           — MCP over HTTP (for remote Claude Desktop)');
-    console.log('    POST /api/webhooks/otter — Otter.ai webhook\n');
+    console.log('    POST /api/webhooks/otter — Otter.ai webhook');
+    console.log('    POST /api/stripe/webhook — Stripe webhook');
+    console.log('    POST /api/v1/auth/key    — API key validation\n');
 
     if (options.sync !== false) {
       startScheduler(options.syncInterval || 15);

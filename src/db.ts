@@ -802,6 +802,31 @@ function initSchema(db: Database.Database) {
   `);
 
   // ============================================================
+  // CUSTOMERS — Managed installation customers (Stripe-linked)
+  // $199-499/mo managed installations, hand-picked customers
+  // ============================================================
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS customers (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      name TEXT,
+      stripe_customer_id TEXT,
+      stripe_subscription_id TEXT,
+      plan TEXT DEFAULT 'professional',
+      status TEXT DEFAULT 'trial',
+      trial_ends_at TEXT,
+      api_key TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      notes TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email);
+    CREATE INDEX IF NOT EXISTS idx_customers_status ON customers(status);
+    CREATE INDEX IF NOT EXISTS idx_customers_stripe ON customers(stripe_customer_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_api_key ON customers(api_key) WHERE api_key IS NOT NULL;
+  `);
+
+  // ============================================================
   // FTS5 Full-Text Search on knowledge table
   // ============================================================
   db.exec(`

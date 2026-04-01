@@ -1,0 +1,104 @@
+{
+  "topics": [
+    {
+      "slug": "ai-chief-of-staff-adhd",
+      "title": "I Built an AI Chief of Staff Because My Brain Won't Remember What Happened Yesterday",
+      "outline": ["The problem: ADHD + running a business = dropped balls", "What I tried (Notion, Obsidian, CRMs — all failed)", "The breakthrough: AI that reads your email FOR you", "How Prime works: ingest, understand, brief", "Results after 30 days"]
+    },
+    {
+      "slug": "solo-founder-second-brain",
+      "title": "Why Every Solo Founder Needs a Second Brain (And Why Notion Isn't It)",
+      "outline": ["The solo founder memory problem", "Why note-taking tools fail (you have to DO the taking)", "The passive intelligence model: connect your email, get briefings", "What a real second brain looks like", "The difference between storage and intelligence"]
+    },
+    {
+      "slug": "adhd-entrepreneurship-ai",
+      "title": "ADHD and Entrepreneurship: How I Use AI to Compensate for Executive Function",
+      "outline": ["ADHD as a founder superpower AND kryptonite", "Executive function: what it is and why it matters", "Specific AI compensations: commitment tracking, relationship memory, priority surfacing", "Building Prime: an AI that IS your executive function", "Practical results"]
+    },
+    {
+      "slug": "ai-reads-email-architecture",
+      "title": "The Architecture of an AI That Reads Your Email and Tells You What Matters",
+      "outline": ["Why email is the richest data source most AI ignores", "The pipeline: Gmail API, entity extraction, relationship graphing", "Separating signal from noise (99% of email is noise)", "The belief system: how the AI knows what it knows", "From raw data to strategic briefing"]
+    },
+    {
+      "slug": "crm-is-dead",
+      "title": "Your CRM Is a Graveyard. Here's What Replaces It.",
+      "outline": ["CRMs require data entry. Founders don't do data entry.", "The relationship graph that builds itself from email", "Every commitment, every follow-up, tracked automatically", "Why the best CRM is one you never open", "What the post-CRM world looks like"]
+    },
+    {
+      "slug": "ai-briefing-not-dashboard",
+      "title": "I Don't Want a Dashboard. I Want an AI That Tells Me What to Do Today.",
+      "outline": ["Dashboard fatigue: more data, less clarity", "The briefing model: AI reads everything, gives you 5 priorities", "How Prime decides what matters (not reply-count, business impact)", "The morning briefing workflow", "From information overload to information confidence"]
+    },
+    {
+      "slug": "entity-graph-business-memory",
+      "title": "How an Entity Graph Gave My Business a Memory",
+      "outline": ["The problem: walking into meetings with no context", "What an entity graph is (and isn't)", "Building one automatically from 14 months of email", "The 'prep for meeting' use case", "Relationship intelligence vs. relationship management"]
+    },
+    {
+      "slug": "building-in-public-prime",
+      "title": "Building an AI Product in 30 Days: The Honest Version",
+      "outline": ["Day 1: grand vision, 500 files, nothing works", "Day 10: deleted everything, started over with 28 files", "The real lessons: ship the knowledge base first", "What I'd do differently", "Where Prime is now and where it's going"]
+    },
+    {
+      "slug": "managed-ai-not-saas",
+      "title": "Why I'm Selling Managed AI Installations, Not SaaS",
+      "outline": ["The SaaS trap: build for everyone, delight no one", "Managed model: 10 customers, each gets white-glove setup", "Unit economics: $199-499/mo x 10 = enough to prove it", "Why hand-holding beats self-serve for AI products", "The path from managed to scaled"]
+    },
+    {
+      "slug": "ai-commitment-tracking",
+      "title": "Every Promise Made in Every Email, Tracked Automatically",
+      "outline": ["The commitment problem: things slip through cracks", "How AI extracts commitments from natural language", "The escalation loop: remind, re-remind, flag", "Real examples (anonymized)", "Why this matters more than any task manager"]
+    },
+    {
+      "slug": "dream-pipeline",
+      "title": "My AI Runs a 'Dream Pipeline' Every Night. Here's What It Does.",
+      "outline": ["Biological inspiration: sleep consolidates memory", "The 21-task overnight pipeline", "Entity profiling, commitment checking, prediction generation", "Morning briefing: the output", "Why batch intelligence beats real-time alerts"]
+    },
+    {
+      "slug": "belief-system-ai-trust",
+      "title": "I Built a Belief System So My AI Doesn't Lie to Me",
+      "outline": ["The hallucination problem in production AI", "Primary vs. derived sources: the contamination risk", "How Prime quarantines its own outputs from its inputs", "Provenance views and the belief architecture", "Trust through architecture, not hope"]
+    },
+    {
+      "slug": "ai-for-insurance-founders",
+      "title": "AI for Insurance Founders: What Actually Works (And What's Hype)",
+      "outline": ["Insurance industry context: relationships matter more than data", "What AI tools get wrong about insurance", "What Prime does right: relationship-first intelligence", "Real use case: policy renewal tracking, broker relationship management", "The 'prep for meeting with underwriter' workflow"]
+    },
+    {
+      "slug": "mcp-claude-integration",
+      "title": "How I Connected Claude to My Entire Business Using MCP",
+      "outline": ["What MCP is and why it matters", "The integration: Claude Desktop talks to Prime's knowledge base", "Real queries: 'What's happening with Carefront?' answered with full context", "The tool-use pattern: search, retrieve, reason", "Why MCP is the future of AI integration"]
+    },
+    {
+      "slug": "founder-context-switching",
+      "title": "Context Switching Is Killing Your Business. AI Can Fix It.",
+      "outline": ["The context switching tax on founders", "How much time you lose re-loading context", "The meeting prep problem: 20 minutes of digging for every call", "Prime's solution: instant context assembly", "Quantified time savings"]
+    },
+    {
+      "slug": "personal-ai-not-chatbot",
+      "title": "I Don't Want a Chatbot. I Want an AI That Already Knows My Business.",
+      "outline": ["The chatbot problem: you have to explain everything every time", "Persistent memory: 14 months of email, always accessible", "The difference between answering questions and anticipating needs", "From reactive AI to proactive intelligence", "What 'it already knows' feels like in practice"]
+    },
+    {
+      "slug": "email-intelligence-not-management",
+      "title": "Stop Managing Email. Start Extracting Intelligence From It.",
+      "outline": ["Email management is a trap — organizing noise", "Email intelligence: mining for relationships, commitments, signals", "The extraction pipeline: what Prime pulls from every email", "Moving from inbox zero to intelligence rich", "Your email is your most valuable dataset"]
+    },
+    {
+      "slug": "ai-dropped-balls",
+      "title": "My AI Catches the Balls I Drop (And I Drop a Lot of Them)",
+      "outline": ["The founder drop rate: how many follow-ups never happen", "How Prime detects dropped threads", "The alert system: what gets surfaced vs. suppressed", "Real examples of saves", "Peace of mind as a product feature"]
+    },
+    {
+      "slug": "prediction-engine",
+      "title": "My AI Makes Predictions About My Business. Most of Them Are Right.",
+      "outline": ["The recursive intelligence loop: predict, verify, learn", "How predictions are generated from email + calendar patterns", "Accuracy tracking: the system grades itself", "Strategic lessons: what the AI learned from being wrong", "Why prediction matters more than reporting"]
+    },
+    {
+      "slug": "ten-customers-not-ten-thousand",
+      "title": "10 Customers, Not 10,000: Why Small Is the Strategy",
+      "outline": ["The VC playbook vs. the bootstrap playbook", "Why 10 perfect customers beats 10,000 mediocre ones", "The managed installation model in detail", "Revenue math: $3,000-5,000/mo from 10 customers", "How 10 customers teach you what 10,000 never will"]
+    }
+  ]
+}
