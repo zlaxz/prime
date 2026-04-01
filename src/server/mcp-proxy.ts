@@ -345,7 +345,7 @@ server.tool(
 
 server.tool(
   "prime_retrieve",
-  "Retrieve the FULL original content from a source. Use this when a search result's summary isn't detailed enough and you need the actual email thread, meeting transcript, or conversation. This goes back to the original API (Gmail, Claude.ai, Otter) to get the complete text.",
+  "Retrieve the FULL original content from ANY source — emails, conversations, meeting transcripts, manual entries, cowork sessions, documents. Works for ALL source types. Use this whenever a search result's summary isn't detailed enough. Pass the source_ref from the search result.",
   {
     source_ref: z.string().describe("The source_ref from a search result (e.g., 'claude:uuid', 'thread:id', 'otter:id')"),
   },
