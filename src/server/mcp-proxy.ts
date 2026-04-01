@@ -606,11 +606,33 @@ server.tool(
         }
       }
 
-      // Upcoming meetings
+      // Upcoming meetings (with attendees from meeting prep)
       if (result.upcoming_meetings?.length) {
-        alerts.push('\n📅 UPCOMING:');
+        alerts.push('\n📅 UPCOMING MEETINGS:');
         for (const m of result.upcoming_meetings) {
           alerts.push(`  ${m.time} — ${m.title}`);
+          if (m.attendees?.length) alerts.push(`    Attendees: ${m.attendees.join(', ')}`);
+          if (m.summary) alerts.push(`    ${m.summary}`);
+        }
+      }
+
+      // Cross-project patterns
+      if (result.cross_project_patterns?.length) {
+        alerts.push('\n🔗 CROSS-PROJECT PATTERNS:');
+        for (const p of result.cross_project_patterns.slice(0, 5)) {
+          alerts.push(`  [${p.type}] ${p.insight}`);
+        }
+      }
+
+      // Detected contradictions
+      if (result.detected_contradictions?.length) {
+        const actionable = result.detected_contradictions.filter((c: any) => c.type && c.type !== 'label_change');
+        if (actionable.length > 0) {
+          alerts.push('\n⚠️ CONTRADICTIONS DETECTED:');
+          for (const c of actionable.slice(0, 5)) {
+            alerts.push(`  [${c.type}] ${c.entity}: ${c.detail || c.current_label}`);
+            if (c.recommended_action) alerts.push(`    → ${c.recommended_action}`);
+          }
         }
       }
 
@@ -741,6 +763,30 @@ server.tool(
         return entry;
       }).join('\n\n');
       return { content: [{ type: "text" as const, text: `ACTIVE DECISIONS (${decisions.length}):\n\n${text}` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_request_upgrade",
+  "Request an upgrade or fix to Prime's capabilities. Describe what's broken or missing. Queued for implementation by the development session. Use when you discover a gap, bug, or missing feature.",
+  {
+    description: z.string().describe("What needs to be built or fixed"),
+    category: z.enum(["bug", "search", "intelligence", "connector", "mcp-tool", "prompt", "performance"]).describe("Type of upgrade"),
+    priority: z.enum(["critical", "high", "medium", "low"]).optional().default("medium"),
+    context: z.string().optional().describe("Why this matters"),
+  },
+  async ({ description, category, priority, context }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      await httpPost(`${srv}/api/remember`, {
+        text: `UPGRADE REQUEST [${category}] [${priority}]: ${description}${context ? '\nContext: ' + context : ''}`,
+        importance: priority === 'critical' ? 'critical' : 'high',
+      }, 30000);
+      return { content: [{ type: "text" as const, text: `Upgrade queued: [${category}/${priority}] ${description.slice(0, 80)}` }] };
     } catch (err: any) {
       return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
     }
