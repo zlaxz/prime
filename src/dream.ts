@@ -3105,6 +3105,86 @@ async function task22MemoryConsolidation(db: Database.Database): Promise<TaskRes
       }
     }
 
+    // ── Step 3b: Project association conflicts ─────────────────
+    // Same entity mentioned with different project associations within the same week.
+    const projectConflicts = db.prepare(`
+      SELECT e.canonical_name as entity,
+        GROUP_CONCAT(DISTINCT k.project) as projects,
+        COUNT(DISTINCT k.project) as project_count
+      FROM entity_mentions em
+      JOIN entities e ON em.entity_id = e.id
+      JOIN knowledge k ON em.knowledge_item_id = k.id
+      WHERE k.source_date >= datetime('now', '-7 days')
+        AND k.project IS NOT NULL
+        AND e.user_dismissed = 0
+      GROUP BY e.id
+      HAVING project_count > 1
+    `).all() as { entity: string; projects: string; project_count: number }[];
+
+    for (const pc of projectConflicts) {
+      contradictions.push({
+        type: 'project_association_conflict',
+        entity: pc.entity,
+        detail: `Mentioned in ${pc.project_count} different projects this week: ${pc.projects}`,
+        projects: pc.projects.split(','),
+      } as any);
+    }
+
+    // ── Step 3c: Commitment state contradictions ────────────────
+    // Commitments marked overdue but a sent email fulfilling them exists.
+    const overdueWithEvidence = db.prepare(`
+      SELECT c.id, c.text, c.owner, c.project, c.due_date,
+        k.title as evidence_title, k.source_date as evidence_date
+      FROM commitments c
+      JOIN knowledge k ON k.source IN ('gmail', 'gmail-sent')
+        AND k.source_date > c.detected_at
+        AND (k.title LIKE '%' || SUBSTR(c.text, 1, 40) || '%'
+          OR (c.assigned_to IS NOT NULL AND k.contacts LIKE '%' || c.assigned_to || '%'))
+      WHERE c.state IN ('detected', 'overdue')
+        AND c.due_date < datetime('now')
+      LIMIT 20
+    `).all() as any[];
+
+    for (const oe of overdueWithEvidence) {
+      contradictions.push({
+        type: 'commitment_state_mismatch',
+        entity: oe.owner || 'unknown',
+        detail: `Commitment "${oe.text.slice(0, 80)}" marked overdue but possible fulfillment found: "${oe.evidence_title}"`,
+        commitment_id: oe.id,
+        evidence_date: oe.evidence_date,
+      } as any);
+    }
+
+    // ── Step 3d: Entity relationship changes ────────────────────
+    // Detect when an entity's relationship_type or user_label indicates a role change
+    // that may affect other items (e.g., left company, changed role).
+    const relationshipChanges = db.prepare(`
+      SELECT e.canonical_name, e.user_label, e.relationship_type,
+        COUNT(DISTINCT k.id) as affected_items,
+        GROUP_CONCAT(DISTINCT k.project) as affected_projects
+      FROM entities e
+      JOIN entity_mentions em ON e.id = em.entity_id
+      JOIN knowledge k ON em.knowledge_item_id = k.id
+      WHERE e.updated_at > datetime('now', '-7 days')
+        AND e.user_label IS NOT NULL
+        AND (e.user_label LIKE '%leaving%' OR e.user_label LIKE '%left%'
+          OR e.user_label LIKE '%former%' OR e.user_label LIKE '%new role%'
+          OR e.user_label LIKE '%transition%' OR e.user_label LIKE '%moving to%')
+        AND k.source_date < e.updated_at
+        AND k.importance NOT IN ('archived', 'noise')
+      GROUP BY e.id
+    `).all() as any[];
+
+    for (const rc of relationshipChanges) {
+      contradictions.push({
+        type: 'entity_relationship_change',
+        entity: rc.canonical_name,
+        detail: `Status: "${rc.user_label}" — ${rc.affected_items} older items may reference stale role/affiliation`,
+        affected_projects: rc.affected_projects ? rc.affected_projects.split(',') : [],
+        recommended_action: `Review references to ${rc.canonical_name} in: ${rc.affected_projects || 'all projects'}`,
+      } as any);
+    }
+
     // Store contradictions in graph_state for downstream consumption
     if (contradictions.length > 0) {
       db.prepare(`
@@ -3146,6 +3226,165 @@ async function task22MemoryConsolidation(db: Database.Database): Promise<TaskRes
     };
   } catch (err: any) {
     return { task: '22-memory-consolidation', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
+// ── Task 23: Cross-Project Pattern Detection ────────────────
+// Detect patterns across projects that the user hasn't asked about:
+// - Connector entities (same person in multiple projects)
+// - Timeline overlaps (resource contention in the same week)
+// - Commitment pile-ups (5+ commitments due in the same 3-day window)
+// Pure SQL — no LLM calls.
+
+async function task23CrossProjectPatterns(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    const patterns: any[] = [];
+
+    // ── Pattern 1: Connector entities ─────────────────────────
+    // Same entity appearing in 2+ active projects = potential connector or conflict.
+    const connectors = db.prepare(`
+      SELECT e.canonical_name as entity, e.user_label, e.relationship_type,
+        GROUP_CONCAT(DISTINCT k.project) as projects,
+        COUNT(DISTINCT k.project) as project_count,
+        COUNT(DISTINCT k.id) as mention_count
+      FROM entity_mentions em
+      JOIN entities e ON em.entity_id = e.id
+      JOIN knowledge k ON em.knowledge_item_id = k.id
+      WHERE k.project IS NOT NULL
+        AND k.source_date >= datetime('now', '-30 days')
+        AND k.importance NOT IN ('archived', 'noise')
+        AND e.user_dismissed = 0
+      GROUP BY e.id
+      HAVING project_count >= 2
+      ORDER BY project_count DESC, mention_count DESC
+      LIMIT 15
+    `).all() as any[];
+
+    for (const c of connectors) {
+      patterns.push({
+        type: 'connector_entity',
+        entity: c.entity,
+        context: c.user_label || c.relationship_type,
+        projects: c.projects.split(','),
+        mention_count: c.mention_count,
+        insight: `${c.entity} spans ${c.project_count} projects (${c.projects}). Decisions in one may affect the other.`,
+      });
+    }
+
+    // ── Pattern 2: Timeline overlaps ──────────────────────────
+    // Two or more projects with commitments/events in the same 7-day window.
+    const timelineOverlaps = db.prepare(`
+      SELECT c1.project as project_a, c2.project as project_b,
+        c1.due_date as date_a, c2.due_date as date_b,
+        c1.text as commitment_a, c2.text as commitment_b,
+        c1.owner as owner_a, c2.owner as owner_b
+      FROM commitments c1
+      JOIN commitments c2 ON c1.id < c2.id
+        AND c1.project != c2.project
+        AND c1.project IS NOT NULL AND c2.project IS NOT NULL
+        AND abs(julianday(c1.due_date) - julianday(c2.due_date)) <= 7
+      WHERE c1.state NOT IN ('fulfilled', 'cancelled', 'archived')
+        AND c2.state NOT IN ('fulfilled', 'cancelled', 'archived')
+        AND c1.due_date >= datetime('now')
+        AND c1.due_date <= datetime('now', '+30 days')
+      ORDER BY c1.due_date ASC
+      LIMIT 10
+    `).all() as any[];
+
+    const seenOverlaps = new Set<string>();
+    for (const o of timelineOverlaps) {
+      const key = [o.project_a, o.project_b].sort().join('|');
+      if (seenOverlaps.has(key)) continue;
+      seenOverlaps.add(key);
+      patterns.push({
+        type: 'timeline_overlap',
+        projects: [o.project_a, o.project_b],
+        window: `${o.date_a?.slice(0, 10)} to ${o.date_b?.slice(0, 10)}`,
+        commitments: [
+          { project: o.project_a, text: o.commitment_a?.slice(0, 80) },
+          { project: o.project_b, text: o.commitment_b?.slice(0, 80) },
+        ],
+        insight: `${o.project_a} and ${o.project_b} both have deadlines in the same week. Risk of resource contention.`,
+      });
+    }
+
+    // ── Pattern 3: Commitment pile-ups ────────────────────────
+    // 5+ commitments due in any 3-day window in the next 30 days.
+    const pileups = db.prepare(`
+      SELECT DATE(c.due_date) as due_day, COUNT(*) as count,
+        GROUP_CONCAT(DISTINCT c.project) as projects,
+        GROUP_CONCAT(SUBSTR(c.text, 1, 50), ' | ') as commitments
+      FROM commitments c
+      WHERE c.state NOT IN ('fulfilled', 'cancelled', 'archived')
+        AND c.due_date >= datetime('now')
+        AND c.due_date <= datetime('now', '+30 days')
+      GROUP BY DATE(c.due_date)
+      HAVING count >= 3
+      ORDER BY due_day ASC
+    `).all() as any[];
+
+    // Roll up adjacent days into windows
+    let windowStart: string | null = null;
+    let windowCount = 0;
+    let windowProjects: Set<string> = new Set();
+    let windowDays: string[] = [];
+
+    for (const p of pileups) {
+      if (!windowStart || (new Date(p.due_day).getTime() - new Date(windowDays[windowDays.length - 1]).getTime()) <= 3 * 86400000) {
+        if (!windowStart) windowStart = p.due_day;
+        windowCount += p.count;
+        windowDays.push(p.due_day);
+        for (const proj of (p.projects || '').split(',')) {
+          if (proj) windowProjects.add(proj);
+        }
+      } else {
+        if (windowCount >= 5) {
+          patterns.push({
+            type: 'commitment_pileup',
+            window: `${windowStart} to ${windowDays[windowDays.length - 1]}`,
+            count: windowCount,
+            projects: Array.from(windowProjects),
+            insight: `${windowCount} commitments due in ${windowDays.length} day(s). Consider rescheduling or delegating.`,
+          });
+        }
+        windowStart = p.due_day;
+        windowCount = p.count;
+        windowProjects = new Set((p.projects || '').split(',').filter(Boolean));
+        windowDays = [p.due_day];
+      }
+    }
+    // Flush last window
+    if (windowCount >= 5 && windowStart) {
+      patterns.push({
+        type: 'commitment_pileup',
+        window: `${windowStart} to ${windowDays[windowDays.length - 1]}`,
+        count: windowCount,
+        projects: Array.from(windowProjects),
+        insight: `${windowCount} commitments due in ${windowDays.length} day(s). Consider rescheduling or delegating.`,
+      });
+    }
+
+    // Store in graph_state
+    if (patterns.length > 0) {
+      db.prepare(
+        "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('cross_project_patterns', ?, datetime('now'))"
+      ).run(JSON.stringify(patterns));
+    }
+
+    return {
+      task: '23-cross-project-patterns',
+      status: 'success',
+      duration_seconds: (Date.now() - start) / 1000,
+      output: {
+        connectors: connectors.length,
+        timeline_overlaps: seenOverlaps.size,
+        commitment_pileups: patterns.filter(p => p.type === 'commitment_pileup').length,
+        total_patterns: patterns.length,
+      },
+    };
+  } catch (err: any) {
+    return { task: '23-cross-project-patterns', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
   }
 }
 
@@ -3374,6 +3613,12 @@ export async function runDreamPipeline(
   const r22 = await task22MemoryConsolidation(db);
   results.push(r22);
   console.log(`    ${r22.status === 'success' ? '✓' : '✗'} ${r22.status} (${r22.duration_seconds.toFixed(1)}s)${r22.output ? ` — ${JSON.stringify(r22.output).slice(0, 150)}` : ''}`);
+
+  // Task 23: Cross-Project Pattern Detection — connector entities, timeline overlaps, commitment pileups (pure SQL, no LLM)
+  console.log('  Task 23: Cross-project pattern detection (SQL)...');
+  const r23 = await task23CrossProjectPatterns(db);
+  results.push(r23);
+  console.log(`    ${r23.status === 'success' ? '✓' : '✗'} ${r23.status} (${r23.duration_seconds.toFixed(1)}s)${r23.output ? ` — ${JSON.stringify(r23.output).slice(0, 150)}` : ''}`);
 
   // Task 04: Structured world rebuild (AFTER all verification — data is now clean)
   console.log('  Task 04: Rebuild structured world model...');

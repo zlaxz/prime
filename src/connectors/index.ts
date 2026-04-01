@@ -79,6 +79,43 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
     }
   }
 
+  // ── CALENDAR-TRIGGERED MEETING PREP ──
+  // After sync, check if there's a meeting in the next 2 hours.
+  // If so, store it in graph_state for the COS to pick up via prime_proactive_alerts.
+  try {
+    const upcomingMeetings = db.prepare(`
+      SELECT title, summary, source_date, metadata
+      FROM knowledge_primary
+      WHERE source = 'calendar'
+        AND source_date >= datetime('now')
+        AND source_date <= datetime('now', '+2 hours')
+      ORDER BY source_date ASC
+    `).all() as any[];
+
+    if (upcomingMeetings.length > 0) {
+      const meetingPrep = upcomingMeetings.map((m: any) => {
+        let attendees: string[] = [];
+        try {
+          const meta = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : m.metadata || {};
+          attendees = (meta.attendee_details || []).map((a: any) => a.displayName || a.email || '').filter(Boolean);
+          if (!attendees.length && meta.attendees) attendees = meta.attendees;
+        } catch {}
+        return {
+          title: m.title,
+          time: m.source_date,
+          summary: m.summary,
+          attendees,
+        };
+      });
+
+      db.prepare(
+        "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('upcoming_meeting_prep', ?, datetime('now'))"
+      ).run(JSON.stringify(meetingPrep));
+
+      console.log(`  📅 MEETING PREP: ${upcomingMeetings.length} meeting(s) in next 2 hours`);
+    }
+  } catch {}
+
   // ── EVENT-DRIVEN TRIGGER LAYER ──
   // After sync, check if any new items from high-priority entities arrived.
   // If so, trigger immediate analysis instead of waiting for dream pipeline.
