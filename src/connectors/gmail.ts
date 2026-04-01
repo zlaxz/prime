@@ -202,6 +202,52 @@ export async function scanGmail(
   }
   console.log(`\n  ${threadData.length} threads with content`);
 
+  // Update pass: check existing threads for new messages (replies)
+  let updatedThreads = 0;
+  for (const td of threadData) {
+    const sourceRef = `thread:${td.id}`;
+    const existing = db.prepare('SELECT id, metadata FROM knowledge WHERE source_ref = ?').get(sourceRef) as any;
+    if (!existing) continue;
+
+    const meta = typeof existing.metadata === 'string' ? JSON.parse(existing.metadata || '{}') : (existing.metadata || {});
+    const storedCount = meta.message_count || 0;
+
+    if (td.messageCount > storedCount) {
+      // Thread has new messages — update the existing knowledge item
+      const newSummary = `Email thread: "${td.subject}" — ${td.messageCount} messages (was ${storedCount}). Latest from ${td.lastFrom}: ${td.content.split('Last message: ')[1] || ''}`;
+      const newMeta = {
+        ...meta,
+        message_count: td.messageCount,
+        subject: td.subject,
+        last_from: td.lastFrom,
+        days_since_last: td.lastDate ? Math.floor((Date.now() - new Date(td.lastDate).getTime()) / 86400000) : 0,
+        waiting_on_user: !td.lastFrom.toLowerCase().includes(userEmail.toLowerCase()),
+        updated_for_reply: true,
+      };
+
+      // Update tags: if latest message is not from user, mark awaiting_reply
+      const existingTags = typeof meta.tags === 'string' ? JSON.parse(meta.tags || '[]') : [];
+      const lastFromIsUser = td.lastFrom.toLowerCase().includes(userEmail.toLowerCase());
+      let newTags = (Array.isArray(existingTags) ? existingTags : []).filter((t: string) => t !== 'awaiting_reply');
+      if (!lastFromIsUser) newTags.push('awaiting_reply');
+
+      db.prepare(
+        `UPDATE knowledge SET summary = ?, raw_content = ?, source_date = ?, metadata = ?, tags = ?, updated_at = datetime('now') WHERE id = ?`
+      ).run(
+        newSummary,
+        td.content,
+        td.lastDate ? new Date(td.lastDate).toISOString() : null,
+        JSON.stringify(newMeta),
+        JSON.stringify(newTags),
+        existing.id,
+      );
+      updatedThreads++;
+    }
+  }
+  if (updatedThreads > 0) {
+    console.log(`  Updated ${updatedThreads} threads with new replies`);
+  }
+
   // Dedup: skip threads already in the knowledge base
   const beforeDedup = threadData.length;
   const deduped = threadData.filter(td => {

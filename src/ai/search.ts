@@ -261,9 +261,9 @@ function keywordSearch(
   }
   if (items.length === 0) return [];
 
-  // Compute average document length
+  // Compute average document length (matches fullDoc construction below)
   const avgDocLength = items.reduce((sum, item) => {
-    const doc = `${item.title || ''} ${item.summary || ''} ${item.contacts || ''} ${item.tags || ''}`;
+    const doc = `${item.title || ''} ${item.summary || ''} ${item.contacts || ''} ${item.tags || ''} ${item.raw_content || ''} ${typeof item.metadata === 'string' ? item.metadata : JSON.stringify(item.metadata || {})}`;
     return sum + doc.split(/\s+/).length;
   }, 0) / items.length;
 
@@ -276,9 +276,11 @@ function keywordSearch(
     const summaryDoc = (item.summary || '').toLowerCase();
     const contactsDoc = (Array.isArray(item.contacts) ? item.contacts.join(' ') : '').toLowerCase();
     const tagsDoc = (Array.isArray(item.tags) ? item.tags.join(' ') : '').toLowerCase();
+    const rawContentDoc = (item.raw_content || '').toLowerCase();
+    const metadataDoc = (typeof item.metadata === 'string' ? item.metadata : JSON.stringify(item.metadata || {})).toLowerCase();
 
-    // BM25 on full document
-    const fullDoc = `${item.title || ''} ${item.summary || ''} ${contactsDoc} ${tagsDoc}`;
+    // BM25 on full document (includes raw_content and metadata for contact/body matches)
+    const fullDoc = `${item.title || ''} ${item.summary || ''} ${contactsDoc} ${tagsDoc} ${rawContentDoc} ${metadataDoc}`;
     let score = bm25Score(query, fullDoc, avgDocLength);
 
     // Boost title matches 3x
@@ -292,6 +294,10 @@ function keywordSearch(
     // Boost tag matches 1.5x
     const tagMatches = queryTerms.filter(t => tagsDoc.includes(t)).length;
     score += tagMatches * 1.5;
+
+    // Boost raw_content matches 1x (body text, From/To headers)
+    const rawContentMatches = queryTerms.filter(t => rawContentDoc.includes(t)).length;
+    score += rawContentMatches * 1.0;
 
     item.embedding = null; // Don't carry blob data
     return { ...item, _score: score, _strategy: 'keyword' };
@@ -325,11 +331,24 @@ function matchEntitiesFromQuery(db: Database.Database, query: string): { id: str
 
   const matched = new Map<string, string>();
 
+  const queryTerms = qLower.split(/\s+/).filter(Boolean);
+
   // Match against canonical names (multi-word names matched first for specificity)
   const sorted = entities.slice().sort((a, b) => b.canonical_name.length - a.canonical_name.length);
   for (const e of sorted) {
-    if (qLower.includes(e.canonical_name.toLowerCase())) {
+    const nameLower = e.canonical_name.toLowerCase();
+    // Full name match (query contains "dan gilhooly")
+    if (qLower.includes(nameLower)) {
       matched.set(e.id, e.canonical_name);
+      continue;
+    }
+    // Partial match: any individual name part matches a query term (e.g., "gilhooly" matches "Dan Gilhooly")
+    const nameParts = nameLower.split(/\s+/).filter(p => p.length >= 3); // skip short parts like "al", "de"
+    for (const part of nameParts) {
+      if (queryTerms.includes(part)) {
+        matched.set(e.id, e.canonical_name);
+        break;
+      }
     }
   }
 
@@ -343,8 +362,20 @@ function matchEntitiesFromQuery(db: Database.Database, query: string): { id: str
 
   const sortedAliases = aliases.slice().sort((a, b) => b.alias.length - a.alias.length);
   for (const a of sortedAliases) {
-    if (!matched.has(a.entity_id) && qLower.includes(a.alias.toLowerCase())) {
+    if (matched.has(a.entity_id)) continue;
+    const aliasLower = a.alias.toLowerCase();
+    // Full alias match
+    if (qLower.includes(aliasLower)) {
       matched.set(a.entity_id, a.canonical_name);
+      continue;
+    }
+    // Partial alias match: individual parts
+    const aliasParts = aliasLower.split(/\s+/).filter(p => p.length >= 3);
+    for (const part of aliasParts) {
+      if (queryTerms.includes(part)) {
+        matched.set(a.entity_id, a.canonical_name);
+        break;
+      }
     }
   }
 
