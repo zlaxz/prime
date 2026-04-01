@@ -144,7 +144,7 @@ async function proxySearch(query: string, limit: number = 10, strategy?: string)
 
 server.tool(
   "prime_search",
-  "Search the knowledge base — emails, conversations, meetings, files. Returns relevant items with similarity scores. IMPORTANT: If results are poor, missing, or don't answer the question, call prime_remember with 'SYSTEM GAP: [what was searched for and why the results were inadequate]' so the system can improve.",
+  "Search the knowledge base — emails, conversations, meetings, files. Returns relevant items with similarity scores. MULTI-HOP: If first results don't fully answer the question, search AGAIN with refined terms from what you found. For example: search 'Foresite deal' → find mention of 'Costas term sheet' → search 'Costas term sheet' for specifics. ALWAYS use prime_retrieve on top results for full content before making claims. If results are still poor, call prime_remember with 'SYSTEM GAP: [what was missing]'.",
   {
     query: z.string().describe("What to search for"),
     limit: z.number().optional().default(10),

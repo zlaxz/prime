@@ -4,6 +4,8 @@ import { scanCalendar } from './calendar.js';
 import { scanClaude } from './claude.js';
 import { scanCowork } from './cowork.js';
 import { getConfig } from '../db.js';
+import { join } from 'path';
+import { homedir } from 'os';
 
 export interface SyncResult {
   source: string;
@@ -56,6 +58,15 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
     } catch (err: any) {
       results.push({ source: 'cowork', items: 0, error: err.message });
     }
+  }
+
+  // Cowork output files (work products: docs, PDFs, CSVs)
+  if (coworkConnected) {
+    try {
+      const { execSync } = await import('child_process');
+      execSync('npx tsx scripts/index-cowork-outputs.ts', { cwd: join(homedir(), 'GitHub', 'prime'), timeout: 60000, stdio: 'ignore' });
+      results.push({ source: 'cowork-output', items: 0 }); // count tracked internally
+    } catch {}
   }
 
   // Gmail Sent — corrects false awaiting_reply tags + captures Zach-initiated threads
