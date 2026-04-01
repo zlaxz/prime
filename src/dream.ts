@@ -2916,6 +2916,125 @@ Rules:
   }
 }
 
+// ── Task 22: Memory Consolidation ─────────────────────────────
+// KAIROS-inspired autoDream: fight context entropy by deduplicating,
+// archiving stale noise, detecting contradictions, and promoting
+// corroborated facts. Pure SQL — no LLM calls.
+
+async function task22MemoryConsolidation(db: Database.Database): Promise<TaskResult> {
+  const start = Date.now();
+  try {
+    // ── Step 1: Deduplicate ─────────────────────────────────────
+    // Find knowledge items with same title + same source created within ~1 hour.
+    // These are re-extraction artifacts. Keep the one with the longest content.
+    const dupes = db.prepare(`
+      SELECT k1.id as keep_id, k2.id as dupe_id
+      FROM knowledge k1
+      JOIN knowledge k2 ON k1.id < k2.id
+        AND k1.source = k2.source
+        AND k1.title = k2.title
+        AND abs(julianday(k1.source_date) - julianday(k2.source_date)) < 0.05
+      WHERE length(coalesce(k1.raw_content, k1.summary, '')) >= length(coalesce(k2.raw_content, k2.summary, ''))
+    `).all() as { keep_id: string; dupe_id: string }[];
+
+    let deduped = 0;
+    for (const d of dupes) {
+      // Remove associated mentions/thread_items first (FK cascade may not cover all)
+      db.prepare('DELETE FROM entity_mentions WHERE knowledge_item_id = ?').run(d.dupe_id);
+      db.prepare('DELETE FROM thread_items WHERE knowledge_item_id = ?').run(d.dupe_id);
+      db.prepare('DELETE FROM knowledge WHERE id = ?').run(d.dupe_id);
+      deduped++;
+    }
+
+    // ── Step 2: Stale item detection ────────────────────────────
+    // Items older than 6 months, importance low/noise, never referenced anywhere,
+    // no raw_content. Demote to 'archived' so they stop polluting search.
+    const staleResult = db.prepare(`
+      UPDATE knowledge SET importance = 'archived', updated_at = datetime('now')
+      WHERE importance IN ('low', 'noise')
+        AND source_date < datetime('now', '-6 months')
+        AND raw_content IS NULL
+        AND id NOT IN (SELECT knowledge_item_id FROM entity_mentions)
+        AND id NOT IN (SELECT knowledge_item_id FROM thread_items)
+    `).run();
+    const archived = staleResult.changes;
+
+    // ── Step 3: Contradiction detection ─────────────────────────
+    // Find entities whose user_label was updated in the last 7 days.
+    // Check if knowledge items still reference stale information about them.
+    const recentlyUpdated = db.prepare(`
+      SELECT e.id, e.canonical_name, e.user_label, e.relationship_type, e.updated_at
+      FROM entities e
+      WHERE e.updated_at > datetime('now', '-7 days')
+        AND e.user_label IS NOT NULL
+    `).all() as { id: string; canonical_name: string; user_label: string; relationship_type: string | null; updated_at: string }[];
+
+    const contradictions: { entity: string; current_label: string; stale_item_count: number }[] = [];
+    for (const ent of recentlyUpdated) {
+      // Find knowledge items mentioning this entity with outdated info
+      // If user_label changed, items from before the update may contain stale context
+      const staleItems = db.prepare(`
+        SELECT COUNT(*) as cnt FROM knowledge k
+        JOIN entity_mentions em ON k.id = em.knowledge_item_id
+        WHERE em.entity_id = ?
+          AND k.source_date < ?
+          AND k.importance NOT IN ('archived', 'noise')
+          AND (k.summary LIKE '%' || ? || '%' OR k.title LIKE '%' || ? || '%')
+      `).get(ent.id, ent.updated_at, ent.canonical_name, ent.canonical_name) as { cnt: number };
+
+      if (staleItems.cnt > 0) {
+        contradictions.push({
+          entity: ent.canonical_name,
+          current_label: ent.user_label,
+          stale_item_count: staleItems.cnt,
+        });
+      }
+    }
+
+    // Store contradictions in graph_state for downstream consumption
+    if (contradictions.length > 0) {
+      db.prepare(`
+        INSERT OR REPLACE INTO graph_state (key, value, updated_at)
+        VALUES ('detected_contradictions', ?, datetime('now'))
+      `).run(JSON.stringify(contradictions));
+    }
+
+    // ── Step 4: Verified fact promotion ─────────────────────────
+    // Find knowledge items corroborated by 3+ other items from different sources
+    // (same entity + same project + within 30 days). Promote to importance='high'.
+    const promotionCandidates = db.prepare(`
+      SELECT k.id, k.title, k.project, k.source, COUNT(DISTINCT k2.source) as corroborating_sources
+      FROM knowledge k
+      JOIN entity_mentions em ON k.id = em.knowledge_item_id
+      JOIN entity_mentions em2 ON em.entity_id = em2.entity_id AND em.knowledge_item_id != em2.knowledge_item_id
+      JOIN knowledge k2 ON em2.knowledge_item_id = k2.id
+        AND k2.source != k.source
+        AND k.project IS NOT NULL AND k2.project = k.project
+        AND abs(julianday(k.source_date) - julianday(k2.source_date)) < 30
+      WHERE k.importance = 'normal'
+      GROUP BY k.id
+      HAVING corroborating_sources >= 3
+    `).all() as { id: string }[];
+
+    let promoted = 0;
+    for (const c of promotionCandidates) {
+      db.prepare("UPDATE knowledge SET importance = 'high', updated_at = datetime('now') WHERE id = ?").run(c.id);
+      promoted++;
+    }
+
+    const stats = { deduped, archived, contradictions_found: contradictions.length, promoted };
+
+    return {
+      task: '22-memory-consolidation',
+      status: 'success',
+      duration_seconds: (Date.now() - start) / 1000,
+      output: stats,
+    };
+  } catch (err: any) {
+    return { task: '22-memory-consolidation', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
+  }
+}
+
 // ── Pipeline Runner ─────────────────────────────────────────
 
 export async function runDreamPipeline(
@@ -3036,6 +3155,12 @@ export async function runDreamPipeline(
   const r19 = await task19GapDetection(db);
   results.push(r19);
   console.log(`    ${r19.status === 'success' ? '✓' : '✗'} ${r19.status} (${r19.duration_seconds.toFixed(1)}s)${r19.output ? ` — ${JSON.stringify(r19.output).slice(0, 150)}` : ''}`);
+
+  // Task 22: Memory Consolidation — deduplicate, archive stale, detect contradictions, promote facts (pure SQL, no LLM)
+  console.log('  Task 22: Memory consolidation (SQL)...');
+  const r22 = await task22MemoryConsolidation(db);
+  results.push(r22);
+  console.log(`    ${r22.status === 'success' ? '✓' : '✗'} ${r22.status} (${r22.duration_seconds.toFixed(1)}s)${r22.output ? ` — ${JSON.stringify(r22.output).slice(0, 150)}` : ''}`);
 
   // Task 04: Structured world rebuild (AFTER all verification — data is now clean)
   console.log('  Task 04: Rebuild structured world model...');
