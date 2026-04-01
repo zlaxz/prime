@@ -763,6 +763,27 @@ function initSchema(db: Database.Database) {
   `);
 
   // ============================================================
+  // DECISIONS — Institutional decision memory
+  // Standing decisions that constrain all downstream reasoning.
+  // COS sees them at conversation start. Dream pipeline respects them.
+  // ============================================================
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS decisions (
+      id TEXT PRIMARY KEY,
+      decision TEXT NOT NULL,
+      reasoning TEXT,
+      category TEXT,          -- 'strategic', 'entity', 'project', 'operational', 'correction'
+      project TEXT,
+      entity_name TEXT,
+      supersedes_id TEXT,     -- if this decision replaces an older one
+      active INTEGER DEFAULT 1, -- 0 = superseded/revoked
+      created_at TEXT DEFAULT (datetime('now')),
+      source TEXT             -- 'user', 'cos', 'dream-pipeline'
+    );
+    CREATE INDEX IF NOT EXISTS idx_decisions_active ON decisions(active, category);
+  `);
+
+  // ============================================================
   // KNOWLEDGE CHUNKS — sub-document embeddings for long content
   // Long conversations get one embedding from their summary (~200 chars).
   // Chunks split raw_content into overlapping segments, each with its own embedding.

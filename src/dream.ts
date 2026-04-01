@@ -666,8 +666,23 @@ Open commitments: ${commitments.map((c: any) => `${c.text} [${c.state}]${c.due_d
       console.log(`    Task 18 source retrieval warning: ${err.message?.slice(0, 100)}`);
     }
 
+    // Load standing decisions as constraints
+    let standingDecisions = '';
+    try {
+      const decisions = db.prepare(
+        "SELECT decision, category, entity_name, project FROM decisions WHERE active = 1 ORDER BY created_at DESC LIMIT 15"
+      ).all() as any[];
+      if (decisions.length > 0) {
+        standingDecisions = '\n\nSTANDING DECISIONS (from user — treat as absolute constraints):\n' +
+          decisions.map((d: any) => {
+            const tag = d.entity_name ? `[${d.entity_name}]` : d.project ? `[${d.project}]` : d.category ? `[${d.category}]` : '';
+            return `- ${tag} ${d.decision}`;
+          }).join('\n');
+      }
+    } catch {}
+
     // Use Claude for drafts — DeepSeek produces generic corporate-speak
-    const actionPrompt = `You are drafting REAL business communications for Zach Stock, founder of Recapture Insurance (an MGA specializing in senior living/healthcare insurance). Today is ${today}.
+    const actionPrompt = `You are drafting REAL business communications for Zach Stock, founder of Recapture Insurance (an MGA specializing in senior living/healthcare insurance). Today is ${today}.${standingDecisions}
 
 ZACH'S WRITING STYLE:
 - Direct, confident, not corporate. Never "I hope this finds you well."
@@ -873,8 +888,23 @@ async function task14Investigation(db: Database.Database): Promise<TaskResult> {
     const commitContext = commitments.map((c: any) => `- ${c.text} [${c.state}]${c.due_date ? ' due: ' + c.due_date : ''} (${c.owner || '?'})`).join('\n');
     const episodicContext = episodic.map((m: any) => `[${m.moment_type}] ${m.what_happened}\n  WHY: ${m.why_it_matters}${m.enables ? '\n  ENABLES: ' + m.enables : ''}`).join('\n\n');
 
-    const prompt = `You are Prime, AI Chief of Staff for Zach Stock (Recapture Insurance MGA, ADHD founder).
+    // Load standing decisions relevant to this project
+    let investigationDecisions = '';
+    try {
+      const decisions = db.prepare(
+        "SELECT decision, category, entity_name, project FROM decisions WHERE active = 1 AND (project = ? OR project IS NULL) ORDER BY created_at DESC LIMIT 15"
+      ).all(project.project) as any[];
+      if (decisions.length > 0) {
+        investigationDecisions = '\n\nSTANDING DECISIONS (from user — treat as absolute constraints, do not contradict):\n' +
+          decisions.map((d: any) => {
+            const tag = d.entity_name ? `[${d.entity_name}]` : d.project ? `[${d.project}]` : d.category ? `[${d.category}]` : '';
+            return `- ${tag} ${d.decision}`;
+          }).join('\n') + '\n';
+      }
+    } catch {}
 
+    const prompt = `You are Prime, AI Chief of Staff for Zach Stock (Recapture Insurance MGA, ADHD founder).
+${investigationDecisions}
 You are conducting a DEEP STRATEGIC INVESTIGATION into why "${project.project}" is stalling.
 
 PROJECT ANALYSIS (from earlier tonight):
@@ -3119,6 +3149,105 @@ async function task22MemoryConsolidation(db: Database.Database): Promise<TaskRes
   }
 }
 
+// ── Zero-Latency COS Brief Builder ──────────────────────────
+// Runs at END of dream pipeline. Assembles a pre-built brief so the COS
+// can present it instantly when the user opens Claude Desktop.
+// Stored in graph_state key 'cos_ready_brief'.
+
+async function buildCosReadyBrief(db: Database.Database): Promise<void> {
+  try {
+    // 1. Load the ONE highest-leverage pending action
+    const topAction = db.prepare(`
+      SELECT id, type, summary, reasoning, project, payload
+      FROM staged_actions
+      WHERE status = 'pending'
+      ORDER BY
+        CASE WHEN type = 'email' THEN 0 ELSE 1 END,
+        created_at DESC
+      LIMIT 1
+    `).get() as any;
+
+    // 2. Load proactive alerts
+    let alerts: any[] = [];
+    try {
+      const alertsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'proactive_alerts'").get() as any)?.value;
+      if (alertsRaw) alerts = JSON.parse(alertsRaw);
+    } catch {}
+
+    // 3. Load top 3 active decisions
+    const decisions = db.prepare(
+      "SELECT decision, entity_name, project, category FROM decisions WHERE active = 1 ORDER BY created_at DESC LIMIT 3"
+    ).all() as any[];
+
+    // 4. Load today's calendar (next upcoming event)
+    const today = new Date().toISOString().slice(0, 10);
+    const calendarItems = db.prepare(`
+      SELECT title, summary, source_date FROM knowledge_primary
+      WHERE source = 'calendar' AND source_date >= ? AND source_date < datetime(?, '+7 days')
+      ORDER BY source_date ASC LIMIT 3
+    `).all(today, today) as any[];
+
+    const calendarNext = calendarItems.length > 0
+      ? calendarItems.map((c: any) => `${c.source_date?.slice(0, 10)} — ${c.title}`).join('; ')
+      : null;
+
+    // 5. If top action is an email, try to draft it
+    let draftText: string | null = null;
+    if (topAction?.type === 'email') {
+      try {
+        const payload = typeof topAction.payload === 'string' ? JSON.parse(topAction.payload) : topAction.payload;
+        if (payload?.body) {
+          // Already drafted by task 18
+          draftText = payload.body;
+        } else if (payload?.to && payload?.subject) {
+          // Draft it now using voice profile
+          let voiceRef = '';
+          try {
+            const voicePath = join(homedir(), 'GitHub', 'prime', 'prompts', 'voice-profile.md');
+            if (existsSync(voicePath)) voiceRef = readFileSync(voicePath, 'utf-8');
+          } catch {}
+
+          const draftPrompt = `Draft a short business email for Zach Stock (Recapture Insurance founder).
+To: ${payload.to}
+Subject: ${payload.subject}
+Context: ${topAction.reasoning || topAction.summary}
+
+Write in Zach's voice: direct, confident, not corporate. Short sentences. Sign off with just "Zach".
+${voiceRef ? '\nVOICE REFERENCE:\n' + voiceRef.slice(0, 2000) : ''}
+
+Return ONLY the email body text, nothing else.`;
+
+          draftText = await runClaude(draftPrompt, { timeout: 60000 });
+        }
+      } catch {}
+    }
+
+    // 6. Assemble the brief
+    const brief = {
+      generated_at: new Date().toISOString(),
+      one_thing: topAction?.summary || 'No pending actions',
+      one_thing_draft: draftText || null,
+      one_thing_action_id: topAction?.id || null,
+      decisions_to_respect: decisions.map((d: any) => {
+        const tag = d.entity_name ? `[${d.entity_name}]` : d.project ? `[${d.project}]` : '';
+        return `${tag} ${d.decision}`.trim();
+      }),
+      calendar_next: calendarNext,
+      alerts: alerts.slice(0, 5).map((a: any) => typeof a === 'string' ? a : `${a.entity} — ${a.title}`),
+      generated_by: 'dream-pipeline-' + new Date().getHours() + (new Date().getHours() < 12 ? 'am' : 'pm'),
+    };
+
+    // 7. Store in graph_state
+    db.prepare(
+      "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('cos_ready_brief', ?, datetime('now'))"
+    ).run(JSON.stringify(brief));
+
+    console.log(`  COS brief built: "${brief.one_thing.slice(0, 60)}" ${draftText ? '(with draft)' : '(no draft)'}`);
+  } catch (err: any) {
+    console.error(`  COS brief generation failed: ${err.message?.slice(0, 100)}`);
+  }
+}
+
 // ── Pipeline Runner ─────────────────────────────────────────
 
 export async function runDreamPipeline(
@@ -3324,6 +3453,14 @@ export async function runDreamPipeline(
     console.log(`  ✓ Briefing: ${briefingPath}`);
   } catch (err: any) {
     console.error(`  ✗ Briefing generation failed: ${err.message?.slice(0, 100)}`);
+  }
+
+  // ── Build zero-latency COS brief ──────────────────────────
+  try {
+    console.log('  Building COS ready brief...');
+    await buildCosReadyBrief(db);
+  } catch (err: any) {
+    console.error(`  ✗ COS brief failed: ${err.message?.slice(0, 100)}`);
   }
 
   // ── Auto-execute low-risk actions (reminders, calendar blocks) ──

@@ -548,6 +548,12 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
           } catch { return []; }
         })(),
         questions_pending: pendingQuestions.length,
+        cos_ready_brief: (() => {
+          try {
+            const raw = (db.prepare("SELECT value FROM graph_state WHERE key = 'cos_ready_brief'").get() as any)?.value;
+            return raw ? JSON.parse(raw) : null;
+          } catch { return null; }
+        })(),
         timestamp: new Date().toISOString(),
       });
     } catch (err: any) {
@@ -1603,6 +1609,61 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       res.json({ events, count: events.length });
     } catch (err: any) {
       res.json({ events: [], count: 0, error: err.message });
+    }
+  });
+
+  // ── Decisions API ──
+
+  app.post('/api/v1/decisions', (req, res) => {
+    try {
+      const { decision, reasoning, category, project, entity_name, supersedes_id, source } = req.body;
+      if (!decision) return res.status(400).json({ error: 'decision required' });
+
+      const id = uuid();
+
+      // If superseding an older decision, mark it inactive
+      if (supersedes_id) {
+        db.prepare("UPDATE decisions SET active = 0 WHERE id = ?").run(supersedes_id);
+      }
+
+      db.prepare(`
+        INSERT INTO decisions (id, decision, reasoning, category, project, entity_name, supersedes_id, active, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+      `).run(id, decision, reasoning || null, category || null, project || null, entity_name || null, supersedes_id || null, source || 'user');
+
+      res.json({ id, decision: decision.slice(0, 60) });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/v1/decisions', (req, res) => {
+    try {
+      const { project, entity_name, category, active } = req.query;
+      let sql = 'SELECT * FROM decisions WHERE 1=1';
+      const params: any[] = [];
+
+      if (active !== '0') {
+        sql += ' AND active = 1';
+      }
+      if (project) {
+        sql += ' AND project = ?';
+        params.push(project);
+      }
+      if (entity_name) {
+        sql += ' AND entity_name = ?';
+        params.push(entity_name);
+      }
+      if (category) {
+        sql += ' AND category = ?';
+        params.push(category);
+      }
+
+      sql += ' ORDER BY created_at DESC LIMIT 50';
+      const decisions = db.prepare(sql).all(...params);
+      res.json({ decisions, count: decisions.length });
+    } catch (err: any) {
+      res.json({ decisions: [], count: 0, error: err.message });
     }
   });
 
