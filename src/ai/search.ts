@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import {
   searchByText,
   searchByEmbedding,
+  searchByFTS,
   getConfig,
   getThemes,
   getSemantics,
@@ -16,7 +17,7 @@ import { getDefaultProvider, type LLMProvider } from './providers.js';
 
 export interface SearchOptions {
   limit?: number;           // default 15
-  strategy?: 'auto' | 'semantic' | 'keyword' | 'graph' | 'temporal' | 'hierarchical';
+  strategy?: 'auto' | 'semantic' | 'keyword' | 'graph' | 'temporal' | 'hierarchical' | 'fts' | 'entity';
   project?: string;
   source?: string;
   since?: string;           // ISO date — only items after this
@@ -27,6 +28,7 @@ export interface SearchOptions {
                             // 0.10: today=1.0, 7d=0.59, 30d=0.25, 90d=0.10
                             // 0.00: disabled (pure relevance, no recency boost)
   graphDepth?: number;      // default 2 (entity + 1 hop). Set to 3 for a second hop.
+  similar_to?: string;      // knowledge item ID — use its embedding as query vector
 }
 
 export interface SearchResult {
@@ -102,6 +104,24 @@ function deduplicateById(items: any[]): any[] {
     }
   }
   return result;
+}
+
+/** Deduplicate by source_ref — keep the highest-scoring item per source_ref. */
+function deduplicateBySourceRef(items: any[]): any[] {
+  const bestByRef = new Map<string, any>();
+  for (const item of items) {
+    const ref = item.source_ref;
+    if (!ref) {
+      // No source_ref — keep as-is (keyed by id to avoid duplicates)
+      bestByRef.set(item.id, item);
+      continue;
+    }
+    const existing = bestByRef.get(ref);
+    if (!existing || (item._score || 0) > (existing._score || 0)) {
+      bestByRef.set(ref, item);
+    }
+  }
+  return Array.from(bestByRef.values());
 }
 
 // ============================================================
@@ -211,12 +231,18 @@ async function semanticSearch(
   limit: number,
   apiKey: string,
   recencyBias: number = 0.05,
+  since?: string,
 ): Promise<any[]> {
   const queryEmb = await generateEmbedding(query, apiKey);
-  const results = searchByEmbedding(db, queryEmb, limit, 0.2);
+  // Fetch extra results to account for since-filtering
+  const results = searchByEmbedding(db, queryEmb, since ? limit * 2 : limit, 0.2);
+  let filtered = results;
+  if (since) {
+    filtered = results.filter(r => r.source_date && r.source_date >= since);
+  }
   // Normalize: similarity is already 0-1
-  const scored = results.map(r => ({ ...r, _score: r.similarity || 0, _strategy: 'semantic' }));
-  return applyRecencyWeighting(scored, recencyBias);
+  const scored = filtered.map(r => ({ ...r, _score: r.similarity || 0, _strategy: 'semantic' }));
+  return applyRecencyWeighting(scored, recencyBias).slice(0, limit);
 }
 
 function keywordSearch(
@@ -224,9 +250,15 @@ function keywordSearch(
   query: string,
   limit: number,
   recencyBias: number = 0.05,
+  since?: string,
 ): any[] {
-  // Get all knowledge items for BM25 scoring
-  const items = db.prepare('SELECT * FROM knowledge_primary').all() as any[];
+  // Get all knowledge items for BM25 scoring, optionally filtered by date
+  let items: any[];
+  if (since) {
+    items = db.prepare('SELECT * FROM knowledge_primary WHERE source_date >= ?').all(since) as any[];
+  } else {
+    items = db.prepare('SELECT * FROM knowledge_primary').all() as any[];
+  }
   if (items.length === 0) return [];
 
   // Compute average document length
@@ -337,6 +369,7 @@ function graphTraversalSearch(
   limit: number,
   recencyBias: number = 0.05,
   graphDepth: number = 2,
+  since?: string,
 ): any[] {
   // ── SEED: extract entities from query ──────────────────────
   const seedEntities = matchEntitiesFromQuery(db, query);
@@ -541,9 +574,11 @@ function graphTraversalSearch(
   for (let i = 0; i < finalItemIds.length; i += batchSize) {
     const batch = finalItemIds.slice(i, i + batchSize);
     const ph = batch.map(() => '?').join(',');
+    const sinceClause = since ? ` AND source_date >= ?` : '';
+    const queryParams = since ? [...batch, since] : batch;
     const rows = db.prepare(
-      `SELECT * FROM knowledge_primary WHERE id IN (${ph})`
-    ).all(...batch) as any[];
+      `SELECT * FROM knowledge_primary WHERE id IN (${ph})${sinceClause}`
+    ).all(...queryParams) as any[];
 
     for (const row of rows) {
       parseJsonFields(row);
@@ -563,6 +598,107 @@ function graphTraversalSearch(
   applyRecencyWeighting(results, recencyBias);
 
   return results
+    .sort((a, b) => b._score - a._score)
+    .slice(0, limit);
+}
+
+// ============================================================
+// FTS5 search — SQLite full-text search with BM25 ranking
+// ============================================================
+
+function ftsSearch(
+  db: Database.Database,
+  query: string,
+  limit: number,
+  recencyBias: number = 0.05,
+  since?: string,
+  source?: string,
+  project?: string,
+): any[] {
+  const rawResults = searchByFTS(db, query, limit * 3);
+  if (rawResults.length === 0) return [];
+
+  // Filter by provenance (primary sources only) and optional filters
+  let filtered = rawResults.filter(r => {
+    const derivedSources = ['agent-report', 'agent-notification', 'briefing', 'directive', 'training'];
+    if (derivedSources.includes(r.source)) return false;
+    if (since && r.source_date && r.source_date < since) return false;
+    if (source && r.source !== source) return false;
+    if (project && r.project && !r.project.toLowerCase().includes(project.toLowerCase())) return false;
+    return true;
+  });
+
+  // fts_rank from bm25() is negative (lower = better), so negate to get positive scores
+  // Normalize so highest score = 1.0
+  const maxRank = filtered.length > 0
+    ? Math.max(...filtered.map(r => -(r.fts_rank || 0)))
+    : 1;
+
+  const scored = filtered.map(row => {
+    row.embedding = null;
+    const normScore = maxRank > 0 ? -(row.fts_rank || 0) / maxRank : 0;
+    delete row.fts_rank;
+    return { ...row, _score: normScore, _strategy: 'fts' };
+  });
+
+  applyRecencyWeighting(scored, recencyBias);
+
+  return scored
+    .sort((a, b) => b._score - a._score)
+    .slice(0, limit);
+}
+
+// ============================================================
+// Entity-scoped search — find ALL items mentioning a matched entity
+// ============================================================
+
+function entitySearch(
+  db: Database.Database,
+  query: string,
+  limit: number,
+  recencyBias: number = 0.05,
+  since?: string,
+): any[] {
+  const matchedEntities = matchEntitiesFromQuery(db, query);
+  if (matchedEntities.length === 0) return [];
+
+  const entityIds = matchedEntities.map(e => e.id);
+  const ph = entityIds.map(() => '?').join(',');
+
+  // Find ALL knowledge items that mention these entities
+  let sql = `
+    SELECT DISTINCT k.*
+    FROM entity_mentions em
+    JOIN knowledge k ON k.id = em.knowledge_item_id
+    WHERE em.entity_id IN (${ph})
+      AND k.source NOT IN ('agent-report', 'agent-notification', 'briefing', 'directive', 'training')
+  `;
+  const params: any[] = [...entityIds];
+
+  if (since) {
+    sql += ` AND k.source_date >= ?`;
+    params.push(since);
+  }
+
+  sql += ` ORDER BY k.source_date DESC LIMIT ?`;
+  params.push(limit * 2);
+
+  const rows = db.prepare(sql).all(...params) as any[];
+
+  const entityNames = matchedEntities.map(e => e.name).join(', ');
+  const scored = rows.map(row => {
+    parseJsonFields(row);
+    row.embedding = null;
+    // Score: base 0.85 for direct entity mention, boosted by importance
+    let score = 0.85;
+    if (row.importance === 'critical') score = 1.0;
+    else if (row.importance === 'high') score = 0.95;
+    return { ...row, _score: score, _strategy: 'entity', _via: `entity mention: ${entityNames}` };
+  });
+
+  applyRecencyWeighting(scored, recencyBias);
+
+  return scored
     .sort((a, b) => b._score - a._score)
     .slice(0, limit);
 }
@@ -857,25 +993,61 @@ export async function search(
     rerank = true,
     recencyBias = 0.05,
     graphDepth = 2,
+    similar_to,
   } = options;
 
   const apiKey = getConfig(db, 'openai_api_key');
   let candidates: any[] = [];
   let strategyUsed: string = strategy;
 
+  // ── Similar-item search: use existing item's embedding as query vector ──
+  if (similar_to) {
+    const row = db.prepare('SELECT embedding FROM knowledge WHERE id = ?').get(similar_to) as any;
+    if (row?.embedding) {
+      const buf = row.embedding as Buffer;
+      const floats = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+      const queryEmb = Array.from(floats);
+      const results = searchByEmbedding(db, queryEmb, limit * 2, 0.2);
+      candidates = results
+        .filter(r => r.id !== similar_to)  // exclude the source item itself
+        .map(r => ({ ...r, _score: r.similarity || 0, _strategy: 'similar' }));
+      applyRecencyWeighting(candidates, recencyBias);
+      strategyUsed = 'similar';
+
+      // Apply filters and return early
+      if (project) candidates = candidates.filter(r => r.project?.toLowerCase().includes(project.toLowerCase()));
+      if (source) candidates = candidates.filter(r => r.source === source);
+      if (since) candidates = candidates.filter(r => r.source_date && r.source_date >= since);
+      candidates = deduplicateBySourceRef(candidates);
+
+      const items = candidates.slice(0, limit);
+      return {
+        items,
+        strategy_used: strategyUsed,
+        confidence: computeConfidence(items),
+        coverage: {
+          sources_found: items.length,
+          recency: computeRecency(items),
+          agreement: 'consistent' as const,
+        },
+      };
+    }
+    // If no embedding found for similar_to item, fall through to normal search
+  }
+
   // ── Execute strategy ───────────────────────────────────────
 
   if (strategy === 'semantic') {
     if (!apiKey) throw new Error('Semantic search requires an OpenAI API key for embeddings.');
-    candidates = await semanticSearch(db, query, limit * 2, apiKey, recencyBias);
+    candidates = await semanticSearch(db, query, limit * 2, apiKey, recencyBias, since);
     strategyUsed = 'semantic';
 
   } else if (strategy === 'keyword') {
-    candidates = keywordSearch(db, query, limit * 2, recencyBias);
+    candidates = keywordSearch(db, query, limit * 2, recencyBias, since);
     strategyUsed = 'keyword';
 
   } else if (strategy === 'graph') {
-    candidates = graphTraversalSearch(db, query, limit * 2, recencyBias, graphDepth);
+    candidates = graphTraversalSearch(db, query, limit * 2, recencyBias, graphDepth, since);
     strategyUsed = 'graph';
 
   } else if (strategy === 'temporal') {
@@ -887,45 +1059,60 @@ export async function search(
     candidates = await hierarchicalSearch(db, query, limit * 2, apiKey, recencyBias);
     strategyUsed = 'hierarchical';
 
+  } else if (strategy === 'fts') {
+    candidates = ftsSearch(db, query, limit * 2, recencyBias, since, source, project);
+    strategyUsed = 'fts';
+
+  } else if (strategy === 'entity') {
+    candidates = entitySearch(db, query, limit * 2, recencyBias, since);
+    strategyUsed = 'entity';
+
   } else {
-    // ── Auto strategy: semantic + keyword + graph in parallel, plus extras ──
+    // ── Auto strategy: semantic + keyword + graph + FTS in parallel, plus extras ──
     strategyUsed = 'auto';
 
     const promises: Promise<any[]>[] = [];
 
     // Always run keyword (synchronous, wrapped in Promise.resolve)
-    promises.push(Promise.resolve(keywordSearch(db, query, limit * 2, recencyBias)));
+    promises.push(Promise.resolve(keywordSearch(db, query, limit * 2, recencyBias, since)));
 
     // Run semantic if API key available
     if (apiKey) {
       promises.push(
-        semanticSearch(db, query, limit * 2, apiKey, recencyBias).catch(() => [])
+        semanticSearch(db, query, limit * 2, apiKey, recencyBias, since).catch(() => [])
       );
     }
 
     // Always run graph traversal in parallel (synchronous, no LLM calls)
     promises.push(
-      Promise.resolve(graphTraversalSearch(db, query, limit * 2, recencyBias, graphDepth))
+      Promise.resolve(graphTraversalSearch(db, query, limit * 2, recencyBias, graphDepth, since))
+    );
+
+    // Always run FTS in parallel (synchronous, no LLM calls)
+    promises.push(
+      Promise.resolve(ftsSearch(db, query, limit * 2, recencyBias, since, source, project))
     );
 
     const results = await Promise.all(promises);
     const keywordResults = results[0];
     const semanticResults = apiKey ? results[1] : [];
     const graphResults = apiKey ? results[2] : results[1];
+    const ftsResults = apiKey ? results[3] : results[2];
 
     // Merge: normalize scores per strategy and combine
     const maxKeyword = keywordResults.length > 0 ? Math.max(...keywordResults.map((r: any) => r._score)) : 1;
     const maxSemantic = semanticResults?.length > 0 ? Math.max(...semanticResults.map((r: any) => r._score)) : 1;
     const maxGraph = graphResults?.length > 0 ? Math.max(...graphResults.map((r: any) => r._score)) : 1;
+    const maxFts = ftsResults?.length > 0 ? Math.max(...ftsResults.map((r: any) => r._score)) : 1;
 
     // scoreMap tracks per-strategy normalized scores per item
-    const scoreMap = new Map<string, { item: any; semanticScore: number; keywordScore: number; graphScore: number }>();
+    const scoreMap = new Map<string, { item: any; semanticScore: number; keywordScore: number; graphScore: number; ftsScore: number }>();
 
     // Add semantic results
     if (semanticResults) {
       for (const item of semanticResults) {
         const normScore = maxSemantic > 0 ? item._score / maxSemantic : 0;
-        scoreMap.set(item.id, { item, semanticScore: normScore, keywordScore: 0, graphScore: 0 });
+        scoreMap.set(item.id, { item, semanticScore: normScore, keywordScore: 0, graphScore: 0, ftsScore: 0 });
       }
     }
 
@@ -936,7 +1123,7 @@ export async function search(
       if (existing) {
         existing.keywordScore = normScore;
       } else {
-        scoreMap.set(item.id, { item, semanticScore: 0, keywordScore: normScore, graphScore: 0 });
+        scoreMap.set(item.id, { item, semanticScore: 0, keywordScore: normScore, graphScore: 0, ftsScore: 0 });
       }
     }
 
@@ -953,19 +1140,32 @@ export async function search(
             existing.item._thread_boost = item._thread_boost;
           }
         } else {
-          scoreMap.set(item.id, { item, semanticScore: 0, keywordScore: 0, graphScore: normScore });
+          scoreMap.set(item.id, { item, semanticScore: 0, keywordScore: 0, graphScore: normScore, ftsScore: 0 });
         }
       }
     }
 
-    // Combined score: 0.55 semantic + 0.2 keyword + 0.25 graph
-    // When semantic is unavailable, reweight: 0.5 keyword + 0.5 graph
+    // Add/merge FTS results
+    if (ftsResults) {
+      for (const item of ftsResults) {
+        const normScore = maxFts > 0 ? item._score / maxFts : 0;
+        const existing = scoreMap.get(item.id);
+        if (existing) {
+          existing.ftsScore = normScore;
+        } else {
+          scoreMap.set(item.id, { item, semanticScore: 0, keywordScore: 0, graphScore: 0, ftsScore: normScore });
+        }
+      }
+    }
+
+    // Combined score: 0.45 semantic + 0.15 keyword + 0.20 graph + 0.20 FTS
+    // When semantic is unavailable, reweight: 0.25 keyword + 0.35 graph + 0.40 FTS
     const hasSemantic = apiKey && semanticResults && semanticResults.length > 0;
     candidates = Array.from(scoreMap.values())
-      .map(({ item, semanticScore, keywordScore, graphScore }) => {
+      .map(({ item, semanticScore, keywordScore, graphScore, ftsScore }) => {
         const combined = hasSemantic
-          ? 0.55 * semanticScore + 0.2 * keywordScore + 0.25 * graphScore
-          : 0.5 * keywordScore + 0.5 * graphScore;
+          ? 0.45 * semanticScore + 0.15 * keywordScore + 0.20 * graphScore + 0.20 * ftsScore
+          : 0.25 * keywordScore + 0.35 * graphScore + 0.40 * ftsScore;
         return {
           ...item,
           _score: combined,
@@ -976,8 +1176,12 @@ export async function search(
 
     // Track which strategies contributed
     const hasGraphHits = graphResults && graphResults.length > 0;
-    if (hasGraphHits) {
-      strategyUsed = 'auto+graph';
+    const hasFtsHits = ftsResults && ftsResults.length > 0;
+    if (hasGraphHits || hasFtsHits) {
+      const parts = ['auto'];
+      if (hasGraphHits) parts.push('graph');
+      if (hasFtsHits) parts.push('fts');
+      strategyUsed = parts.join('+');
     }
 
     // If temporal words detected, also run temporal and merge
@@ -989,6 +1193,18 @@ export async function search(
         }
       }
       strategyUsed = strategyUsed.includes('+') ? `${strategyUsed}+temporal` : 'auto+temporal';
+    }
+
+    // If query matches entity names, also run entity search and merge
+    const matchedEntities = matchEntitiesFromQuery(db, query);
+    if (matchedEntities.length > 0) {
+      const entityResults = entitySearch(db, query, limit, recencyBias, since);
+      for (const er of entityResults) {
+        if (!candidates.find(c => c.id === er.id)) {
+          candidates.push({ ...er, _score: er._score * 0.85 });
+        }
+      }
+      strategyUsed = strategyUsed.includes('+') ? `${strategyUsed}+entity` : 'auto+entity';
     }
   }
 
@@ -1006,7 +1222,8 @@ export async function search(
     candidates = candidates.filter(r => r.source_date && r.source_date >= since);
   }
 
-  // Deduplicate
+  // Deduplicate: by source_ref (keep highest score per ref), then by id
+  candidates = deduplicateBySourceRef(candidates);
   candidates = deduplicateById(candidates);
 
   // ── Rerank with Claude ─────────────────────────────────────

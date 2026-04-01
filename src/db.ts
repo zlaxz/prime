@@ -761,6 +761,36 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_corrections_type ON brain_corrections(correction_type);
     CREATE INDEX IF NOT EXISTS idx_corrections_timestamp ON brain_corrections(timestamp DESC);
   `);
+
+  // ============================================================
+  // FTS5 Full-Text Search on knowledge table
+  // ============================================================
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+      title, summary, raw_content, contacts, tags,
+      content='knowledge', content_rowid='rowid'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS knowledge_ai AFTER INSERT ON knowledge BEGIN
+      INSERT INTO knowledge_fts(rowid, title, summary, raw_content, contacts, tags)
+      VALUES (new.rowid, new.title, new.summary, new.raw_content, new.contacts, new.tags);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS knowledge_au AFTER UPDATE ON knowledge BEGIN
+      INSERT INTO knowledge_fts(knowledge_fts, rowid, title, summary, raw_content, contacts, tags)
+      VALUES ('delete', old.rowid, old.title, old.summary, old.raw_content, old.contacts, old.tags);
+      INSERT INTO knowledge_fts(rowid, title, summary, raw_content, contacts, tags)
+      VALUES (new.rowid, new.title, new.summary, new.raw_content, new.contacts, new.tags);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS knowledge_ad AFTER DELETE ON knowledge BEGIN
+      INSERT INTO knowledge_fts(knowledge_fts, rowid, title, summary, raw_content, contacts, tags)
+      VALUES ('delete', old.rowid, old.title, old.summary, old.raw_content, old.contacts, old.tags);
+    END;
+  `);
+
+  // Populate FTS index from existing data (idempotent — rebuilds if already populated)
+  db.exec(`INSERT INTO knowledge_fts(knowledge_fts) VALUES('rebuild')`);
 }
 
 export interface KnowledgeItem {
@@ -839,6 +869,36 @@ export function searchByText(db: Database.Database, query: string, limit = 20): 
     }
   }
   return rows;
+}
+
+export function searchByFTS(db: Database.Database, query: string, limit = 20): any[] {
+  // Escape FTS5 special characters and build query — wrap each term in double-quotes for safety
+  const terms = query.split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return [];
+  const ftsQuery = terms.map(t => `"${t.replace(/"/g, '""')}"`).join(' ');
+
+  try {
+    const rows = db.prepare(
+      `SELECT k.*, bm25(knowledge_fts) AS fts_rank
+       FROM knowledge_fts fts
+       JOIN knowledge k ON k.rowid = fts.rowid
+       WHERE knowledge_fts MATCH ?
+       ORDER BY bm25(knowledge_fts)
+       LIMIT ?`
+    ).all(ftsQuery, limit) as any[];
+
+    for (const row of rows) {
+      for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
+        if (row[field] && typeof row[field] === 'string') {
+          try { row[field] = JSON.parse(row[field] as string); } catch {}
+        }
+      }
+    }
+    return rows;
+  } catch {
+    // FTS query parse error or table not ready — fall back gracefully
+    return [];
+  }
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
