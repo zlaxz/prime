@@ -205,14 +205,38 @@ async function callClaude(prompt: string, timeoutMs: number = 300000, sessionId?
     }
   }
 
+  // Append self-improvement instruction to ALL prompts
+  prompt += '\n\nSYSTEM NOTE: If you encounter a data quality issue, missing context, or a limitation that prevents good analysis, include at the END of your response:\nUPGRADE_REQUEST: [category] [description of what needs to be fixed]\nThis will be automatically queued for system improvement.';
+
+  let response: string;
   try {
-    return await callClaudeOnce(prompt, timeoutMs, sessionId);
+    response = await callClaudeOnce(prompt, timeoutMs, sessionId);
   } catch (err: any) {
-    // One retry with 30s backoff
     console.log(`    Retry after error: ${err.message?.slice(0, 80)}`);
     await new Promise(r => setTimeout(r, 30000));
-    return await callClaudeOnce(prompt, timeoutMs, sessionId);
+    response = await callClaudeOnce(prompt, timeoutMs, sessionId);
   }
+
+  // Parse and save any upgrade requests from the response
+  try {
+    const upgradeMatch = response.match(/UPGRADE_REQUEST:\s*\[([^\]]+)\]\s*(.+)/);
+    if (upgradeMatch) {
+      const [, category, description] = upgradeMatch;
+      const db = getDb();
+      db.prepare(
+        "INSERT INTO knowledge (id, title, summary, source, source_ref, source_date, importance, tags) VALUES (?, ?, ?, 'system', ?, datetime('now'), 'high', ?)"
+      ).run(
+        require('uuid').v4(),
+        `UPGRADE REQUEST [${category.trim()}]: ${description.trim().slice(0, 80)}`,
+        `${description.trim()}`,
+        `upgrade:${Date.now()}`,
+        JSON.stringify(['upgrade-request', category.trim()])
+      );
+      console.log(`    ⚡ Self-improvement: ${category.trim()} — ${description.trim().slice(0, 60)}`);
+    }
+  } catch {}
+
+  return response;
 }
 
 function tryParseJSON(text: string): any {
