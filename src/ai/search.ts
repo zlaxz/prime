@@ -77,6 +77,42 @@ function decodeEmbedding(blob: any): number[] | null {
   return null;
 }
 
+/**
+ * Search knowledge_chunks by embedding similarity.
+ * Returns parent knowledge_id and the best chunk similarity score per knowledge item.
+ */
+function searchChunksByEmbedding(
+  db: Database.Database,
+  queryEmbedding: number[],
+  limit: number,
+  threshold: number,
+): Map<string, number> {
+  const chunks = db.prepare(
+    'SELECT knowledge_id, embedding FROM knowledge_chunks WHERE embedding IS NOT NULL'
+  ).all() as { knowledge_id: string; embedding: any }[];
+
+  // Track best similarity per knowledge_id
+  const bestScores = new Map<string, number>();
+
+  for (const chunk of chunks) {
+    const emb = decodeEmbedding(chunk.embedding);
+    if (!emb) continue;
+    const sim = cosineSimilarity(queryEmbedding, emb);
+    if (sim < threshold) continue;
+    const existing = bestScores.get(chunk.knowledge_id) || 0;
+    if (sim > existing) {
+      bestScores.set(chunk.knowledge_id, sim);
+    }
+  }
+
+  // Sort by score descending and take top N
+  const sorted = Array.from(bestScores.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit);
+
+  return new Map(sorted);
+}
+
 function parseJsonField(val: any): any[] {
   if (Array.isArray(val)) return val;
   if (typeof val === 'string') {
@@ -235,14 +271,63 @@ async function semanticSearch(
 ): Promise<any[]> {
   const queryEmb = await generateEmbedding(query, apiKey);
   // Fetch extra results to account for since-filtering
-  const results = searchByEmbedding(db, queryEmb, since ? limit * 2 : limit, 0.2);
-  let filtered = results;
-  if (since) {
-    filtered = results.filter(r => r.source_date && r.source_date >= since);
+  const fetchLimit = since ? limit * 2 : limit;
+  const results = searchByEmbedding(db, queryEmb, fetchLimit, 0.2);
+
+  // Also search knowledge_chunks for finer-grained matches
+  const chunkScores = searchChunksByEmbedding(db, queryEmb, fetchLimit, 0.2);
+
+  // Build a map of knowledge_id -> best score from direct embedding search
+  const directScores = new Map<string, { item: any; score: number }>();
+  for (const r of results) {
+    directScores.set(r.id, { item: r, score: r.similarity || 0 });
   }
-  // Normalize: similarity is already 0-1
-  const scored = filtered.map(r => ({ ...r, _score: r.similarity || 0, _strategy: 'semantic' }));
-  return applyRecencyWeighting(scored, recencyBias).slice(0, limit);
+
+  // Merge chunk results: if a chunk matched a knowledge_id not already in results,
+  // fetch the parent knowledge item. If already present, use the HIGHER score.
+  for (const [knowledgeId, chunkScore] of chunkScores) {
+    const existing = directScores.get(knowledgeId);
+    if (existing) {
+      // Use the higher of direct vs chunk score
+      if (chunkScore > existing.score) {
+        existing.score = chunkScore;
+        existing.item.similarity = chunkScore;
+        existing.item._chunk_boosted = true;
+      }
+    } else {
+      // Chunk matched but parent wasn't in direct results — fetch the parent item
+      const parent = db.prepare(
+        'SELECT * FROM knowledge WHERE id = ?'
+      ).get(knowledgeId) as any;
+      if (parent) {
+        parent.similarity = chunkScore;
+        parent.embedding = null; // Don't carry blob
+        parent._chunk_boosted = true;
+        // Parse JSON fields
+        for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
+          if (parent[field] && typeof parent[field] === 'string') {
+            try { parent[field] = JSON.parse(parent[field]); } catch {}
+          }
+        }
+        directScores.set(knowledgeId, { item: parent, score: chunkScore });
+      }
+    }
+  }
+
+  // Reassemble into scored array
+  let merged = Array.from(directScores.values()).map(({ item, score }) => ({
+    ...item,
+    _score: score,
+    _strategy: 'semantic',
+  }));
+
+  if (since) {
+    merged = merged.filter(r => r.source_date && r.source_date >= since);
+  }
+
+  return applyRecencyWeighting(merged, recencyBias)
+    .sort((a: any, b: any) => b._score - a._score)
+    .slice(0, limit);
 }
 
 function keywordSearch(

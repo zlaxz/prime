@@ -577,6 +577,118 @@ server.tool(
   }
 );
 
+server.tool(
+  "prime_deep_context",
+  "Get comprehensive context on any topic, person, or project. Does multi-hop retrieval internally — searches, retrieves source content, finds related entities, checks threads and commitments, and assembles a structured brief. Use this instead of multiple prime_search + prime_retrieve calls when you need deep understanding of a topic.",
+  {
+    topic: z.string().describe("The topic, person name, or project to get deep context on"),
+    project: z.string().optional().describe("Filter to a specific project"),
+    entity: z.string().optional().describe("Specific entity name to focus on"),
+  },
+  async ({ topic, project, entity }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpPost(`${srv}/api/deep-context`, { topic, project, entity }, 120000);
+      if (result.error) {
+        return { content: [{ type: "text" as const, text: `Error: ${result.error}` }] };
+      }
+
+      // Format the structured response for Claude
+      const sections: string[] = [];
+
+      // Brief
+      if (result.brief) {
+        sections.push(result.brief);
+      }
+
+      // Entities involved
+      if (result.entities_involved?.length) {
+        sections.push('\n--- ENTITIES ---');
+        for (const e of result.entities_involved) {
+          let entry = `${e.name} (${e.type})`;
+          if (e.role) entry += ` — ${e.role}`;
+          if (e.email) entry += ` <${e.email}>`;
+          if (e.last_activity) entry += ` | Last: ${e.last_activity}`;
+          if (e.relationships?.length) {
+            entry += '\n  Relationships: ' + e.relationships.map((r: any) => `${r.type} → ${r.with}`).join(', ');
+          }
+          sections.push(entry);
+        }
+      }
+
+      // Active threads
+      if (result.active_threads?.length) {
+        sections.push('\n--- ACTIVE THREADS ---');
+        for (const t of result.active_threads) {
+          let entry = `${t.title}`;
+          if (t.state) entry += ` [${t.state}]`;
+          if (t.project) entry += ` | Project: ${t.project}`;
+          if (t.next_action) entry += `\n  Next: ${t.next_action}`;
+          if (t.latest_date) entry += ` | Latest: ${t.latest_date}`;
+          sections.push(entry);
+        }
+      }
+
+      // Commitments
+      if (result.commitments?.length) {
+        sections.push('\n--- COMMITMENTS ---');
+        for (const c of result.commitments) {
+          let entry = `[${c.state}] ${c.text}`;
+          if (c.due) entry += ` (due ${c.due})`;
+          if (c.owner) entry += ` — ${c.owner}`;
+          sections.push(entry);
+        }
+      }
+
+      // Key documents with raw content
+      if (result.key_documents?.length) {
+        sections.push('\n--- KEY DOCUMENTS ---');
+        for (const d of result.key_documents) {
+          let entry = `[${d.source}] ${d.title} (${d.source_date || 'undated'})`;
+          if (d.source_ref) entry += `\n  Ref: ${d.source_ref}`;
+          if (d.raw_content_preview) {
+            entry += `\n  Content:\n${d.raw_content_preview.slice(0, 2000)}`;
+          } else {
+            entry += `\n  Summary: ${d.summary}`;
+          }
+          sections.push(entry);
+        }
+      }
+
+      // Cross-references
+      if (result.cross_references?.length) {
+        sections.push('\n--- CROSS-REFERENCES ---');
+        for (const cr of result.cross_references) {
+          sections.push(`[${cr.source}] ${cr.title} (${cr.source_date || 'undated'}): ${cr.summary}`);
+        }
+      }
+
+      // Timeline
+      if (result.timeline?.length) {
+        sections.push('\n--- TIMELINE ---');
+        for (const t of result.timeline) {
+          sections.push(`${t.date} | [${t.source}] ${t.event}`);
+        }
+      }
+
+      // Open questions
+      if (result.open_questions?.length) {
+        sections.push('\n--- OPEN QUESTIONS ---');
+        for (const q of result.open_questions) {
+          sections.push(`? ${q}`);
+        }
+      }
+
+      sections.push(`\n[${result.sources_found} sources found, ${result.sources_used} used in detail]`);
+
+      return { content: [{ type: "text" as const, text: sections.join('\n') }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
 async function main() {
   // Check server connectivity at startup
   const srv = await getServer();

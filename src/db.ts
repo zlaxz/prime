@@ -763,6 +763,24 @@ function initSchema(db: Database.Database) {
   `);
 
   // ============================================================
+  // KNOWLEDGE CHUNKS — sub-document embeddings for long content
+  // Long conversations get one embedding from their summary (~200 chars).
+  // Chunks split raw_content into overlapping segments, each with its own embedding.
+  // Search queries knowledge_chunks alongside knowledge for finer-grained matching.
+  // ============================================================
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS knowledge_chunks (
+      id TEXT PRIMARY KEY,
+      knowledge_id TEXT NOT NULL REFERENCES knowledge(id) ON DELETE CASCADE,
+      chunk_index INTEGER NOT NULL,
+      chunk_text TEXT NOT NULL,
+      embedding BLOB,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_chunks_knowledge ON knowledge_chunks(knowledge_id);
+  `);
+
+  // ============================================================
   // FTS5 Full-Text Search on knowledge table
   // ============================================================
   db.exec(`

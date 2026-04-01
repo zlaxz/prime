@@ -1035,6 +1035,257 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── Deep Context — one-call multi-hop retrieval ────────
+  app.post('/api/deep-context', async (req, res) => {
+    try {
+      const { topic, project, entity } = req.body;
+      if (!topic) return res.status(400).json({ error: 'topic required' });
+
+      const { search } = await import('../ai/search.js');
+      const { retrieveSourceContent } = await import('../source-retrieval.js');
+
+      // ── Step 1: Primary search (semantic + FTS) ──
+      const primaryResults = await search(db, topic, {
+        limit: 15,
+        strategy: 'auto',
+        project: project || undefined,
+      });
+      const primaryItems = primaryResults.items || [];
+
+      // ── Step 2: Retrieve raw_content for top 3 results ──
+      const topItems = primaryItems.slice(0, 3);
+      const keyDocuments: any[] = [];
+      for (const item of topItems) {
+        let rawContent: string | null = null;
+        if (item.source_ref) {
+          try {
+            const full = db.prepare('SELECT source, source_ref, metadata, raw_content FROM knowledge WHERE source_ref = ?').get(item.source_ref) as any;
+            if (full?.raw_content) {
+              rawContent = full.raw_content.slice(0, 5000);
+            } else if (full) {
+              const retrieved = await retrieveSourceContent(db, {
+                source: full.source,
+                source_ref: full.source_ref,
+                metadata: typeof full.metadata === 'string' ? JSON.parse(full.metadata || '{}') : full.metadata,
+              });
+              if (retrieved?.content) rawContent = retrieved.content.slice(0, 5000);
+            }
+          } catch {}
+        }
+        keyDocuments.push({
+          title: item.title,
+          summary: item.summary,
+          source: item.source,
+          source_ref: item.source_ref,
+          source_date: item.source_date,
+          project: item.project,
+          importance: item.importance,
+          raw_content_preview: rawContent,
+        });
+      }
+
+      // ── Step 3: Extract entity names from primary results ──
+      const entityNames = new Set<string>();
+      for (const item of primaryItems) {
+        const contacts = Array.isArray(item.contacts) ? item.contacts : [];
+        const orgs = Array.isArray(item.organizations) ? item.organizations : [];
+        for (const c of contacts) entityNames.add(c);
+        for (const o of orgs) entityNames.add(o);
+      }
+      if (entity) entityNames.add(entity);
+
+      // ── Step 4: Second search for cross-references on discovered entities ──
+      const crossRefItems: any[] = [];
+      const entityQueries = Array.from(entityNames).slice(0, 5); // cap at 5
+      for (const eName of entityQueries) {
+        try {
+          const eResults = await search(db, eName, { limit: 5, strategy: 'auto' });
+          for (const item of (eResults.items || [])) {
+            if (!primaryItems.some((p: any) => p.id === item.id)) {
+              crossRefItems.push(item);
+            }
+          }
+        } catch {}
+      }
+      // Deduplicate cross-refs
+      const seenIds = new Set(primaryItems.map((i: any) => i.id));
+      const uniqueCrossRefs = crossRefItems.filter(item => {
+        if (seenIds.has(item.id)) return false;
+        seenIds.add(item.id);
+        return true;
+      }).slice(0, 10);
+
+      // ── Step 5: Narrative threads related to topic ──
+      let activeThreads: any[] = [];
+      try {
+        const threadRows = db.prepare(
+          `SELECT id, title, current_state, next_action, project, source_count, item_count, latest_source_date, summary
+           FROM narrative_threads
+           WHERE status = 'active'
+           AND (title LIKE ? OR summary LIKE ? OR project LIKE ?)
+           ORDER BY latest_source_date DESC LIMIT 5`
+        ).all(`%${topic}%`, `%${topic}%`, `%${topic}%`) as any[];
+        // Also match on entity name if provided
+        if (entity) {
+          const entityThreads = db.prepare(
+            `SELECT id, title, current_state, next_action, project, source_count, item_count, latest_source_date, summary
+             FROM narrative_threads
+             WHERE status = 'active'
+             AND (title LIKE ? OR summary LIKE ?)
+             ORDER BY latest_source_date DESC LIMIT 3`
+          ).all(`%${entity}%`, `%${entity}%`) as any[];
+          const threadIds = new Set(threadRows.map(t => t.id));
+          for (const t of entityThreads) {
+            if (!threadIds.has(t.id)) threadRows.push(t);
+          }
+        }
+        activeThreads = threadRows.map(t => ({
+          title: t.title,
+          state: t.current_state,
+          next_action: t.next_action,
+          project: t.project,
+          sources: t.source_count,
+          items: t.item_count,
+          latest_date: t.latest_source_date,
+        }));
+      } catch {}
+
+      // ── Step 6: Commitments related to topic/entity ──
+      let commitments: any[] = [];
+      try {
+        const patterns = [topic];
+        if (entity) patterns.push(entity);
+        if (project) patterns.push(project);
+        const orClauses = patterns.map(() => '(text LIKE ? OR owner LIKE ? OR project LIKE ? OR context LIKE ?)').join(' OR ');
+        const params = patterns.flatMap(p => [`%${p}%`, `%${p}%`, `%${p}%`, `%${p}%`]);
+        const commitmentRows = db.prepare(
+          `SELECT id, text, state, due_date, owner, project, context, importance
+           FROM commitments
+           WHERE (${orClauses})
+           ORDER BY
+             CASE state WHEN 'overdue' THEN 0 WHEN 'active' THEN 1 WHEN 'detected' THEN 2 ELSE 3 END,
+             due_date ASC
+           LIMIT 10`
+        ).all(...params) as any[];
+        commitments = commitmentRows.map(c => ({
+          text: c.text,
+          state: c.state,
+          due: c.due_date,
+          owner: c.owner,
+          project: c.project,
+          importance: c.importance,
+        }));
+      } catch {}
+
+      // ── Step 7: Entity graph relationships ──
+      let entitiesInvolved: any[] = [];
+      try {
+        for (const eName of entityQueries) {
+          const entityRow = db.prepare(
+            `SELECT id, type, canonical_name, email, relationship_type, relationship_confidence, last_seen_date, properties
+             FROM entities
+             WHERE canonical_name LIKE ? AND user_dismissed = 0
+             LIMIT 1`
+          ).get(`%${eName}%`) as any;
+          if (entityRow) {
+            // Get edges for this entity
+            const edges = db.prepare(
+              `SELECT ee.edge_type, ee.confidence, e2.canonical_name AS related_name, e2.type AS related_type
+               FROM entity_edges ee
+               JOIN entities e2 ON (ee.target_entity_id = e2.id AND ee.source_entity_id = ?)
+                                OR (ee.source_entity_id = e2.id AND ee.target_entity_id = ?)
+               WHERE e2.user_dismissed = 0
+               ORDER BY ee.confidence DESC LIMIT 5`
+            ).all(entityRow.id, entityRow.id) as any[];
+
+            let props: any = {};
+            try { props = typeof entityRow.properties === 'string' ? JSON.parse(entityRow.properties) : entityRow.properties || {}; } catch {}
+
+            entitiesInvolved.push({
+              name: entityRow.canonical_name,
+              type: entityRow.type,
+              email: entityRow.email,
+              role: props.role || entityRow.relationship_type,
+              last_activity: entityRow.last_seen_date,
+              confidence: entityRow.relationship_confidence,
+              relationships: edges.map((e: any) => ({
+                type: e.edge_type,
+                with: e.related_name,
+                confidence: e.confidence,
+              })),
+            });
+          }
+        }
+      } catch {}
+
+      // ── Step 8: Build timeline from all gathered items ──
+      const allItems = [...primaryItems, ...uniqueCrossRefs];
+      const timeline = allItems
+        .filter(i => i.source_date)
+        .sort((a, b) => (a.source_date || '').localeCompare(b.source_date || ''))
+        .slice(-15) // last 15 events
+        .map(i => ({
+          date: i.source_date,
+          event: i.title,
+          source: i.source,
+        }));
+
+      // ── Step 9: Assemble brief (raw data, no LLM) ──
+      const totalSourcesFound = primaryItems.length + uniqueCrossRefs.length;
+      const briefParts: string[] = [];
+      briefParts.push(`Topic: ${topic}`);
+      if (project) briefParts.push(`Project: ${project}`);
+      briefParts.push(`${totalSourcesFound} sources found across ${new Set(allItems.map(i => i.source)).size} source types.`);
+      if (primaryItems.length > 0) {
+        briefParts.push(`\nTop results:`);
+        for (const item of primaryItems.slice(0, 5)) {
+          briefParts.push(`- [${item.source}] ${item.title} (${item.source_date || 'undated'}): ${item.summary?.slice(0, 200)}`);
+        }
+      }
+      if (uniqueCrossRefs.length > 0) {
+        briefParts.push(`\nCross-references (from entity discovery):`);
+        for (const item of uniqueCrossRefs.slice(0, 5)) {
+          briefParts.push(`- [${item.source}] ${item.title} (${item.source_date || 'undated'}): ${item.summary?.slice(0, 200)}`);
+        }
+      }
+      if (commitments.length > 0) {
+        briefParts.push(`\nCommitments: ${commitments.length} found`);
+      }
+      if (activeThreads.length > 0) {
+        briefParts.push(`\nActive threads: ${activeThreads.length} ongoing narratives`);
+      }
+
+      // ── Open questions: things the data doesn't clearly answer ──
+      const openQuestions: string[] = [];
+      if (commitments.some(c => c.state === 'active' && !c.due)) openQuestions.push('Some commitments have no due date — when are they expected?');
+      if (entitiesInvolved.length === 0 && entityNames.size > 0) openQuestions.push(`Entity graph has no records for: ${Array.from(entityNames).slice(0, 3).join(', ')}`);
+      if (primaryItems.length === 0) openQuestions.push(`No knowledge items found for "${topic}" — has this been ingested?`);
+      if (activeThreads.length === 0) openQuestions.push(`No active narrative threads found — is this topic currently being tracked?`);
+
+      res.json({
+        topic,
+        sources_found: totalSourcesFound,
+        sources_used: keyDocuments.length + uniqueCrossRefs.length,
+        brief: briefParts.join('\n'),
+        entities_involved: entitiesInvolved,
+        active_threads: activeThreads,
+        commitments,
+        key_documents: keyDocuments,
+        timeline,
+        cross_references: uniqueCrossRefs.slice(0, 5).map(i => ({
+          title: i.title,
+          source: i.source,
+          source_ref: i.source_ref,
+          source_date: i.source_date,
+          summary: i.summary?.slice(0, 300),
+        })),
+        open_questions: openQuestions,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── MCP over SSE (for remote Claude Desktop) ───────────
   // GET /mcp establishes SSE stream, POST /mcp/messages sends JSON-RPC
   const mcpTransports = new Map<string, SSEServerTransport>();
