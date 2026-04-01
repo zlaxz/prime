@@ -1841,6 +1841,127 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── Meeting Prep API — assembles intelligence brief for a meeting ──
+  app.get('/api/meeting-prep/:eventTitle', async (req, res) => {
+    try {
+      const eventTitle = decodeURIComponent(req.params.eventTitle);
+      const { getEntity, getEntityProfile } = await import('../entities.js');
+
+      // 1. Find the calendar event matching this title
+      const event = db.prepare(`
+        SELECT title, summary, source_date, contacts, metadata, project
+        FROM knowledge
+        WHERE source = 'calendar' AND title LIKE ?
+        ORDER BY source_date DESC LIMIT 1
+      `).get(`%${eventTitle}%`) as any;
+
+      // 2. Search knowledge base for the meeting title
+      const topicResults = searchByText(db, eventTitle, 10);
+
+      // 3. Extract attendee names from event or fallback to topic search contacts
+      let attendeeNames: string[] = [];
+      if (event) {
+        const contacts = typeof event.contacts === 'string' ? JSON.parse(event.contacts || '[]') : (event.contacts || []);
+        attendeeNames = contacts.filter((c: string) => !c.toLowerCase().includes('zach stock'));
+      }
+      if (attendeeNames.length === 0) {
+        // Try extracting from topic results
+        for (const r of topicResults.slice(0, 5)) {
+          const contacts = typeof r.contacts === 'string' ? JSON.parse(r.contacts || '[]') : (r.contacts || []);
+          for (const c of contacts) {
+            if (!c.toLowerCase().includes('zach stock') && !attendeeNames.includes(c)) {
+              attendeeNames.push(c);
+            }
+          }
+        }
+      }
+
+      // 4. For each attendee, pull entity profile, recent items, commitments
+      const attendees = attendeeNames.slice(0, 5).map((name: string) => {
+        const profile = getEntityProfile(db, name);
+
+        // Get last 5 knowledge items involving this person
+        let recentItems: any[] = [];
+        if (profile) {
+          recentItems = db.prepare(`
+            SELECT k.title, k.source, k.source_date, k.summary
+            FROM knowledge_primary k
+            JOIN entity_mentions em ON k.id = em.knowledge_item_id
+            WHERE em.entity_id = ?
+            ORDER BY k.source_date DESC LIMIT 5
+          `).all(profile.id) as any[];
+        }
+
+        // Get commitments involving this person
+        const commitments = db.prepare(`
+          SELECT text, state, due_date FROM commitments
+          WHERE (owner LIKE ? OR assigned_to LIKE ?)
+            AND state IN ('active', 'overdue', 'detected')
+        `).all(`%${name}%`, `%${name}%`) as any[];
+
+        // Get last meeting notes (Otter/Fireflies)
+        let lastMeetingNotes: any = null;
+        if (profile) {
+          lastMeetingNotes = db.prepare(`
+            SELECT k.title, k.source_date, k.summary
+            FROM knowledge_primary k
+            JOIN entity_mentions em ON k.id = em.knowledge_item_id
+            WHERE em.entity_id = ? AND k.source IN ('otter', 'fireflies', 'meeting-notes')
+            ORDER BY k.source_date DESC LIMIT 1
+          `).get(profile.id) as any;
+        }
+
+        return {
+          name,
+          profile: profile ? {
+            relationship_type: profile.user_label || profile.relationship_type,
+            email: profile.email,
+            domain: profile.domain,
+            status: profile.status,
+            days_since: profile.days_since,
+            mention_count: profile.mention_count,
+            projects: profile.projects,
+          } : null,
+          recent_items: recentItems.map((i: any) => ({
+            title: i.title,
+            source: i.source,
+            date: i.source_date?.slice(0, 10),
+            summary: i.summary?.slice(0, 200),
+          })),
+          commitments: commitments.map((c: any) => ({
+            text: c.text,
+            state: c.state,
+            due_date: c.due_date,
+          })),
+          last_meeting_notes: lastMeetingNotes ? {
+            title: lastMeetingNotes.title,
+            date: lastMeetingNotes.source_date?.slice(0, 10),
+            summary: lastMeetingNotes.summary?.slice(0, 300),
+          } : null,
+        };
+      });
+
+      // 5. Related knowledge items about this meeting/topic
+      const relatedKnowledge = topicResults.slice(0, 5).map((r: any) => ({
+        title: r.title,
+        source: r.source,
+        date: r.source_date?.slice(0, 10),
+        summary: r.summary?.slice(0, 200),
+      }));
+
+      res.json({
+        event_title: eventTitle,
+        event_time: event?.source_date || null,
+        event_summary: event?.summary || null,
+        attendees,
+        related_knowledge: relatedKnowledge,
+        attendee_count: attendees.length,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Mount MCP over HTTP for claude.ai remote access ──
   try {
     const { mountMcpHttp } = await import('./mcp-http.js');

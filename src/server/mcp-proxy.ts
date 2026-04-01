@@ -768,6 +768,78 @@ server.tool(
   }
 );
 
+server.tool(
+  "prime_meeting_prep",
+  "Get intelligence prep for an upcoming meeting. Pulls all context about attendees, recent communications, open commitments, and last meeting notes. Returns structured brief with entity profiles, interaction history, and open obligations for each attendee.",
+  {
+    event_title: z.string().describe("The meeting title or search term to match against calendar events"),
+  },
+  async ({ event_title }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpGet(`${srv}/api/meeting-prep/${encodeURIComponent(event_title)}`, 30000);
+      if (result.error) {
+        return { content: [{ type: "text" as const, text: `Error: ${result.error}` }] };
+      }
+
+      const sections: string[] = [];
+      sections.push(`# Meeting Prep: ${result.event_title}`);
+      if (result.event_time) sections.push(`Time: ${result.event_time}`);
+      if (result.event_summary) sections.push(`Summary: ${result.event_summary}`);
+
+      if (result.attendees?.length) {
+        sections.push('\n--- ATTENDEES ---');
+        for (const a of result.attendees) {
+          let entry = `\n## ${a.name}`;
+          if (a.profile) {
+            entry += ` [${a.profile.relationship_type || 'unknown'}]`;
+            if (a.profile.email) entry += ` <${a.profile.email}>`;
+            if (a.profile.status) entry += ` | Status: ${a.profile.status}`;
+            if (a.profile.days_since != null) entry += ` | ${a.profile.days_since}d since last contact`;
+            if (a.profile.projects?.length) entry += `\nProjects: ${a.profile.projects.join(', ')}`;
+          } else {
+            entry += ' (no entity profile)';
+          }
+
+          if (a.recent_items?.length) {
+            entry += '\nRecent interactions:';
+            for (const item of a.recent_items) {
+              entry += `\n  ${item.date} [${item.source}] ${item.title}`;
+              if (item.summary) entry += `\n    ${item.summary}`;
+            }
+          }
+
+          if (a.commitments?.length) {
+            entry += '\nOpen commitments:';
+            for (const c of a.commitments) {
+              entry += `\n  [${c.state}] ${c.text}${c.due_date ? ` (due ${c.due_date})` : ''}`;
+            }
+          }
+
+          if (a.last_meeting_notes) {
+            entry += `\nLast meeting: ${a.last_meeting_notes.date} — ${a.last_meeting_notes.title}`;
+            if (a.last_meeting_notes.summary) entry += `\n  ${a.last_meeting_notes.summary}`;
+          }
+
+          sections.push(entry);
+        }
+      }
+
+      if (result.related_knowledge?.length) {
+        sections.push('\n--- RELATED CONTEXT ---');
+        for (const k of result.related_knowledge) {
+          sections.push(`${k.date} [${k.source}] ${k.title}: ${k.summary}`);
+        }
+      }
+
+      return { content: [{ type: "text" as const, text: sections.join('\n') }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
 async function main() {
   // Check server connectivity at startup
   const srv = await getServer();

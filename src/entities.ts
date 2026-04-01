@@ -987,6 +987,79 @@ export function buildAllEntityProfiles(db: Database.Database): { profiled: numbe
   return stats;
 }
 
+// ── Relationship Momentum Scoring ─────────────────────────────
+// Computes weekly interaction velocity for each active person entity.
+// Classifies as ACCELERATING, DECELERATING, STEADY, or COLD.
+// Stores results in graph_state key 'relationship_momentum'.
+
+export interface RelationshipMomentum {
+  entity_id: string;
+  canonical_name: string;
+  week1: number;  // items in last 7 days
+  week2: number;  // items 8-14 days ago
+  week3: number;  // items 15-21 days ago
+  week4: number;  // items 22-28 days ago
+  total: number;
+  trend: 'accelerating' | 'decelerating' | 'steady' | 'cold' | 'new_burst';
+}
+
+export function computeRelationshipMomentum(db: Database.Database): RelationshipMomentum[] {
+  const rows = db.prepare(`
+    SELECT e.canonical_name, e.id,
+      SUM(CASE WHEN k.source_date >= datetime('now', '-7 days') THEN 1 ELSE 0 END) as week1,
+      SUM(CASE WHEN k.source_date >= datetime('now', '-14 days') AND k.source_date < datetime('now', '-7 days') THEN 1 ELSE 0 END) as week2,
+      SUM(CASE WHEN k.source_date >= datetime('now', '-21 days') AND k.source_date < datetime('now', '-14 days') THEN 1 ELSE 0 END) as week3,
+      SUM(CASE WHEN k.source_date >= datetime('now', '-28 days') AND k.source_date < datetime('now', '-21 days') THEN 1 ELSE 0 END) as week4
+    FROM entities e
+    JOIN entity_mentions em ON e.id = em.entity_id
+    JOIN knowledge_primary k ON em.knowledge_item_id = k.id
+    WHERE e.user_dismissed = 0 AND e.type = 'person'
+    GROUP BY e.id
+    HAVING (week1 + week2 + week3 + week4) > 0
+  `).all() as any[];
+
+  const results: RelationshipMomentum[] = rows.map((r: any) => {
+    const w1 = r.week1 || 0;
+    const w2 = r.week2 || 0;
+    const w3 = r.week3 || 0;
+    const w4 = r.week4 || 0;
+    const total = w1 + w2 + w3 + w4;
+
+    let trend: RelationshipMomentum['trend'];
+    if (w1 === 0 && (w2 > 0 || w3 > 0)) {
+      trend = 'cold';              // was active, went silent
+    } else if (w1 > 0 && w2 === 0 && w3 === 0) {
+      trend = 'new_burst';         // sudden new activity
+    } else if (w1 > w2 && w2 >= w3) {
+      trend = 'accelerating';      // increasing week over week
+    } else if (w1 < w2 && w2 <= w3) {
+      trend = 'decelerating';      // decreasing week over week
+    } else {
+      trend = 'steady';
+    }
+
+    return {
+      entity_id: r.id,
+      canonical_name: r.canonical_name,
+      week1: w1, week2: w2, week3: w3, week4: w4,
+      total,
+      trend,
+    };
+  });
+
+  // Sort: accelerating first, then new_burst, cold, decelerating, steady
+  const trendOrder: Record<string, number> = { accelerating: 0, new_burst: 1, cold: 2, decelerating: 3, steady: 4 };
+  results.sort((a, b) => (trendOrder[a.trend] ?? 5) - (trendOrder[b.trend] ?? 5) || b.total - a.total);
+
+  // Store in graph_state
+  db.prepare(`
+    INSERT OR REPLACE INTO graph_state (key, value, updated_at)
+    VALUES ('relationship_momentum', ?, datetime('now'))
+  `).run(JSON.stringify(results));
+
+  return results;
+}
+
 // ── Helpers ──────────────────────────────────────────────────
 
 function parseJsonArray(val: any): string[] {

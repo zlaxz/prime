@@ -6,7 +6,7 @@ import { homedir } from 'os';
 import { getDb, getConfig } from './db.js';
 import { generateWorldModel, saveWorldModel, worldModelToMarkdown } from './ai/world.js';
 import { getAlerts } from './ai/intelligence.js';
-import { buildEntityGraph } from './entities.js';
+import { buildEntityGraph, computeRelationshipMomentum } from './entities.js';
 import { retrieveDeepContext, retrieveGmailThread } from './source-retrieval.js';
 import { notify } from './notify.js';
 import { generateBriefingDoc } from './briefing-doc.js';
@@ -2470,6 +2470,87 @@ Return ONLY one word: FULFILLED or OVERDUE`;
       }
     }
 
+    // ── 3. Commitment cross-referencing (SQL-only, no LLM) ────
+    // For each active/detected commitment, search for evidence it was fulfilled:
+    //   - Sent emails matching commitment keywords
+    //   - Documents/actions with matching project + contacts after commitment date
+    //   - Knowledge items referencing completion keywords
+    // If strong evidence found, auto-fulfill. If overdue with zero evidence, flag genuinely overdue.
+    let crossRefChecked = 0;
+    let crossRefFulfilled = 0;
+    let crossRefGenuineOverdue = 0;
+
+    const activeCommits = db.prepare(`
+      SELECT c.id, c.text, c.owner, c.assigned_to, c.project, c.due_date,
+        c.detected_from, c.state, c.detected_at
+      FROM commitments c
+      WHERE c.state IN ('active', 'overdue', 'detected')
+      ORDER BY c.due_date ASC LIMIT 30
+    `).all() as any[];
+
+    for (const commit of activeCommits) {
+      crossRefChecked++;
+      const commitDate = commit.detected_at || commit.due_date || '2000-01-01';
+
+      // Extract meaningful keywords from commitment text
+      const keywords = commit.text
+        .replace(/\b(committed to|will|should|needs to|promised|agreed|going to|plan to)\b/gi, '')
+        .replace(/[^\w\s]/g, '')
+        .trim()
+        .split(/\s+/)
+        .filter((w: string) => w.length > 3 && !/^(that|this|with|from|they|have|been|would|could|about|their|some|also)$/i.test(w))
+        .slice(0, 5);
+
+      if (keywords.length < 1) continue;
+
+      // Build LIKE clauses for each keyword — match if ANY keyword appears in title/summary
+      // Also check for completion-signaling words in same items
+      const completionWords = ['sent', 'completed', 'done', 'delivered', 'submitted', 'signed', 'approved', 'finalized', 'confirmed', 'scheduled'];
+
+      // Search for fulfillment evidence: newer items with matching keywords
+      let evidenceFound = false;
+      for (const kw of keywords) {
+        if (kw.length < 4) continue;
+
+        const matches = db.prepare(`
+          SELECT k.id, k.title, k.summary, k.source, k.source_date
+          FROM knowledge_primary k
+          WHERE k.source_date > ?
+            AND (k.title LIKE ? OR k.summary LIKE ?)
+          ORDER BY k.source_date DESC LIMIT 5
+        `).all(commitDate, `%${kw}%`, `%${kw}%`) as any[];
+
+        // Check if any match contains completion signals
+        for (const match of matches) {
+          const text = ((match.title || '') + ' ' + (match.summary || '')).toLowerCase();
+          const hasCompletion = completionWords.some(cw => text.includes(cw));
+
+          // Also check if it's a sent email (outbound action = likely fulfillment)
+          const isSentMail = match.source === 'gmail-sent';
+
+          if (hasCompletion || isSentMail) {
+            // Strong evidence: mark as fulfilled
+            db.prepare(`
+              UPDATE commitments SET state = 'done', state_changed_at = datetime('now'),
+                fulfilled_evidence = ? WHERE id = ?
+            `).run(
+              `Cross-ref: ${match.source_date?.slice(0, 10)} [${match.source}] ${match.title?.slice(0, 80)}`,
+              commit.id
+            );
+            crossRefFulfilled++;
+            evidenceFound = true;
+            break;
+          }
+        }
+        if (evidenceFound) break;
+      }
+
+      // If overdue and no evidence at all, flag as genuinely overdue
+      if (!evidenceFound && commit.state === 'overdue') {
+        crossRefGenuineOverdue++;
+      }
+    }
+
     return {
       task: '11-claim-verification',
       status: 'success',
@@ -2479,6 +2560,9 @@ Return ONLY one word: FULFILLED or OVERDUE`;
         commitments_still_overdue: verified,
         commitments_fulfilled: invalidated,
         replies_fixed: replyFixed,
+        crossref_checked: crossRefChecked,
+        crossref_fulfilled: crossRefFulfilled,
+        crossref_genuine_overdue: crossRefGenuineOverdue,
       },
     };
   } catch (err: any) {
@@ -3167,6 +3251,17 @@ export async function runDreamPipeline(
   const r04 = await task04WorldRebuild(db);
   results.push(r04);
   console.log(`    ${r04.status === 'success' ? '✓' : '✗'} ${r04.status} (${r04.duration_seconds.toFixed(1)}s)${r04.output ? ` — ${JSON.stringify(r04.output).slice(0, 100)}` : ''}`);
+
+  // Relationship Momentum — SQL-only velocity scoring (no LLM)
+  console.log('  Relationship momentum scoring...');
+  try {
+    const momentum = computeRelationshipMomentum(db);
+    const accel = momentum.filter(m => m.trend === 'accelerating').length;
+    const cold = momentum.filter(m => m.trend === 'cold').length;
+    console.log(`    ✓ ${momentum.length} entities scored — ${accel} accelerating, ${cold} went cold`);
+  } catch (err: any) {
+    console.log(`    ✗ Momentum scoring failed: ${err.message?.slice(0, 100)}`);
+  }
 
   // ── SYNTHESIS LAYER (LLM-powered, skip in quick mode) ──────
   if (!options.quick) {
