@@ -176,7 +176,7 @@ server.tool(
 
 server.tool(
   "prime_remember",
-  "Save something to the knowledge base — a fact, decision, or observation.",
+  "Save something to the knowledge base — a fact, decision, correction, or observation. Has strict write discipline: checks for duplicates and contradictions before saving. Use for SYSTEM GAP, SYSTEM SUGGESTION, corrections, and user-stated facts.",
   {
     text: z.string().describe("What to remember"),
     project: z.string().optional().describe("Project to associate with"),
@@ -186,7 +186,16 @@ server.tool(
     const srv = await getServer();
     if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
     try {
-      const result = await httpPost(`${srv}/api/remember`, { text, project, importance }, 120000); // 2 min — extraction + embedding takes time
+      // Strict write discipline: check for duplicates first
+      const searchResult = await httpPost(`${srv}/api/search`, { query: text.slice(0, 200), limit: 3 }, 30000);
+      const results = searchResult?.results || [];
+      const isDuplicate = results.some((r: any) => r.similarity > 0.92);
+      if (isDuplicate) {
+        const match = results.find((r: any) => r.similarity > 0.92);
+        return { content: [{ type: "text" as const, text: `NOT SAVED — very similar item already exists (${Math.round(match.similarity * 100)}% match): "${match.title}". Use prime_correct to update existing items instead.` }] };
+      }
+
+      const result = await httpPost(`${srv}/api/remember`, { text, project, importance }, 120000);
       return { content: [{ type: "text" as const, text: `Remembered: ${result.title || text.slice(0, 60)}` }] };
     } catch (err: any) {
       return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
