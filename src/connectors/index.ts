@@ -79,5 +79,47 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
     }
   }
 
+  // ── EVENT-DRIVEN TRIGGER LAYER ──
+  // After sync, check if any new items from high-priority entities arrived.
+  // If so, trigger immediate analysis instead of waiting for dream pipeline.
+  try {
+    const newGmailItems = results.find(r => r.source === 'gmail')?.items || 0;
+    const newGmailSent = results.find(r => r.source === 'gmail-sent')?.items || 0;
+
+    if (newGmailItems > 0 || newGmailSent > 0) {
+      // Find new items from the last 15 min that involve key entities
+      const recentHighPriority = db.prepare(`
+        SELECT k.id, k.title, k.source, k.contacts, k.project, k.source_date,
+          e.canonical_name as entity_name, e.user_label as entity_context
+        FROM knowledge k
+        JOIN entity_mentions em ON k.id = em.knowledge_item_id
+        JOIN entities e ON em.entity_id = e.id
+        WHERE k.created_at >= datetime('now', '-20 minutes')
+          AND k.source IN ('gmail', 'gmail-sent')
+          AND e.user_dismissed = 0
+          AND (e.user_label IS NOT NULL OR e.relationship_type IN ('partner', 'key-contact', 'client'))
+        ORDER BY k.source_date DESC
+        LIMIT 5
+      `).all() as any[];
+
+      if (recentHighPriority.length > 0) {
+        // Store as proactive alerts for the COS to pick up
+        const alertData = recentHighPriority.map((item: any) => ({
+          title: item.title,
+          entity: item.entity_name,
+          context: item.entity_context,
+          project: item.project,
+          source_date: item.source_date,
+        }));
+
+        db.prepare(
+          "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('proactive_alerts', ?, datetime('now'))"
+        ).run(JSON.stringify(alertData));
+
+        console.log(`  ⚡ PROACTIVE: ${recentHighPriority.length} new items from key entities`);
+      }
+    }
+  } catch {}
+
   return results;
 }

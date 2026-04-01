@@ -587,6 +587,76 @@ server.tool(
 );
 
 server.tool(
+  "prime_proactive_alerts",
+  "Check for REAL-TIME proactive alerts — new emails from key entities detected in the last sync cycle. Use at the START of every conversation to see if anything urgent arrived since last check. Also shows upcoming meetings in the next 2 hours.",
+  {},
+  async () => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpGet(`${srv}/api/ambient`);
+      const alerts: string[] = [];
+
+      // Proactive alerts from sync trigger
+      if (result.proactive_alerts?.length) {
+        alerts.push('⚡ NEW FROM KEY ENTITIES:');
+        for (const a of result.proactive_alerts) {
+          alerts.push(`  ${a.entity} — ${a.title} (${a.source_date?.slice(0, 10)})`);
+          if (a.context) alerts.push(`    Context: ${a.context}`);
+        }
+      }
+
+      // Upcoming meetings
+      if (result.upcoming_meetings?.length) {
+        alerts.push('\n📅 UPCOMING:');
+        for (const m of result.upcoming_meetings) {
+          alerts.push(`  ${m.time} — ${m.title}`);
+        }
+      }
+
+      // Pending actions count
+      if (result.actions_pending) {
+        alerts.push(`\n📋 ${result.actions_pending} pending actions`);
+      }
+
+      // Pending questions
+      if (result.questions_pending) {
+        alerts.push(`❓ ${result.questions_pending} questions need your answers`);
+      }
+
+      return { content: [{ type: "text" as const, text: alerts.length > 0 ? alerts.join('\n') : 'No proactive alerts. All clear.' }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_decision_log",
+  "Log a decision made by the user — approvals, dismissals, corrections, strategic choices. Builds a decision journal that helps Prime learn user patterns over time. Always call this when the user makes a significant decision.",
+  {
+    decision: z.string().describe("What was decided"),
+    context: z.string().optional().describe("Why this decision was made"),
+    category: z.string().optional().describe("approval, dismissal, correction, strategic, deferral"),
+    project: z.string().optional().describe("Related project"),
+  },
+  async ({ decision, context, category, project }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      await httpPost(`${srv}/api/remember`, {
+        text: `DECISION LOG [${category || 'general'}]: ${decision}${context ? '\nReasoning: ' + context : ''}${project ? '\nProject: ' + project : ''}`,
+        project,
+        importance: 'high',
+      }, 30000);
+      return { content: [{ type: "text" as const, text: `Decision logged: ${decision.slice(0, 60)}` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
   "prime_deep_context",
   "Get comprehensive context on any topic, person, or project. Does multi-hop retrieval internally — searches, retrieves source content, finds related entities, checks threads and commitments, and assembles a structured brief. Use this instead of multiple prime_search + prime_retrieve calls when you need deep understanding of a topic.",
   {

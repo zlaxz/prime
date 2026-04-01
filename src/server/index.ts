@@ -541,6 +541,13 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         meta_insight: metaInsight,
         dream_age_hours: Math.round(dreamAge),
         knowledge_items: stats.total_items,
+        proactive_alerts: (() => {
+          try {
+            const raw = (db.prepare("SELECT value FROM graph_state WHERE key = 'proactive_alerts'").get() as any)?.value;
+            return raw ? JSON.parse(raw) : [];
+          } catch { return []; }
+        })(),
+        questions_pending: pendingQuestions.length,
         timestamp: new Date().toISOString(),
       });
     } catch (err: any) {
