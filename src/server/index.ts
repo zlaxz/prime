@@ -2146,9 +2146,11 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
-  // API key middleware for /api/v1/* routes (excluding auth)
+  // API key middleware for /api/v1/* routes (commercial mode only)
+  // In personal mode (PRIME_MODE !== 'cloud'), skip API key validation
   app.use('/api/v1', (req, res, next) => {
     if (req.path === '/auth/key') return next();
+    if (process.env.PRIME_MODE !== 'cloud') return next(); // personal mode — no auth needed
 
     const apiKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
     if (!apiKey) {
