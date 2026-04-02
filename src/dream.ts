@@ -3495,93 +3495,57 @@ async function task23CrossProjectPatterns(db: Database.Database): Promise<TaskRe
 
 async function buildCosReadyBrief(db: Database.Database): Promise<void> {
   try {
-    // 1. Load the ONE highest-leverage pending action
-    const topAction = db.prepare(`
-      SELECT id, type, summary, reasoning, project, payload
-      FROM staged_actions
-      WHERE status = 'pending'
-      ORDER BY
-        CASE WHEN type = 'email' THEN 0 ELSE 1 END,
-        created_at DESC
-      LIMIT 1
-    `).get() as any;
+    // Primary source: intelligence cycle output (Task 24)
+    const intelRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'intelligence_brief'").get() as any)?.value;
+    const actionsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'intelligence_actions'").get() as any)?.value;
 
-    // 2. Load proactive alerts
-    let alerts: any[] = [];
-    try {
-      const alertsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'proactive_alerts'").get() as any)?.value;
-      if (alertsRaw) alerts = JSON.parse(alertsRaw);
-    } catch {}
-
-    // 3. Load top 3 active decisions
-    const decisions = db.prepare(
-      "SELECT decision, entity_name, project, category FROM decisions WHERE active = 1 ORDER BY created_at DESC LIMIT 3"
-    ).all() as any[];
-
-    // 4. Load today's calendar (next upcoming event)
+    // Calendar context
     const today = new Date().toISOString().slice(0, 10);
     const calendarItems = db.prepare(`
       SELECT title, summary, source_date FROM knowledge_primary
       WHERE source = 'calendar' AND source_date >= ? AND source_date < datetime(?, '+7 days')
-      ORDER BY source_date ASC LIMIT 3
+      ORDER BY source_date ASC LIMIT 5
     `).all(today, today) as any[];
 
     const calendarNext = calendarItems.length > 0
-      ? calendarItems.map((c: any) => `${c.source_date?.slice(0, 10)} — ${c.title}`).join('; ')
+      ? calendarItems.map((c: any) => `${c.source_date?.slice(0, 16)} — ${c.title}`).join('\n')
       : null;
 
-    // 5. If top action is an email, try to draft it
-    let draftText: string | null = null;
-    if (topAction?.type === 'email') {
-      try {
-        const payload = typeof topAction.payload === 'string' ? JSON.parse(topAction.payload) : topAction.payload;
-        if (payload?.body) {
-          // Already drafted by task 18
-          draftText = payload.body;
-        } else if (payload?.to && payload?.subject) {
-          // Draft it now using voice profile
-          let voiceRef = '';
-          try {
-            const voicePath = join(homedir(), 'GitHub', 'prime', 'prompts', 'voice-profile.md');
-            if (existsSync(voicePath)) voiceRef = readFileSync(voicePath, 'utf-8');
-          } catch {}
+    // Active decisions to respect
+    const decisions = db.prepare(
+      "SELECT decision, entity_name, project FROM decisions WHERE active = 1 ORDER BY created_at DESC LIMIT 5"
+    ).all() as any[];
 
-          const draftPrompt = `Draft a short business email for Zach Stock (Recapture Insurance founder).
-To: ${payload.to}
-Subject: ${payload.subject}
-Context: ${topAction.reasoning || topAction.summary}
+    // Assemble the brief from intelligence cycle output
+    const intel = intelRaw ? JSON.parse(intelRaw) : null;
+    const actions = actionsRaw ? JSON.parse(actionsRaw) : [];
 
-Write in Zach's voice: direct, confident, not corporate. Short sentences. Sign off with just "Zach".
-${voiceRef ? '\nVOICE REFERENCE:\n' + voiceRef.slice(0, 2000) : ''}
-
-Return ONLY the email body text, nothing else.`;
-
-          draftText = await runClaude(draftPrompt, { timeout: 60000 });
-        }
-      } catch {}
-    }
-
-    // 6. Assemble the brief
     const brief = {
       generated_at: new Date().toISOString(),
-      one_thing: topAction?.summary || 'No pending actions',
-      one_thing_draft: draftText || null,
-      one_thing_action_id: topAction?.id || null,
+      // From intelligence cycle
+      headline: intel?.headline || 'Intelligence cycle has not run yet',
+      the_one_thing: intel?.the_one_thing || 'Run the dream pipeline to generate intelligence',
+      actions: actions.slice(0, 5), // Prioritized actions with drafts
+      top_hypotheses: (intel?.hypotheses || []).slice(0, 3).map((h: any) => ({
+        claim: h.claim,
+        confidence: h.confidence,
+        action: h.action,
+      })),
+      contradictions: (intel?.contradictions || []).slice(0, 3),
+      // Context
+      calendar_next: calendarNext,
       decisions_to_respect: decisions.map((d: any) => {
         const tag = d.entity_name ? `[${d.entity_name}]` : d.project ? `[${d.project}]` : '';
         return `${tag} ${d.decision}`.trim();
       }),
-      calendar_next: calendarNext,
-      alerts: alerts.slice(0, 5).map((a: any) => typeof a === 'string' ? a : `${a.entity} — ${a.title}`),
-      generated_by: 'dream-pipeline-' + new Date().getHours() + (new Date().getHours() < 12 ? 'am' : 'pm'),
+      generated_by: 'intelligence-cycle-' + new Date().toISOString().slice(0, 10),
     };
 
-    // 7. Store in graph_state
     db.prepare(
       "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('cos_ready_brief', ?, datetime('now'))"
     ).run(JSON.stringify(brief));
 
-    console.log(`  COS brief built: "${brief.one_thing.slice(0, 60)}" ${draftText ? '(with draft)' : '(no draft)'}`);
+    console.log(`  COS brief: "${brief.headline.slice(0, 70)}" — ${actions.length} actions`);
   } catch (err: any) {
     console.error(`  COS brief generation failed: ${err.message?.slice(0, 100)}`);
   }

@@ -333,19 +333,71 @@ server.tool(
 
 server.tool(
   "prime_briefing",
-  "Generate a daily intelligence briefing — priorities, commitments, dropped balls, relationship health.",
-  {
-    days: z.number().optional().default(7).describe("Days to look back"),
-  },
-  async ({ days }) => {
+  "Get Prime's intelligence briefing — the headline, the ONE action to take right now, ranked actions with email drafts/talking points, top hypotheses, theories of mind, contradictions, and upcoming calendar. This is pre-built by the dream pipeline's intelligence cycle (Claude Opus reasoning on 28K+ chars of business context). Call this FIRST when the user sits down.",
+  {},
+  async () => {
     const srv = await getServer();
     if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
-    // Briefing is heavy — use longer timeout
     try {
-      const result = await httpPost(`${srv}/api/ask`, {
-        question: `Generate a morning briefing. Look back ${days} days. Include: top priorities, commitments due, dropped balls, relationship health, what changed.`
-      }, 120000);
-      return { content: [{ type: "text" as const, text: result.answer || 'Briefing generation failed.' }] };
+      const result = await httpGet(`${srv}/api/ambient`, 30000);
+      const brief = result.cos_ready_brief;
+      const intel = result.intelligence_brief;
+      const actions = result.intelligence_actions || [];
+
+      if (!brief && !intel) {
+        return { content: [{ type: "text" as const, text: 'No intelligence brief available. The dream pipeline needs to run first.' }] };
+      }
+
+      // Format the brief for COS consumption
+      const parts: string[] = [];
+
+      // Headline
+      parts.push(`## ${brief?.headline || intel?.headline || 'No headline'}\n`);
+      parts.push(`**THE ONE THING:** ${brief?.the_one_thing || intel?.the_one_thing || 'Run dream pipeline'}\n`);
+
+      // Actions with drafts
+      if (actions.length > 0) {
+        parts.push('---\n### ACTIONS (ready to execute)\n');
+        for (const a of actions) {
+          parts.push(`**#${a.priority} [${a.type} | ${a.deadline}] ${a.title}**`);
+          if (a.target_person) parts.push(`Target: ${a.target_person}`);
+          parts.push(`Why: ${a.rationale}`);
+          if (a.draft) parts.push(`\n> DRAFT:\n> ${a.draft.replace(/\n/g, '\n> ')}\n`);
+          if (a.depends_on) parts.push(`Depends on: ${a.depends_on}`);
+          parts.push('');
+        }
+      }
+
+      // Top hypotheses
+      const hypotheses = brief?.top_hypotheses || intel?.hypotheses?.slice(0, 3) || [];
+      if (hypotheses.length > 0) {
+        parts.push('---\n### HYPOTHESES\n');
+        for (const h of hypotheses) {
+          parts.push(`- [${h.confidence}%] ${h.claim}`);
+          if (h.action) parts.push(`  Action: ${h.action}`);
+        }
+        parts.push('');
+      }
+
+      // Contradictions
+      const contradictions = brief?.contradictions || intel?.contradictions || [];
+      if (contradictions.length > 0) {
+        parts.push('---\n### CONTRADICTIONS\n');
+        for (const c of contradictions) {
+          parts.push(`- ${c.tension || c.claim_a}`);
+          parts.push(`  Resolve: ${c.resolution || c.resolution_needed}`);
+        }
+        parts.push('');
+      }
+
+      // Calendar
+      if (brief?.calendar_next) {
+        parts.push('---\n### UPCOMING\n');
+        parts.push(brief.calendar_next);
+        parts.push('');
+      }
+
+      return { content: [{ type: "text" as const, text: parts.join('\n') }] };
     } catch (err: any) {
       return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
     }
