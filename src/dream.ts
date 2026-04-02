@@ -3878,6 +3878,13 @@ export async function runDreamPipeline(
   db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_dream_completed', ?, datetime('now'))").run(JSON.stringify(new Date().toISOString()));
   db.prepare("DELETE FROM graph_state WHERE key = 'dream_lock'").run();
 
+  // ── Clean up Terminal windows left by callClaude GUI wrapper ──
+  try {
+    const { execSync } = await import('child_process');
+    execSync("osascript -e 'tell application \"Terminal\" to close every window' 2>/dev/null", { timeout: 5000 });
+    console.log('  ✓ Terminal windows cleaned up');
+  } catch {}
+
   console.log('');
 
   return { tasks: results, total_duration: totalDuration };
