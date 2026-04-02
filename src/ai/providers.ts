@@ -201,7 +201,7 @@ export async function getBulkProvider(apiKey?: string): Promise<LLMProvider> {
   const deepseekKey = process.env.DEEPSEEK_API_KEY;
   if (deepseekKey) {
     _deepseekProvider = createAPIProvider({
-      model: 'deepseek-reasoner',
+      model: 'deepseek-chat',
       apiKey: deepseekKey,
       baseUrl: 'https://api.deepseek.com',
     });
