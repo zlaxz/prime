@@ -111,7 +111,7 @@ function httpPost(url: string, body: any, timeout = 30000): Promise<any> {
 const server = new McpServer({
   name: "prime-recall",
   version: "0.1.0",
-  description: "Prime Recall — Zach Stock's AI Chief of Staff. 13K+ knowledge items, FTS5 full-text search, entity graph, chunked embeddings. START every conversation with prime_proactive_alerts to check for urgent new emails from key people. Use prime_deep_context for comprehensive topic research. Use prime_retrieve (paginated) for full source content. Log decisions with prime_decision_log. When you find gaps, log with prime_remember tagged 'SYSTEM GAP'. Lead with ONE action, present finished work not tasks.",
+  description: "Prime Recall — Zach Stock's AI Chief of Staff. 13K+ knowledge items, FTS5 full-text search, entity graph, chunked embeddings. START every conversation with prime_proactive_alerts. Use prime_deep_context for topic research. Use prime_retrieve for full source content. CRITICAL RULE: Before drafting ANY email or outreach, do a STAKEHOLDER IMPACT CHECK — who else is affected? Who might feel bypassed? What trust is at risk? What leverage is revealed? Present the risk analysis BEFORE the draft. Use the entity graph to map relationships. Log decisions with prime_decision_log. Log gaps with prime_remember.",
 });
 
 // Helper: proxy a search request
