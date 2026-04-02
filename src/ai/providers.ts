@@ -204,6 +204,14 @@ export async function getBulkProvider(apiKey?: string): Promise<LLMProvider> {
     return _deepseekProvider;
   }
 
-  // No DeepSeek key — fall back to Claude (still works, just uses Max allocation)
+  // No DeepSeek — use OpenAI API directly for bulk work (cheap gpt-4.1-nano)
+  // Do NOT fall through to Claude Code CLI here — it hangs on Mac Mini
+  // where claude -p uses the GUI wrapper and can't handle piped stdin
+  if (apiKey) {
+    _deepseekProvider = createAPIProvider({ model: 'gpt-4.1-nano', apiKey });
+    return _deepseekProvider;
+  }
+
+  // Last resort: try Claude Code CLI
   return getDefaultProvider(apiKey);
 }
