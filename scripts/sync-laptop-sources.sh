@@ -22,3 +22,7 @@ CLAUDE_CODE_SRC="$HOME/.claude/projects/"
 if [ -d "$CLAUDE_CODE_SRC" ]; then
   rsync -az --delete "$CLAUDE_CODE_SRC" "${MAC_MINI}:~/${REMOTE_BASE}/claude-code/" 2>/dev/null
 fi
+
+# Claude Code config sync (CLAUDE.md + settings.json → Mac Mini)
+rsync -az "$HOME/.claude/CLAUDE.md" "${MAC_MINI}:~/.claude/CLAUDE.md" 2>/dev/null
+rsync -az "$HOME/.claude/settings.json" "${MAC_MINI}:~/.claude/settings.json" 2>/dev/null

@@ -205,7 +205,15 @@ async function callClaude(prompt: string, timeoutMs: number = 300000, sessionId?
     }
   }
 
-  // Append self-improvement instruction to ALL prompts
+  // Inject strategic thinking framework + self-improvement instruction into ALL prompts
+  try {
+    const thinkingPath = join(homedir(), 'GitHub', 'prime', 'prompts', 'strategic-thinking.md');
+    if (existsSync(thinkingPath)) {
+      const framework = readFileSync(thinkingPath, 'utf-8');
+      prompt = framework + '\n\n---\n\n' + prompt;
+    }
+  } catch {}
+
   prompt += '\n\nSYSTEM NOTE: If you encounter a data quality issue, missing context, or a limitation that prevents good analysis, include at the END of your response:\nUPGRADE_REQUEST: [category] [description of what needs to be fixed]\nThis will be automatically queued for system improvement.';
 
   let response: string;
