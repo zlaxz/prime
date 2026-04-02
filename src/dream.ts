@@ -3071,15 +3071,14 @@ async function task22MemoryConsolidation(db: Database.Database): Promise<TaskRes
   const start = Date.now();
   try {
     // ── Step 1: Deduplicate ─────────────────────────────────────
-    // Find knowledge items with same title + same source created within ~1 hour.
-    // These are re-extraction artifacts. Keep the one with the longest content.
+    // Find TRUE duplicates: same source_ref (not just same title).
+    // Same source_ref = same underlying content extracted multiple times.
+    // Keep the one with the longest content.
     const dupes = db.prepare(`
       SELECT k1.id as keep_id, k2.id as dupe_id
       FROM knowledge k1
       JOIN knowledge k2 ON k1.id < k2.id
-        AND k1.source = k2.source
-        AND k1.title = k2.title
-        AND abs(julianday(k1.source_date) - julianday(k2.source_date)) < 0.05
+        AND k1.source_ref = k2.source_ref
       WHERE length(coalesce(k1.raw_content, k1.summary, '')) >= length(coalesce(k2.raw_content, k2.summary, ''))
     `).all() as { keep_id: string; dupe_id: string }[];
 
