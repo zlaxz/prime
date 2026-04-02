@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { getConfig, searchByFTS } from './db.js';
 import { callClaude } from './dream.js';
+import { syncAll } from './connectors/index.js';
 
 // ============================================================
 // Intelligence Cycle — Strategic Reasoning Engine
@@ -338,6 +339,18 @@ Analyze everything and produce a strategic intelligence brief. Return ONLY valid
       "signal": "What was detected",
       "why_it_matters": "Strategic significance"
     }
+  ],
+  "actions": [
+    {
+      "priority": 1,
+      "title": "Short action title",
+      "type": "call|email|prepare|decide|investigate|wait",
+      "target_person": "Name or null",
+      "deadline": "today|tomorrow|this_week|this_month",
+      "rationale": "Why this action, why this priority, what it unlocks",
+      "draft": "If type is email: full draft text in Zach's voice (direct, confident, no corporate-speak). If type is call: talking points. If type is prepare: outline of what to prepare. Otherwise null.",
+      "depends_on": "What must be true or done first, or null"
+    }
   ]
 }
 
@@ -348,7 +361,8 @@ Requirements:
 - For the top 2 hypotheses, trace implication chains (1st→2nd→3rd order).
 - Flag any contradictions you find between claims, commitments, and behavior.
 - Identify weak signals that don't fit any pattern but could be strategically important.
-- "The one thing" must be actionable THIS WEEK with a specific person and specific ask.`;
+- "The one thing" must be actionable THIS WEEK with a specific person and specific ask.
+- Generate 3-5 ACTIONS ranked by priority. Each must be concrete — specific person, specific deliverable, specific deadline. For emails, WRITE THE FULL DRAFT in Zach's voice. For calls, provide talking points. For preparation, provide the outline. The goal is ZERO activation energy — Zach should be able to execute each action with ONE tap.`;
 
 // ── Main Entry Point ────────────────────────────────────────
 
@@ -356,6 +370,16 @@ export async function runIntelligenceCycle(db: Database.Database): Promise<TaskR
   const start = Date.now();
 
   try {
+    // Phase 0: Force data refresh — intelligence must reason on FRESH data
+    console.log('    Phase 0: Syncing all data sources (Gmail, Calendar, Claude, Cowork)...');
+    try {
+      const syncResults = await syncAll(db);
+      const totalSynced = syncResults.reduce((s, r) => s + r.items, 0);
+      console.log(`      Synced ${totalSynced} items from ${syncResults.filter(r => r.items > 0).length} sources`);
+    } catch (syncErr: any) {
+      console.log(`      Sync warning: ${syncErr.message?.slice(0, 100)} (continuing with existing data)`);
+    }
+
     // Phase 1: Assemble all pipeline outputs into context
     console.log('    Phase 1: Assembling context from all pipeline outputs...');
     const pipelineContext = assembleContext(db);
@@ -417,6 +441,10 @@ export async function runIntelligenceCycle(db: Database.Database): Promise<TaskR
     db.prepare(
       "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('detected_contradictions', ?, datetime('now'))"
     ).run(JSON.stringify(brief.contradictions || []));
+
+    db.prepare(
+      "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('intelligence_actions', ?, datetime('now'))"
+    ).run(JSON.stringify(brief.actions || []));
 
     // Track hypotheses for meta-learning
     const historyRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'hypothesis_history'").get() as any)?.value;

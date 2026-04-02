@@ -590,6 +590,12 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
             return raw ? JSON.parse(raw) : [];
           } catch { return []; }
         })(),
+        intelligence_actions: (() => {
+          try {
+            const raw = (db.prepare("SELECT value FROM graph_state WHERE key = 'intelligence_actions'").get() as any)?.value;
+            return raw ? JSON.parse(raw) : [];
+          } catch { return []; }
+        })(),
         timestamp: new Date().toISOString(),
       });
     } catch (err: any) {
