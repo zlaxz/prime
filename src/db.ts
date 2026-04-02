@@ -882,6 +882,10 @@ export function insertKnowledge(db: Database.Database, item: KnowledgeItem) {
     ? Buffer.from(new Float32Array(item.embedding).buffer)
     : null;
 
+  // Upsert: if source_ref already exists, reuse the existing ID to trigger OR REPLACE on PK
+  const existing = db.prepare('SELECT id FROM knowledge WHERE source_ref = ?').get(item.source_ref) as any;
+  const id = existing?.id || item.id;
+
   db.prepare(
     `INSERT OR REPLACE INTO knowledge
     (id, title, summary, source, source_ref, source_date, contacts, organizations,
@@ -889,7 +893,7 @@ export function insertKnowledge(db: Database.Database, item: KnowledgeItem) {
      artifact_path, metadata, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
   ).run(
-    item.id,
+    id,
     item.title,
     item.summary,
     item.source,

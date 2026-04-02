@@ -509,7 +509,9 @@ export async function scanClaude(
   // ---- PHASE 1: Fetch all conversations in parallel (batches of 10) ----
   console.log('  Phase 1: Fetching conversation details...');
 
-  // Filter out already-indexed conversations first
+  // Filter out already-indexed conversations
+  // A conversation is "fully indexed" only if its main item exists AND was updated after the API's updated_at
+  // Previously this skipped conversations even when sub-items (artifacts) were deleted
   const toFetch: ClaudeConversation[] = [];
   for (const convoMeta of conversations) {
     const existing = db.prepare(
