@@ -45,21 +45,15 @@ function assembleContext(db: Database.Database): string {
     }
   }
 
-  // 2. Entity profiles + relationship momentum (from Task 06)
+  // 2. Entity profiles (from Task 06)
   const topEntities = db.prepare(`
     SELECT e.canonical_name, e.user_label, e.relationship_type,
       ep.communication_nature, ep.reply_expectation,
-      rm.trend, rm.velocity,
       COUNT(DISTINCT k.id) as recent_mentions,
       MAX(k.source_date) as last_seen,
       GROUP_CONCAT(DISTINCT k.project) as projects
     FROM entities e
     LEFT JOIN entity_profiles ep ON e.id = ep.entity_id
-    LEFT JOIN (
-      SELECT entity_id, trend,
-        CAST(recent_count AS FLOAT) / NULLIF(baseline_count, 0) as velocity
-      FROM relationship_momentum
-    ) rm ON e.id = rm.entity_id
     JOIN entity_mentions em ON e.id = em.entity_id
     JOIN knowledge k ON em.knowledge_item_id = k.id
     WHERE e.user_dismissed = 0
@@ -75,8 +69,7 @@ function assembleContext(db: Database.Database): string {
   if (topEntities.length > 0) {
     sections.push('## KEY PEOPLE\n');
     for (const e of topEntities) {
-      const momentum = e.trend ? ` | momentum: ${e.trend}` : '';
-      sections.push(`- **${e.canonical_name}** (${e.user_label || e.relationship_type || 'unknown'}) — ${e.recent_mentions} mentions, last seen ${e.last_seen?.slice(0, 10) || 'unknown'}, projects: ${e.projects || 'none'}${momentum}`);
+      sections.push(`- **${e.canonical_name}** (${e.user_label || e.relationship_type || 'unknown'}) — ${e.recent_mentions} mentions, last seen ${e.last_seen?.slice(0, 10) || 'unknown'}, projects: ${e.projects || 'none'}`);
       if (e.communication_nature) sections.push(`  Communication: ${e.communication_nature}, reply expectation: ${e.reply_expectation || 'unknown'}`);
     }
     sections.push('');
