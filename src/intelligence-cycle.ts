@@ -258,7 +258,9 @@ Return JSON array:
   ], { json: true, temperature: 0.7, max_tokens: 4000 });
 
   try {
-    const hypotheses = JSON.parse(response);
+    const raw = JSON.parse(response);
+    // Handle both bare array and {hypotheses: [...]} wrapper
+    const hypotheses = Array.isArray(raw) ? raw : (raw.hypotheses || raw.data || Object.values(raw).find(v => Array.isArray(v)) || []);
     return (Array.isArray(hypotheses) ? hypotheses : []).map((h: any, i: number) => ({
       id: `hyp-${Date.now()}-${i}`,
       claim: h.claim,
