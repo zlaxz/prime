@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import { getConfig } from './db.js';
-import { getBulkProvider, getDefaultProvider } from './ai/providers.js';
+import { getBulkProvider } from './ai/providers.js';
 import { retrieveDeepContext } from './source-retrieval.js';
 import { searchByFTS } from './db.js';
 
@@ -188,8 +188,9 @@ async function generateHypotheses(
   if (situations.length < 2) return [];
 
   const apiKey = getConfig(db, 'openai_api_key');
-  // Use Claude for hypothesis generation — this is high-value reasoning
-  const provider = await getDefaultProvider(apiKey || undefined);
+  // Use bulk provider (OpenAI gpt-4.1-nano or DeepSeek) for hypothesis generation
+  // Claude Code CLI hangs on Mac Mini — use API directly
+  const provider = await getBulkProvider(apiKey || undefined);
 
   // Also pull cross-project patterns and narrative threads
   const patternsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'cross_project_patterns'").get() as any)?.value;
