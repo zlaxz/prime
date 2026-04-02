@@ -18,11 +18,16 @@ if [ -f "$MCP_CONFIG" ]; then
   MCP_FLAG="--mcp-config $MCP_CONFIG"
 fi
 
+# Run in Terminal's GUI context. Use 'do script' which creates a tab.
+# The command ends with 'exit' so shellExitAction=1 closes the tab.
+# We also explicitly close the window after completion to prevent accumulation.
 osascript -e "tell application \"Terminal\" to do script \"cat /tmp/claude-gui-prompt-$$.txt | claude -p $MCP_FLAG $ARGS > $OUTFILE 2>&1; echo __DONE__ >> $OUTFILE; exit\"" > /dev/null 2>&1
 
 # Wait for completion — 60 minutes max for deep sessions
 for i in $(seq 1 720); do
   if [ -f "$OUTFILE" ] && grep -q "__DONE__" "$OUTFILE" 2>/dev/null; then
+    # Clean up the Terminal window that was created
+    osascript -e 'tell application "Terminal" to close (every window whose name contains "claude")' > /dev/null 2>&1
     sed '/__DONE__/d' "$OUTFILE"
     rm -f "$OUTFILE" "/tmp/claude-gui-prompt-$$.txt"
     exit 0
