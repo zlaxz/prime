@@ -572,6 +572,24 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
             return raw ? JSON.parse(raw) : null;
           } catch { return null; }
         })(),
+        intelligence_brief: (() => {
+          try {
+            const raw = (db.prepare("SELECT value FROM graph_state WHERE key = 'intelligence_brief'").get() as any)?.value;
+            return raw ? JSON.parse(raw) : null;
+          } catch { return null; }
+        })(),
+        active_hypotheses: (() => {
+          try {
+            const raw = (db.prepare("SELECT value FROM graph_state WHERE key = 'active_hypotheses'").get() as any)?.value;
+            return raw ? JSON.parse(raw) : [];
+          } catch { return []; }
+        })(),
+        weak_signals: (() => {
+          try {
+            const raw = (db.prepare("SELECT value FROM graph_state WHERE key = 'weak_signals'").get() as any)?.value;
+            return raw ? JSON.parse(raw) : [];
+          } catch { return []; }
+        })(),
         timestamp: new Date().toISOString(),
       });
     } catch (err: any) {

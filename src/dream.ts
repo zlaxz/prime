@@ -13,6 +13,7 @@ import { generateBriefingDoc } from './briefing-doc.js';
 import { autoExecuteLowRisk } from './actions.js';
 import { task15PredictionVerification, task16StrategicReflection, getCorrectionRules } from './intelligence-loop.js';
 import { task17ThreadBuilder, getThreadContext } from './narrative-threads.js';
+import { runIntelligenceCycle } from './intelligence-cycle.js';
 import { runClaude } from './utils/claude-spawn.js';
 import { getBulkProvider } from './ai/providers.js';
 
@@ -3795,6 +3796,23 @@ export async function runDreamPipeline(
     const r20 = await task20DeepSessionTrigger(db);
     results.push(r20);
     console.log(`    ${r20.status === 'success' ? '✓' : r20.status === 'skipped' ? '○' : '✗'} ${r20.status} (${r20.duration_seconds.toFixed(1)}s)${r20.output ? ` — ${JSON.stringify(r20.output).slice(0, 150)}` : ''}`);
+  }
+
+  // ── INTELLIGENCE CYCLE — strategic reasoning engine ──────
+  // Runs AFTER all data tasks complete. Takes ALL outputs and REASONS about them.
+  // This is the difference between a librarian and a strategist.
+  if (!options.quick) {
+    console.log('  Task 24: Intelligence cycle (situation modeling + hypothesis generation + red team)...');
+    const r24 = await runIntelligenceCycle(db);
+    results.push(r24);
+    const r24out = r24.output || {};
+    console.log(`    ${r24.status === 'success' ? '✓' : r24.status === 'skipped' ? '○' : '✗'} ${r24.status} (${r24.duration_seconds.toFixed(1)}s)`);
+    if (r24.status === 'success') {
+      console.log(`      Situations: ${r24out.situations} | Hypotheses: ${r24out.hypotheses_surviving}/${r24out.hypotheses_generated} survive red team`);
+      console.log(`      Weak signals: ${r24out.weak_signals} | Contradictions: ${r24out.contradictions}`);
+      console.log(`      Top: ${r24out.top_hypothesis}`);
+      console.log(`      >>> ${r24out.the_one_thing}`);
+    }
   }
 
   // Update last dream run timestamp
