@@ -180,7 +180,7 @@ Be thorough on Decisions Taken — that section preserves institutional memory. 
   return summary;
 }
 
-async function callClaude(prompt: string, timeoutMs: number = 300000, sessionId?: string): Promise<string> {
+export async function callClaude(prompt: string, timeoutMs: number = 300000, sessionId?: string): Promise<string> {
   // For persistent sessions: track turns and inject summary when context gets large
   // Wrapped in try/catch so session management failures don't skip the retry logic below
   if (sessionId) {

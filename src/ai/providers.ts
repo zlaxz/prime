@@ -175,9 +175,13 @@ export async function getDefaultProvider(apiKey?: string): Promise<LLMProvider> 
     }
   } catch {}
 
-  // Fall back to API
-  if (apiKey) {
-    _claudeProvider = createAPIProvider({ model: 'gpt-4.1-nano', apiKey });
+  // Fall back to DeepSeek via OpenRouter or direct
+  if (process.env.DEEPSEEK_API_KEY) {
+    _claudeProvider = createAPIProvider({ model: 'deepseek-chat', apiKey: process.env.DEEPSEEK_API_KEY, baseUrl: 'https://api.deepseek.com' });
+    return _claudeProvider;
+  }
+  if (process.env.OPENROUTER_API_KEY) {
+    _claudeProvider = createAPIProvider({ model: 'deepseek/deepseek-chat-v3-0324', apiKey: process.env.OPENROUTER_API_KEY, baseUrl: 'https://openrouter.ai/api/v1' });
     return _claudeProvider;
   }
 
@@ -204,14 +208,18 @@ export async function getBulkProvider(apiKey?: string): Promise<LLMProvider> {
     return _deepseekProvider;
   }
 
-  // No DeepSeek — use OpenAI API directly for bulk work (cheap gpt-4.1-nano)
-  // Do NOT fall through to Claude Code CLI here — it hangs on Mac Mini
-  // where claude -p uses the GUI wrapper and can't handle piped stdin
-  if (apiKey) {
-    _deepseekProvider = createAPIProvider({ model: 'gpt-4.1-nano', apiKey });
+  // No DeepSeek — use DeepSeek V3 via OpenRouter (same quality, different endpoint)
+  // Do NOT use gpt-4.1-nano — project standard is Claude + DeepSeek only
+  // Do NOT fall through to Claude Code CLI — it hangs on Mac Mini
+  if (process.env.OPENROUTER_API_KEY) {
+    _deepseekProvider = createAPIProvider({
+      model: 'deepseek/deepseek-chat-v3-0324',
+      apiKey: process.env.OPENROUTER_API_KEY,
+      baseUrl: 'https://openrouter.ai/api/v1',
+    });
     return _deepseekProvider;
   }
 
-  // Last resort: try Claude Code CLI
+  // Fallback: try Claude Code CLI (works on laptop, hangs on Mac Mini)
   return getDefaultProvider(apiKey);
 }
