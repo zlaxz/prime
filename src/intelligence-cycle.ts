@@ -134,7 +134,7 @@ function assembleContext(db: Database.Database): string {
 
   // 7. Recent staged actions (from Task 18)
   const actions = db.prepare(`
-    SELECT title, reasoning, urgency, source_task, status
+    SELECT summary, reasoning, type, source_task, status
     FROM staged_actions
     WHERE created_at >= datetime('now', '-3 days')
     ORDER BY created_at DESC LIMIT 10
@@ -143,7 +143,7 @@ function assembleContext(db: Database.Database): string {
   if (actions.length > 0) {
     sections.push('## RECENT STAGED ACTIONS\n');
     for (const a of actions) {
-      sections.push(`- [${a.urgency}/${a.status}] ${a.title}: ${a.reasoning?.slice(0, 100) || ''}`);
+      sections.push(`- [${a.type}/${a.status}] ${a.summary}: ${a.reasoning?.slice(0, 100) || ''}`);
     }
     sections.push('');
   }
