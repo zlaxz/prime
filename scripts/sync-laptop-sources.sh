@@ -26,3 +26,12 @@ fi
 # Claude Code config sync (CLAUDE.md + settings.json → Mac Mini)
 rsync -az "$HOME/.claude/CLAUDE.md" "${MAC_MINI}:~/.claude/CLAUDE.md" 2>/dev/null
 rsync -az "$HOME/.claude/settings.json" "${MAC_MINI}:~/.claude/settings.json" 2>/dev/null
+
+# Claude.ai conversation scan (runs from laptop to bypass Cloudflare)
+# Only runs every 4 hours (checks timestamp)
+SCAN_MARKER="/tmp/prime-claude-scan-last"
+HOURS_BETWEEN=4
+if [ ! -f "$SCAN_MARKER" ] || [ $(($(date +%s) - $(stat -f %m "$SCAN_MARKER" 2>/dev/null || echo 0))) -gt $((HOURS_BETWEEN * 3600)) ]; then
+  python3 "$HOME/GitHub/prime/scripts/laptop-claude-scan.py" >> /tmp/prime-claude-scan.log 2>&1
+  touch "$SCAN_MARKER"
+fi

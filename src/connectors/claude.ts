@@ -799,9 +799,15 @@ export async function importClaudeConversations(
 
   const stats = { conversations: 0, items: 0 };
 
-  if (path.endsWith('.json')) {
-    const data = JSON.parse(readFileSync(path, 'utf-8'));
-    const conversations = Array.isArray(data) ? data : data.conversations || [];
+  if (path.endsWith('.json') || path.endsWith('.jsonl')) {
+    let conversations: any[];
+    if (path.endsWith('.jsonl')) {
+      conversations = readFileSync(path, 'utf-8').trim().split('\n')
+        .filter(Boolean).map(line => JSON.parse(line));
+    } else {
+      const data = JSON.parse(readFileSync(path, 'utf-8'));
+      conversations = Array.isArray(data) ? data : data.conversations || [];
+    }
 
     for (const convo of conversations) {
       try {

@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3';
 import { scanGmail, scanSentMail } from './gmail.js';
 import { scanCalendar } from './calendar.js';
-import { scanClaude } from './claude.js';
+import { scanClaude, importClaudeConversations } from './claude.js';
 import { scanCowork } from './cowork.js';
 import { getConfig } from '../db.js';
 import { join } from 'path';
@@ -47,6 +47,21 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
     } catch (err: any) {
       results.push({ source: 'claude', items: 0, error: err.message });
     }
+  }
+
+  // Claude.ai conversations from laptop scan (bypasses Cloudflare)
+  const laptopClaudeFile = join(homedir(), 'laptop-sources', 'claude-api', 'new_conversations.jsonl');
+  try {
+    const { existsSync, unlinkSync } = await import('fs');
+    if (existsSync(laptopClaudeFile)) {
+      const { items, conversations } = await importClaudeConversations(db, laptopClaudeFile);
+      if (items > 0) {
+        results.push({ source: 'claude-laptop', items });
+        unlinkSync(laptopClaudeFile); // Remove after successful import
+      }
+    }
+  } catch (err: any) {
+    results.push({ source: 'claude-laptop', items: 0, error: err.message });
   }
 
   // Cowork (Claude Desktop agent sessions)
