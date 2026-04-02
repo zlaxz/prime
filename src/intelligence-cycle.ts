@@ -157,17 +157,41 @@ function assembleContext(db: Database.Database): string {
     sections.push('');
   }
 
-  // 9. Recent high-importance items (last 7 days)
+  // 9. TODAY's items — raw, unprocessed, ALL of them (not just high-importance)
+  // This is critical: pipeline perception tasks may not have run yet, but the
+  // intelligence cycle must see today's emails/messages regardless of classification
+  const todayItems = db.prepare(`
+    SELECT title, summary, source, source_date, project, raw_content
+    FROM knowledge
+    WHERE source_date >= datetime('now', '-24 hours')
+      AND source NOT IN ('agent-notification', 'agent-report', 'briefing', 'directive')
+    ORDER BY source_date DESC LIMIT 30
+  `).all() as any[];
+
+  if (todayItems.length > 0) {
+    sections.push('## TODAY\'S ITEMS (LAST 24 HOURS — FRESHEST DATA, MAY NOT BE IN PIPELINE YET)\n');
+    for (const item of todayItems) {
+      const content = item.raw_content
+        ? item.raw_content.slice(0, 500)
+        : item.summary?.slice(0, 200) || '';
+      sections.push(`- [${item.source} ${item.source_date?.slice(0, 16)}] ${item.title}`);
+      sections.push(`  ${content}`);
+    }
+    sections.push('');
+  }
+
+  // 10. Recent high-importance items (last 7 days, excluding today which is above)
   const recentItems = db.prepare(`
     SELECT title, summary, source, source_date, project
     FROM knowledge_primary
     WHERE source_date >= datetime('now', '-7 days')
+      AND source_date < datetime('now', '-24 hours')
       AND importance IN ('critical', 'high')
     ORDER BY source_date DESC LIMIT 20
   `).all() as any[];
 
   if (recentItems.length > 0) {
-    sections.push('## HIGH-IMPORTANCE ITEMS (LAST 7 DAYS)\n');
+    sections.push('## HIGH-IMPORTANCE ITEMS (PAST 7 DAYS)\n');
     for (const item of recentItems) {
       sections.push(`- [${item.source} ${item.source_date?.slice(0, 10)}] ${item.title}: ${item.summary?.slice(0, 150) || ''}`);
     }
