@@ -14,6 +14,7 @@ import { autoExecuteLowRisk } from './actions.js';
 import { task15PredictionVerification, task16StrategicReflection, getCorrectionRules } from './intelligence-loop.js';
 import { task17ThreadBuilder, getThreadContext } from './narrative-threads.js';
 import { runClaude } from './utils/claude-spawn.js';
+import { getBulkProvider } from './ai/providers.js';
 
 // ============================================================
 // Dream State Pipeline — Phase 5 of v1.0 Brain Architecture
@@ -216,13 +217,60 @@ async function callClaude(prompt: string, timeoutMs: number = 300000, sessionId?
 
   prompt += '\n\nSYSTEM NOTE: If you encounter a data quality issue, missing context, or a limitation that prevents good analysis, include at the END of your response:\nUPGRADE_REQUEST: [category] [description of what needs to be fixed]\nThis will be automatically queued for system improvement.';
 
+  // Self-healing query loop: multi-stage recovery cascade
+  const MAX_CONTINUATION_RETRIES = 3;
   let response: string;
+
+  // Stage 1: Normal call
   try {
     response = await callClaudeOnce(prompt, timeoutMs, sessionId);
-  } catch (err: any) {
-    console.log(`    Retry after error: ${err.message?.slice(0, 80)}`);
-    await new Promise(r => setTimeout(r, 30000));
-    response = await callClaudeOnce(prompt, timeoutMs, sessionId);
+  } catch (err1: any) {
+    console.log(`    Stage 1 failed: ${err1.message?.slice(0, 80)}`);
+
+    // Stage 2: Micro-compaction — if prompt > 10K chars, truncate middle
+    let compactedPrompt = prompt;
+    if (prompt.length > 10000) {
+      compactedPrompt = prompt.slice(0, 2000) + '\n\n[... middle truncated for recovery ...]\n\n' + prompt.slice(-6000);
+      console.log(`    Stage 2: micro-compaction (${prompt.length} -> ${compactedPrompt.length} chars)`);
+    }
+    try {
+      await new Promise(r => setTimeout(r, 5000));
+      response = await callClaudeOnce(compactedPrompt, timeoutMs, sessionId);
+    } catch (err2: any) {
+      console.log(`    Stage 2 failed: ${err2.message?.slice(0, 80)}`);
+
+      // Stage 3: Model fallback — try DeepSeek instead of Claude
+      try {
+        console.log('    Stage 3: falling back to DeepSeek...');
+        const db = getDb();
+        const provider = await getBulkProvider(getConfig(db, 'openai_api_key') || undefined);
+        response = await provider.chat([{ role: 'user', content: compactedPrompt }]);
+      } catch (err3: any) {
+        // Stage 4: Surface error — all recovery attempts exhausted
+        console.log(`    Stage 3 failed: ${err3.message?.slice(0, 80)}`);
+        throw new Error(`All recovery stages exhausted. Last error: ${err3.message}`);
+      }
+    }
+  }
+
+  // Token escalation: if response ends mid-sentence, retry with continuation prompt
+  for (let contRetry = 0; contRetry < MAX_CONTINUATION_RETRIES; contRetry++) {
+    const trimmed = response.trimEnd();
+    // Detect mid-sentence cutoff: doesn't end with sentence-ending punctuation, closing bracket, or code fence
+    const endsClean = /[.!?}\])`'"]$/.test(trimmed) || trimmed.endsWith('```') || trimmed.endsWith('---');
+    if (endsClean || trimmed.length < 50) break;
+
+    console.log(`    Token escalation retry ${contRetry + 1}/${MAX_CONTINUATION_RETRIES}: response appears cut short`);
+    try {
+      const continuation = await callClaudeOnce(
+        'Continue from where you stopped. Do not repeat.',
+        timeoutMs,
+        sessionId
+      );
+      response = response + '\n' + continuation;
+    } catch {
+      break; // Don't fail the whole call over a continuation attempt
+    }
   }
 
   // Parse and save any upgrade requests from the response
@@ -3247,7 +3295,27 @@ async function task22MemoryConsolidation(db: Database.Database): Promise<TaskRes
       promoted++;
     }
 
-    const stats = { deduped, archived, contradictions_found: contradictions.length, promoted };
+    // ── Step 5: Context budget — cap high-priority items at 500 ──
+    // Prevents context injection from growing unbounded — the dream
+    // pipeline only loads critical+high items for prompts.
+    let demoted = 0;
+    const highCount = db.prepare("SELECT COUNT(*) as c FROM knowledge WHERE importance IN ('critical', 'high')").get() as any;
+    if (highCount.c > 500) {
+      const excess = highCount.c - 500;
+      db.prepare(`
+        UPDATE knowledge SET importance = 'normal', updated_at = datetime('now')
+        WHERE id IN (
+          SELECT id FROM knowledge
+          WHERE importance = 'high'
+          ORDER BY source_date ASC
+          LIMIT ?
+        )
+      `).run(excess);
+      demoted = excess;
+      console.log(`    Context budget: demoted ${excess} oldest high-priority items to normal`);
+    }
+
+    const stats = { deduped, archived, contradictions_found: contradictions.length, promoted, demoted };
 
     return {
       task: '22-memory-consolidation',
@@ -3525,6 +3593,38 @@ export async function runDreamPipeline(
 ): Promise<{ tasks: TaskResult[]; total_duration: number }> {
   ensureDirs();
   const db = getDb();
+
+  // ── Three-gate trigger: prevent unnecessary dream runs ──────
+  const lastDreamRaw = db.prepare("SELECT value FROM graph_state WHERE key = 'last_dream_completed'").get() as any;
+  const lastDream = lastDreamRaw ? new Date(JSON.parse(lastDreamRaw.value)) : new Date(0);
+  const hoursSinceLastDream = (Date.now() - lastDream.getTime()) / 3600000;
+
+  // Gate 1: At least 4 hours since last dream
+  if (hoursSinceLastDream < 4) {
+    console.log(`⏭ Dream skipped: only ${hoursSinceLastDream.toFixed(1)}h since last run (need 4h)`);
+    return { tasks: [], total_duration: 0 };
+  }
+
+  // Gate 2: At least 10 new items since last dream
+  const newItemCount = db.prepare("SELECT COUNT(*) as c FROM knowledge WHERE created_at > ?").get(lastDream.toISOString()) as any;
+  if (newItemCount.c < 10) {
+    console.log(`⏭ Dream skipped: only ${newItemCount.c} new items since last run (need 10)`);
+    return { tasks: [], total_duration: 0 };
+  }
+
+  // Gate 3: Not already running (lock)
+  const lockRaw = db.prepare("SELECT value FROM graph_state WHERE key = 'dream_lock'").get() as any;
+  if (lockRaw) {
+    const lockTime = new Date(JSON.parse(lockRaw.value));
+    if (Date.now() - lockTime.getTime() < 3600000) { // Lock valid for 1 hour
+      console.log('⏭ Dream skipped: another run is in progress');
+      return { tasks: [], total_duration: 0 };
+    }
+  }
+
+  // Acquire lock
+  db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('dream_lock', ?, datetime('now'))").run(JSON.stringify(new Date().toISOString()));
+
   const start = Date.now();
   const results: TaskResult[] = [];
   const dateStr = new Date().toISOString().slice(0, 10);
@@ -3755,6 +3855,10 @@ export async function runDreamPipeline(
 
   // ── iMessage notifications DISABLED — use COS instead ──
   console.log('  ○ iMessage notifications disabled (use COS for action review)');
+
+  // ── Release dream lock and record completion ──────────────
+  db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_dream_completed', ?, datetime('now'))").run(JSON.stringify(new Date().toISOString()));
+  db.prepare("DELETE FROM graph_state WHERE key = 'dream_lock'").run();
 
   console.log('');
 
