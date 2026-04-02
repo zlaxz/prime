@@ -121,13 +121,14 @@ async function modelSituations(db: Database.Database): Promise<SituationModel[]>
     `).all(project.project) as any[];
 
     const entities = db.prepare(`
-      SELECT DISTINCT e.canonical_name, e.user_label, e.relationship_type
+      SELECT e.canonical_name, e.user_label, e.relationship_type, COUNT(*) as cnt
       FROM entity_mentions em
       JOIN entities e ON em.entity_id = e.id
       JOIN knowledge k ON em.knowledge_item_id = k.id
       WHERE k.project = ? AND k.source_date >= datetime('now', '-30 days')
         AND e.user_dismissed = 0
-      ORDER BY COUNT(*) DESC LIMIT 8
+      GROUP BY e.id
+      ORDER BY cnt DESC LIMIT 8
     `).all(project.project) as any[];
 
     const contextBlock = [
