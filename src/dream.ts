@@ -3864,6 +3864,25 @@ export async function runDreamPipeline(
     }
   }
 
+  // ── AUTONOMOUS RESEARCH — the system hunts for what it needs ──
+  if (!options.quick) {
+    console.log('  Task 25: Autonomous research (web search for knowledge gaps)...');
+    try {
+      const { runAutonomousResearch } = await import('./research.js');
+      const r25 = await runAutonomousResearch(db);
+      results.push(r25);
+      console.log(`    ${r25.status === 'success' ? '✓' : r25.status === 'skipped' ? '○' : '✗'} ${r25.status} (${r25.duration_seconds.toFixed(1)}s)`);
+      if (r25.status === 'success' && r25.output) {
+        console.log(`      Researched ${r25.output.questions_researched}/${r25.output.total_in_queue} questions`);
+        for (const f of r25.output.findings || []) {
+          console.log(`      📚 ${f.question} → ${f.confidence} confidence`);
+        }
+      }
+    } catch (err: any) {
+      console.log(`    ✗ Research failed: ${err.message?.slice(0, 100)}`);
+    }
+  }
+
   // Update last dream run timestamp
   db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_dream_run', ?, datetime('now'))")
     .run(new Date().toISOString());

@@ -375,6 +375,15 @@ Analyze everything and produce a strategic intelligence brief. Return ONLY valid
       "draft": "If type is email: full draft text in Zach's voice (direct, confident, no corporate-speak). If type is call: talking points. If type is prepare: outline of what to prepare. Otherwise null.",
       "depends_on": "What must be true or done first, or null"
     }
+  ],
+  "research_queue": [
+    {
+      "question": "Specific factual question that would change the analysis if answered",
+      "hypothesis_id": "Which hypothesis this would confirm or deny",
+      "search_terms": "What to search for on the web",
+      "priority": "critical|high|medium",
+      "why": "How answering this question changes the strategic picture"
+    }
   ]
 }
 
@@ -386,7 +395,8 @@ Requirements:
 - Flag any contradictions you find between claims, commitments, and behavior.
 - Identify weak signals that don't fit any pattern but could be strategically important.
 - "The one thing" must be actionable THIS WEEK with a specific person and specific ask.
-- Generate 3-5 ACTIONS ranked by priority. Each must be concrete — specific person, specific deliverable, specific deadline. For emails, WRITE THE FULL DRAFT in Zach's voice. For calls, provide talking points. For preparation, provide the outline. The goal is ZERO activation energy — Zach should be able to execute each action with ONE tap.`;
+- Generate 3-5 ACTIONS ranked by priority. Each must be concrete — specific person, specific deliverable, specific deadline. For emails, WRITE THE FULL DRAFT in Zach's voice. For calls, provide talking points. For preparation, provide the outline. The goal is ZERO activation energy — Zach should be able to execute each action with ONE tap.
+- Generate 2-5 RESEARCH QUESTIONS — things you DON'T KNOW that would materially change the analysis. These will be autonomously researched via web search. Focus on: verifiable facts, market data, company information, regulatory status, public records. NOT opinions or strategy — FACTS that can be found.`;
 
 // ── Main Entry Point ────────────────────────────────────────
 
@@ -504,6 +514,10 @@ export async function runIntelligenceCycle(db: Database.Database): Promise<TaskR
     db.prepare(
       "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('intelligence_actions', ?, datetime('now'))"
     ).run(JSON.stringify(brief.actions || []));
+
+    db.prepare(
+      "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('research_queue', ?, datetime('now'))"
+    ).run(JSON.stringify(brief.research_queue || []));
 
     // Track hypotheses for meta-learning
     const historyRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'hypothesis_history'").get() as any)?.value;
