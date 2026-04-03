@@ -55,9 +55,14 @@ function ensureDirs() {
 
 // Persistent session UUIDs — these workers accumulate context across runs
 const PERSISTENT_SESSIONS = {
-  dream: '00000000-0000-4000-a000-000000000001',      // Dream narrative worker
-  reflection: '00000000-0000-4000-a000-000000000002',  // Strategic reflection worker
-  investigation: '00000000-0000-4000-a000-000000000003', // Investigation worker
+  dream: '00000000-0000-4000-a000-000000000001',       // Task 09: World narrative
+  reflection: '00000000-0000-4000-a000-000000000002',   // Task 16: Strategic reflection
+  investigation: '00000000-0000-4000-a000-000000000003', // Task 14: Investigation
+  entity: '00000000-0000-4000-a000-000000000004',       // Task 06: Entity understanding
+  project: '00000000-0000-4000-a000-000000000005',      // Task 07: Project understanding
+  actions: '00000000-0000-4000-a000-000000000006',      // Task 18: Action generation
+  episodic: '00000000-0000-4000-a000-000000000007',     // Task 13: Episodic extraction
+  commitments: '00000000-0000-4000-a000-000000000008',  // Task 08: Commitment verification
 };
 
 async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessionId?: string): Promise<string> {
@@ -625,7 +630,7 @@ Return JSON array:
 
 Return ONLY significant moments. If an item has nothing episodic, skip it. Quality over quantity — 5 deep moments beats 20 shallow ones.`;
 
-    const response = await callClaude(prompt, 180000);
+    const response = await callClaude(prompt, 180000, PERSISTENT_SESSIONS.episodic);
     const parsed = tryParseJSON(response);
 
     let stored = 0;
@@ -1064,7 +1069,7 @@ Return JSON:
 }`;
 
     // Phase 1: Single deep investigation call
-    const response = await callClaude(prompt, 180000);
+    const response = await callClaude(prompt, 180000, PERSISTENT_SESSIONS.investigation);
     const initialAnalysis = tryParseJSON(response);
 
     // Phase 2: Bull/Bear Debate — spawn 3 parallel claude -p workers
@@ -1670,7 +1675,7 @@ Return ONLY this JSON array (no other text):
 ]`;
 
       try {
-        const response = await callClaude(prompt, 180000);
+        const response = await callClaude(prompt, 180000, PERSISTENT_SESSIONS.entity);
         const parsed = tryParseJSON(response);
 
         if (parsed && Array.isArray(parsed)) {
@@ -1857,7 +1862,7 @@ Return ONLY this JSON array:
   "confidence": 0.0-1.0
 }]`;
 
-    const response = await callClaude(prompt, 180000);
+    const response = await callClaude(prompt, 180000, PERSISTENT_SESSIONS.project);
     const parsed = tryParseJSON(response);
 
     if (parsed && Array.isArray(parsed)) {
@@ -1997,7 +2002,7 @@ Return ONLY this JSON array:
   "confidence": 0.0-1.0
 }]`;
 
-    const response = await callClaude(prompt, 180000);
+    const response = await callClaude(prompt, 180000, PERSISTENT_SESSIONS.commitments);
     const parsed = tryParseJSON(response);
 
     if (parsed && Array.isArray(parsed)) {
