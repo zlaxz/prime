@@ -66,12 +66,62 @@ const PERSISTENT_SESSIONS = {
 };
 
 async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessionId?: string): Promise<string> {
+  // Try the headless proxy first (no Terminal windows, has GUI Keychain access)
+  try {
+    const proxyUrl = 'http://localhost:3211/claude';
+    const { request: httpRequest } = await import('http');
+    const proxyResult = await new Promise<string>((resolve, reject) => {
+      const body = JSON.stringify({
+        prompt,
+        timeout: Math.floor(timeoutMs / 1000),
+        args: sessionId ? ['--resume', sessionId] : [],
+      });
+      const req = httpRequest(proxyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+        timeout: timeoutMs + 10000, // Give proxy extra time
+      }, (res) => {
+        let data = '';
+        res.on('data', (d: Buffer) => { data += d.toString(); });
+        res.on('end', () => {
+          if (res.statusCode === 200) {
+            try {
+              const parsed = JSON.parse(data);
+              // Store session ID
+              if (parsed.session_id && sessionId === undefined) {
+                try {
+                  const db = getDb();
+                  db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_claude_session_id', ?, datetime('now'))")
+                    .run(JSON.stringify(parsed.session_id));
+                } catch {}
+              }
+              resolve(parsed.result || '');
+            } catch {
+              resolve(data);
+            }
+          } else {
+            reject(new Error(`Proxy returned ${res.statusCode}: ${data.slice(0, 200)}`));
+          }
+        });
+      });
+      req.on('error', (err) => reject(err));
+      req.on('timeout', () => { req.destroy(); reject(new Error('Proxy timeout')); });
+      req.write(body);
+      req.end();
+    });
+    return proxyResult;
+  } catch (proxyErr: any) {
+    // Proxy not available — fall back to GUI wrapper or direct CLI
+    if (!proxyErr.message?.includes('ECONNREFUSED')) {
+      console.log(`    Proxy error (falling back): ${proxyErr.message?.slice(0, 60)}`);
+    }
+  }
+
+  // Fallback: GUI wrapper or direct CLI
   return new Promise((resolve, reject) => {
     const env = { ...process.env };
 
-    // On Mac Mini, claude -p needs GUI context for Keychain access.
     delete env.ANTHROPIC_API_KEY;
-    // Ensure Homebrew paths (cron/launchd strip PATH)
     const homebrew = '/opt/homebrew/bin:/opt/homebrew/sbin';
     if (!env.PATH?.includes(homebrew)) {
       env.PATH = `${homebrew}:${env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'}`;
@@ -83,11 +133,9 @@ async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessio
     let cmd: string;
     let cmdArgs: string[];
     if (useGuiWrapper) {
-      // Mac Mini: route through GUI wrapper
       cmd = guiWrapper;
       cmdArgs = sessionId ? ['--resume', sessionId] : [];
     } else {
-      // Laptop: direct claude -p
       cmd = 'claude';
       cmdArgs = sessionId ? ['-p', '--resume', sessionId] : ['-p'];
     }

@@ -1,0 +1,63 @@
+#!/bin/bash
+# Build the Claude Proxy headless GUI app
+# Compile Swift → app bundle → install launchd plist
+
+set -e
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_DIR="$HOME/.local/share/claude-proxy"
+BINARY="$APP_DIR/claude-proxy"
+
+mkdir -p "$APP_DIR"
+
+echo "Compiling claude-proxy..."
+swiftc "$DIR/main.swift" -o "$BINARY" -framework Cocoa -O
+
+echo "Creating launchd plist..."
+cat > "$HOME/Library/LaunchAgents/com.prime.claude-proxy.plist" << PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.prime.claude-proxy</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$BINARY</string>
+  </array>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>StandardOutPath</key>
+  <string>$HOME/.prime/logs/claude-proxy.log</string>
+  <key>StandardErrorPath</key>
+  <string>$HOME/.prime/logs/claude-proxy-error.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>$HOME</string>
+  </dict>
+</dict>
+</plist>
+PLIST
+
+echo "Loading launchd agent..."
+launchctl unload "$HOME/Library/LaunchAgents/com.prime.claude-proxy.plist" 2>/dev/null || true
+launchctl load "$HOME/Library/LaunchAgents/com.prime.claude-proxy.plist"
+
+sleep 2
+
+# Verify
+if curl -s http://localhost:3211/health | grep -q ok; then
+  echo "✓ claude-proxy is running on http://localhost:3211"
+else
+  echo "✗ Failed to start. Check ~/.prime/logs/claude-proxy-error.log"
+fi
