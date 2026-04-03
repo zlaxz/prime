@@ -23,8 +23,7 @@ import https from 'https';
 // Mac Mini server — try LAN first, then tunnel
 const SERVERS = [
   'http://Zachs-Mac-mini.local:3210',   // LAN (fast, <5ms)
-  // Add Cloudflare tunnel URL here when stable:
-  // 'https://your-tunnel.trycloudflare.com',
+  'https://prime.recaptureinsurance.com', // Cloudflare named tunnel (works from anywhere)
 ];
 
 let _activeServer: string | null = null;
