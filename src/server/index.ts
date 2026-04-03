@@ -457,15 +457,18 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         return (b._recency_weight ?? 1) - (a._recency_weight ?? 1);
       });
 
-      // ---- THE ONE THING ----
-      // Intelligence brief takes priority over staged actions
+      // ---- INTELLIGENCE BRIEF OVERRIDES ----
+      // Intelligence cycle outputs take priority over stale pipeline data
       let oneThing = 'No urgent priorities. Focus on what matters most to you.';
+      let intelActions: any[] = [];
       try {
         const intelRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'intelligence_brief'").get() as any)?.value;
         if (intelRaw) {
           const intel = JSON.parse(intelRaw);
           if (intel.the_one_thing) oneThing = intel.the_one_thing;
         }
+        const actionsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'intelligence_actions'").get() as any)?.value;
+        if (actionsRaw) intelActions = JSON.parse(actionsRaw);
       } catch {}
       // Fallback to old staged_actions if no intelligence brief
       if (oneThing === 'No urgent priorities. Focus on what matters most to you.' && priorities.length > 0) {
@@ -531,8 +534,8 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       res.json({
         display_state: displayState,
         one_thing: oneThing,
-        actions_pending: priorities.length,
-        actions: priorities.slice(0, 8), // Max 8 displayed
+        actions_pending: intelActions.length > 0 ? intelActions.length : priorities.length,
+        actions: intelActions.length > 0 ? intelActions : priorities.slice(0, 8),
         threads: threads.map((t: any) => ({ title: t.title, state: t.current_state, next: t.next_action, items: t.item_count })),
         calendar_today: todayEvents.map((e: any) => {
           const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : e.metadata || {};
