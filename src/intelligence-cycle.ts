@@ -426,10 +426,29 @@ export async function runIntelligenceCycle(db: Database.Database): Promise<TaskR
     }
 
     // Phase 3: One deep Claude call — Opus quality, $0 on Max
-    console.log(`    Phase 3: Deep reasoning (Claude, ${totalContext.length} chars context)...`);
-    const fullPrompt = `${INTELLIGENCE_PROMPT}\n\n---\n\nHere is everything the system knows:\n\n${totalContext}`;
+    // Uses persistent session: accumulates context across dream cycles instead of starting blank
+    const sessionKey = 'intelligence_session_id';
+    const existingSession = (db.prepare("SELECT value FROM graph_state WHERE key = ?").get(sessionKey) as any)?.value;
+    const sessionId = existingSession ? JSON.parse(existingSession) : undefined;
 
-    const response = await callClaude(fullPrompt, 600000); // 10 min timeout for deep reasoning
+    const sessionNote = sessionId
+      ? `\n\nNOTE: You are RESUMING a persistent intelligence session. You have prior context from previous dream cycles. Compare today's data with what you knew before. Were your previous hypotheses confirmed or refuted? What changed?`
+      : '';
+
+    console.log(`    Phase 3: Deep reasoning (Claude, ${totalContext.length} chars context${sessionId ? ', RESUMING session ' + sessionId.slice(0, 8) : ', NEW session'})...`);
+    const fullPrompt = `${INTELLIGENCE_PROMPT}${sessionNote}\n\n---\n\nHere is everything the system knows as of ${new Date().toISOString().slice(0, 16)}:\n\n${totalContext}`;
+
+    const response = await callClaude(fullPrompt, 600000, sessionId); // 10 min timeout, persistent session
+
+    // Capture session ID for persistent sessions
+    if (!sessionId) {
+      const newSessionId = (db.prepare("SELECT value FROM graph_state WHERE key = 'last_claude_session_id'").get() as any)?.value;
+      if (newSessionId) {
+        db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES (?, ?, datetime('now'))")
+          .run(sessionKey, newSessionId);
+        console.log(`      Persistent session established: ${JSON.parse(newSessionId).slice(0, 8)}...`);
+      }
+    }
 
     // Phase 4: Parse and store
     console.log('    Phase 4: Parsing and storing results...');

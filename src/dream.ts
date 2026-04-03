@@ -98,8 +98,30 @@ async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessio
     proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
 
     proc.on('close', (code) => {
-      if (code === 0) resolve(stdout.trim());
-      else reject(new Error(`claude -p exited ${code}: ${stderr.slice(0, 300)}`));
+      if (code === 0) {
+        const raw = stdout.trim();
+        // Try to parse JSON envelope from --output-format json
+        try {
+          const envelope = JSON.parse(raw);
+          if (envelope.result !== undefined) {
+            // Store session_id for persistent sessions
+            if (envelope.session_id && sessionId === undefined) {
+              // First run: save the new session ID to graph_state
+              try {
+                const db = getDb();
+                db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_claude_session_id', ?, datetime('now'))")
+                  .run(JSON.stringify(envelope.session_id));
+              } catch {}
+            }
+            resolve(envelope.result || '');
+            return;
+          }
+        } catch {}
+        // Fallback: raw text output
+        resolve(raw);
+      } else {
+        reject(new Error(`claude -p exited ${code}: ${stderr.slice(0, 300)}`));
+      }
     });
     proc.on('error', (err) => reject(err));
 

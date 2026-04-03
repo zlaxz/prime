@@ -21,7 +21,7 @@ fi
 # Run in Terminal's GUI context. Use 'do script' which creates a tab.
 # The command ends with 'exit' so shellExitAction=1 closes the tab.
 # We also explicitly close the window after completion to prevent accumulation.
-osascript -e "tell application \"Terminal\" to do script \"cat /tmp/claude-gui-prompt-$$.txt | claude -p $MCP_FLAG $ARGS > $OUTFILE 2>&1; echo __DONE__ >> $OUTFILE; exit\"" > /dev/null 2>&1
+osascript -e "tell application \"Terminal\" to do script \"cat /tmp/claude-gui-prompt-$$.txt | claude -p --output-format json $MCP_FLAG $ARGS > $OUTFILE 2>&1; echo __DONE__ >> $OUTFILE; exit\"" > /dev/null 2>&1
 
 # Wait for completion — 60 minutes max for deep sessions
 for i in $(seq 1 720); do
