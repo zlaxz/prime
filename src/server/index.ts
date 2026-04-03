@@ -458,9 +458,17 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       });
 
       // ---- THE ONE THING ----
-      // Highest priority = The One Thing
+      // Intelligence brief takes priority over staged actions
       let oneThing = 'No urgent priorities. Focus on what matters most to you.';
-      if (priorities.length > 0) {
+      try {
+        const intelRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'intelligence_brief'").get() as any)?.value;
+        if (intelRaw) {
+          const intel = JSON.parse(intelRaw);
+          if (intel.the_one_thing) oneThing = intel.the_one_thing;
+        }
+      } catch {}
+      // Fallback to old staged_actions if no intelligence brief
+      if (oneThing === 'No urgent priorities. Focus on what matters most to you.' && priorities.length > 0) {
         const top = priorities[0];
         oneThing = top.summary;
         if (top.due_date) {
