@@ -169,6 +169,26 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
         ).run(JSON.stringify(alertData));
 
         console.log(`  ⚡ PROACTIVE: ${recentHighPriority.length} new items from key entities`);
+
+        // Event-driven intelligence: trigger intelligence cycle immediately
+        // Don't wait for the next dream cron — analyze NOW while the signal is fresh
+        const lastIntelRun = (db.prepare("SELECT value FROM graph_state WHERE key = 'last_intel_cycle'").get() as any)?.value;
+        const hoursSinceIntel = lastIntelRun ? (Date.now() - new Date(JSON.parse(lastIntelRun)).getTime()) / 3600000 : 999;
+
+        if (hoursSinceIntel > 1) { // Don't re-trigger if ran in last hour
+          console.log(`  ⚡ TRIGGERING real-time intelligence cycle (${recentHighPriority.map((i: any) => i.entity_name).join(', ')})`);
+          try {
+            const { runIntelligenceCycle } = await import('../intelligence-cycle.js');
+            // Run async — don't block the sync loop
+            runIntelligenceCycle(db).then((result) => {
+              db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_intel_cycle', ?, datetime('now'))")
+                .run(JSON.stringify(new Date().toISOString()));
+              console.log(`  ⚡ Real-time intelligence complete: ${result.output?.headline?.slice(0, 80) || result.status}`);
+            }).catch((err: any) => {
+              console.log(`  ⚡ Real-time intelligence failed: ${err.message?.slice(0, 80)}`);
+            });
+          } catch {}
+        }
       }
     }
   } catch {}
