@@ -54,7 +54,7 @@ function ensureDirs() {
 // ── claude -p invocation ────────────────────────────────────
 
 // Persistent session UUIDs — these workers accumulate context across runs
-const PERSISTENT_SESSIONS = {
+export const PERSISTENT_SESSIONS = {
   dream: '00000000-0000-4000-a000-000000000001',       // Task 09: World narrative
   reflection: '00000000-0000-4000-a000-000000000002',   // Task 16: Strategic reflection
   investigation: '00000000-0000-4000-a000-000000000003', // Task 14: Investigation
@@ -63,6 +63,7 @@ const PERSISTENT_SESSIONS = {
   actions: '00000000-0000-4000-a000-000000000006',      // Task 18: Action generation
   episodic: '00000000-0000-4000-a000-000000000007',     // Task 13: Episodic extraction
   commitments: '00000000-0000-4000-a000-000000000008',  // Task 08: Commitment verification
+  ripple: '00000000-0000-4000-a000-000000000009',       // Ripple Engine: Cascading impact analysis
 };
 
 async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessionId?: string): Promise<string> {

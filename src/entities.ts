@@ -509,6 +509,224 @@ export function getEntityProfile(db: Database.Database, nameOrEmail: string): an
   };
 }
 
+// ── Living Entity Profile ────────────────────────────────────
+// Assembles COMPLETE intelligence dossier for an entity from ALL data sources.
+// Pure SQL — no LLM calls. Theory of mind comes from graph_state (intelligence cycle).
+
+export function getLivingProfile(db: Database.Database, nameOrEmail: string): any {
+  // Resolve entity — supports partial name matching via LIKE
+  let entity = getEntity(db, nameOrEmail);
+  if (!entity) {
+    // Fallback: partial match on canonical_name
+    entity = db.prepare(
+      'SELECT * FROM entities WHERE canonical_name LIKE ? AND user_dismissed = 0 ORDER BY last_seen_date DESC LIMIT 1'
+    ).get(`%${nameOrEmail}%`) as any;
+  }
+  if (!entity) return null;
+
+  // a) Entity profile (communication nature, reply expectation)
+  const profile = db.prepare(`
+    SELECT communication_nature, reply_expectation, importance_to_business,
+           importance_evidence, relationship_evidence, alert_verdict
+    FROM entity_profiles WHERE entity_id = ?
+  `).get(entity.id) as any;
+
+  // b) Communication history — last 10 knowledge items
+  const recentComms = db.prepare(`
+    SELECT k.title, k.source, k.source_date, k.summary, k.project
+    FROM knowledge_primary k
+    JOIN entity_mentions em ON k.id = em.knowledge_item_id
+    WHERE em.entity_id = ?
+    ORDER BY k.source_date DESC LIMIT 10
+  `).all(entity.id) as any[];
+
+  // c) Communication trend: this week vs prior 3 weeks baseline
+  const trend = db.prepare(`
+    SELECT
+      COUNT(CASE WHEN k.source_date >= datetime('now', '-7 days') THEN 1 END) as this_week,
+      COUNT(CASE WHEN k.source_date >= datetime('now', '-28 days') AND k.source_date < datetime('now', '-7 days') THEN 1 END) as prev_3weeks
+    FROM entity_mentions em
+    JOIN knowledge k ON em.knowledge_item_id = k.id
+    WHERE em.entity_id = ?
+      AND k.source_date >= datetime('now', '-28 days')
+  `).get(entity.id) as any;
+
+  const thisWeek = trend?.this_week || 0;
+  const baselinePerWeek = Math.max((trend?.prev_3weeks || 0) / 3, 1);
+  const ratio = thisWeek / baselinePerWeek;
+
+  const communicationTrend = ratio > 2 ? 'surging' : ratio >= 0.5 ? 'active' : ratio >= 0.25 ? 'cooling' : 'cold';
+  const trendDetail = `${thisWeek} mentions this week vs ${baselinePerWeek.toFixed(1)}/week baseline (${ratio.toFixed(1)}x)`;
+
+  // d) Relationship health: (mentions_this_week / baseline) * 100, capped at 100
+  const relationshipHealth = Math.min(100, Math.round(ratio * 100));
+
+  // e) Theory of mind from graph_state
+  let theoryOfMind: any = null;
+  const theoriesRaw = (db.prepare(
+    "SELECT value FROM graph_state WHERE key = 'theories_of_mind'"
+  ).get() as any)?.value;
+
+  if (theoriesRaw) {
+    try {
+      const theories = JSON.parse(theoriesRaw);
+      theoryOfMind = theories.find((t: any) =>
+        t.entity?.toLowerCase().includes(entity.canonical_name.toLowerCase()) ||
+        entity.canonical_name.toLowerCase().includes(t.entity?.toLowerCase())
+      );
+    } catch {}
+  }
+
+  // f) Active commitments
+  const commitments = db.prepare(`
+    SELECT text, state, due_date FROM commitments
+    WHERE (owner LIKE ? OR assigned_to LIKE ?)
+      AND state IN ('active', 'overdue', 'detected')
+  `).all(`%${entity.canonical_name}%`, `%${entity.canonical_name}%`) as any[];
+
+  // g) Projects involved
+  const projects = db.prepare(`
+    SELECT DISTINCT k.project FROM knowledge_primary k
+    JOIN entity_mentions em ON k.id = em.knowledge_item_id
+    WHERE em.entity_id = ? AND k.project IS NOT NULL
+  `).all(entity.id) as any[];
+
+  // h) Last interaction
+  const lastInteraction = db.prepare(`
+    SELECT MAX(k.source_date) as last_date
+    FROM knowledge_primary k
+    JOIN entity_mentions em ON k.id = em.knowledge_item_id
+    WHERE em.entity_id = ?
+  `).get(entity.id) as any;
+
+  const lastDate = lastInteraction?.last_date;
+  const daysSinceContact = lastDate
+    ? Math.floor((Date.now() - new Date(lastDate).getTime()) / 86400000)
+    : null;
+
+  // i) Tone analysis — extract keywords from recent summaries
+  const toneKeywords: string[] = [];
+  const toneWords: Record<string, string[]> = {
+    urgent: ['urgent', 'asap', 'immediately', 'critical', 'deadline'],
+    positive: ['excited', 'great', 'pleased', 'happy', 'looking forward', 'progress', 'agreed'],
+    negative: ['concerned', 'frustrated', 'disappointed', 'problem', 'issue', 'delay', 'risk'],
+    formal: ['proposal', 'agreement', 'contract', 'terms', 'compliance'],
+    collaborative: ['partnership', 'together', 'collaborate', 'aligned', 'synergy'],
+  };
+  const recentText = recentComms.slice(0, 5).map(c => (c.summary || '').toLowerCase()).join(' ');
+  for (const [tone, words] of Object.entries(toneWords)) {
+    if (words.some(w => recentText.includes(w))) toneKeywords.push(tone);
+  }
+
+  // j) Risk signals — auto-detect from data patterns
+  const riskSignals: string[] = [];
+  if (ratio > 3) riskSignals.push(`${ratio.toFixed(1)}x communication surge may indicate urgency or escalation`);
+  if (ratio < 0.25 && (trend?.prev_3weeks || 0) > 3) riskSignals.push('Significant drop in communication — possible disengagement');
+  const overdueCommitments = commitments.filter(c => c.state === 'overdue');
+  if (overdueCommitments.length > 0) riskSignals.push(`${overdueCommitments.length} overdue commitment(s) — potential friction`);
+  if (daysSinceContact !== null && daysSinceContact > 14 && commitments.length > 0) {
+    riskSignals.push(`${daysSinceContact} days since contact with active commitments — follow-up needed`);
+  }
+
+  return {
+    name: entity.canonical_name,
+    role: entity.user_label || entity.relationship_type || 'unknown',
+    email: entity.email,
+    relationship_health: relationshipHealth,
+    communication_trend: communicationTrend,
+    trend_detail: trendDetail,
+
+    profile: {
+      communication_nature: profile?.communication_nature || 'unknown',
+      reply_expectation: profile?.reply_expectation || 'unknown',
+      importance_to_business: profile?.importance_to_business || 'unknown',
+      importance_evidence: profile?.importance_evidence || '',
+      alert_verdict: profile?.alert_verdict || 'pending',
+    },
+
+    theory_of_mind: theoryOfMind ? {
+      knows: theoryOfMind.knows || [],
+      wants: theoryOfMind.wants || [],
+      constraints: theoryOfMind.constraints || [],
+      behavior_hypothesis: theoryOfMind.behavior_hypothesis || '',
+      likely_next_move: theoryOfMind.likely_next_move || '',
+    } : null,
+
+    recent_communications: recentComms.map(c => ({
+      title: c.title,
+      source: c.source,
+      date: c.source_date,
+      summary: (c.summary || '').slice(0, 300),
+    })),
+
+    active_commitments: commitments.map(c => ({
+      text: c.text,
+      state: c.state,
+      due_date: c.due_date,
+    })),
+
+    projects: projects.map(p => p.project),
+    tone: toneKeywords,
+
+    last_interaction: lastDate || null,
+    days_since_contact: daysSinceContact,
+
+    risk_signals: riskSignals,
+  };
+}
+
+// ── Top Entities (mini-profiles) ─────────────────────────────
+
+export function getTopEntities(db: Database.Database, limit: number = 15): any[] {
+  const rows = db.prepare(`
+    SELECT e.id, e.canonical_name, e.user_label, e.relationship_type, e.email,
+      COUNT(em.id) as recent_mentions,
+      MAX(k.source_date) as last_interaction
+    FROM entities e
+    JOIN entity_mentions em ON em.entity_id = e.id
+    JOIN knowledge k ON em.knowledge_item_id = k.id
+    WHERE e.user_dismissed = 0
+      AND e.canonical_name NOT LIKE '%Zach%Stock%'
+      AND k.source_date >= datetime('now', '-30 days')
+    GROUP BY e.id
+    ORDER BY recent_mentions DESC
+    LIMIT ?
+  `).all(limit) as any[];
+
+  return rows.map(r => {
+    // Mini trend calculation
+    const trend = db.prepare(`
+      SELECT
+        COUNT(CASE WHEN k.source_date >= datetime('now', '-7 days') THEN 1 END) as this_week,
+        COUNT(CASE WHEN k.source_date >= datetime('now', '-28 days') AND k.source_date < datetime('now', '-7 days') THEN 1 END) as prev_3weeks
+      FROM entity_mentions em
+      JOIN knowledge k ON em.knowledge_item_id = k.id
+      WHERE em.entity_id = ? AND k.source_date >= datetime('now', '-28 days')
+    `).get(r.id) as any;
+
+    const thisWeek = trend?.this_week || 0;
+    const baselinePerWeek = Math.max((trend?.prev_3weeks || 0) / 3, 1);
+    const ratio = thisWeek / baselinePerWeek;
+    const health = Math.min(100, Math.round(ratio * 100));
+    const commTrend = ratio > 2 ? 'surging' : ratio >= 0.5 ? 'active' : ratio >= 0.25 ? 'cooling' : 'cold';
+
+    const lastDate = r.last_interaction;
+    const daysSince = lastDate
+      ? Math.floor((Date.now() - new Date(lastDate).getTime()) / 86400000)
+      : null;
+
+    return {
+      name: r.canonical_name,
+      role: r.user_label || r.relationship_type || 'unknown',
+      recent_mentions: r.recent_mentions,
+      relationship_health: health,
+      communication_trend: commTrend,
+      last_interaction: lastDate,
+      days_since_contact: daysSince,
+    };
+  });
+}
+
 // ── Implicit Learning ────────────────────────────────────────
 
 export function recordSignal(db: Database.Database, entityName: string, signalType: string): void {

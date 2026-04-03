@@ -1169,6 +1169,46 @@ srv.tool(
   }
 );
 
+srv.tool(
+  "prime_ripple",
+  "Trace the cascading implications of an event across ALL projects. Use when something significant happens — a deal closes, a person responds, a deadline changes, a relationship shifts. Shows first, second, and third order effects.",
+  { event: z.string().describe("Description of the significant event that occurred") },
+  async ({ event }) => {
+    const db = getDb();
+    try {
+      const { traceRipple } = await import('../ripple.js');
+      const result = await traceRipple(db, event);
+
+      const sections: string[] = [];
+      sections.push(`# Ripple Analysis: ${result.event}\n`);
+
+      if (result.ripples?.length) {
+        sections.push('## Affected Projects\n');
+        for (const r of result.ripples) {
+          sections.push(`### ${r.project} [${r.new_status}]`);
+          sections.push(`Impact: ${r.impact}`);
+          sections.push(`Immediate action: ${r.immediate_action}`);
+          sections.push(`Downstream: ${r.downstream}\n`);
+        }
+      } else {
+        sections.push('No projects affected.\n');
+      }
+
+      if (result.cascading_actions?.length) {
+        sections.push('## Cascading Actions\n');
+        for (const a of result.cascading_actions) {
+          sections.push(`[${a.priority}] (${a.type}) ${a.title}${a.target ? ` → ${a.target}` : ''}`);
+          sections.push(`   Why: ${a.rationale}`);
+        }
+      }
+
+      return { content: [{ type: "text" as const, text: sections.join('\n') }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Ripple analysis failed: ${err.message}` }] };
+    }
+  }
+);
+
 } // end registerPrimeTools
 
 // ── Stdio mode (Claude Desktop local) ────────────────────

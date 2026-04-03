@@ -1101,6 +1101,20 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── Ripple Engine — cascading impact analysis ────────
+  app.post('/api/ripple', async (req, res) => {
+    try {
+      const { event } = req.body;
+      if (!event) return res.status(400).json({ error: 'event required' });
+
+      const { traceRipple } = await import('../ripple.js');
+      const result = await traceRipple(db, event);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Deep Context — one-call multi-hop retrieval ────────
   app.post('/api/deep-context', async (req, res) => {
     try {
@@ -1795,6 +1809,20 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── Shadow Board — four parallel AI advisors evaluate a decision ──
+
+  app.post('/api/shadow-board', async (req, res) => {
+    try {
+      const { decision, context } = req.body;
+      if (!decision) { res.status(400).json({ error: 'decision is required' }); return; }
+      const { evaluateDecision } = await import('../shadow-board.js');
+      const result = await evaluateDecision(db, decision, context);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Deep Session Actions — get staged actions for a specific session ──
 
   app.get('/api/deep-session/:id/actions', (req, res) => {
@@ -1955,6 +1983,32 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── Living Entity Profile — complete intelligence dossier ──
+  app.get('/api/entity/:name', async (req, res) => {
+    try {
+      const name = decodeURIComponent(req.params.name);
+      if (!name) { res.status(400).json({ error: 'name parameter required' }); return; }
+      const { getLivingProfile } = await import('../entities.js');
+      const profile = getLivingProfile(db, name);
+      if (!profile) { res.status(404).json({ error: 'Entity not found', query: name }); return; }
+      res.json(profile);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Top Entities — mini-profiles for sidebar/list ──
+  app.get('/api/entities/top', async (req, res) => {
+    try {
+      const limit = Math.min(parseInt(req.query.limit as string) || 15, 50);
+      const { getTopEntities } = await import('../entities.js');
+      const entities = getTopEntities(db, limit);
+      res.json({ entities, count: entities.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Meeting Prep API — assembles intelligence brief for a meeting ──
   app.get('/api/meeting-prep/:eventTitle', async (req, res) => {
     try {
@@ -2071,6 +2125,33 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         related_knowledge: relatedKnowledge,
         attendee_count: attendees.length,
       });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Simulation Room ───────────────────────────────────────
+  // Practice conversations with simulated counterparties.
+  // Builds persona from entity intelligence in the knowledge base.
+  // ────────────────────────────────────────────────────────────
+
+  app.post('/api/simulate', async (req, res) => {
+    try {
+      const { entity, scenario, message, reset } = req.body;
+      if (!entity || !scenario) {
+        res.status(400).json({ error: 'entity and scenario are required' });
+        return;
+      }
+
+      const { runSimulation, resetSimulation } = await import('../simulation.js');
+
+      // Allow resetting a simulation to start fresh
+      if (reset) {
+        resetSimulation(db, entity);
+      }
+
+      const result = await runSimulation(db, entity, scenario, message);
+      res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -2233,6 +2314,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     console.log('    GET  /api/query/*   — Structured queries');
     console.log('    ALL  /mcp           — MCP over HTTP (for remote Claude Desktop)');
     console.log('    POST /api/webhooks/otter — Otter.ai webhook');
+    console.log('    POST /api/simulate   — Simulation Room (practice conversations)');
     console.log('    POST /api/stripe/webhook — Stripe webhook');
     console.log('    POST /api/v1/auth/key    — API key validation\n');
 

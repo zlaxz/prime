@@ -1028,6 +1028,175 @@ server.tool(
   }
 );
 
+server.tool(
+  "prime_simulate",
+  "Practice a conversation with a simulated counterparty. Prime builds their persona from entity intelligence — their motivations, constraints, communication style, and likely responses. Use this before important calls or negotiations. Multi-turn: omit scenario on follow-ups, just send message to continue. Set reset=true to start a fresh simulation.",
+  {
+    entity: z.string().describe("Name of the person to simulate (e.g. 'Costas Manganiotis')"),
+    scenario: z.string().describe("The scenario to simulate (e.g. 'Propose milestone-based equity structure')"),
+    message: z.string().optional().describe("Your message to the simulated person. For follow-up turns, just send the message."),
+    reset: z.boolean().optional().describe("Set true to reset and start a fresh simulation with this entity"),
+  },
+  async ({ entity, scenario, message, reset }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpPost(`${srv}/api/simulate`, { entity, scenario, message, reset }, 180000);
+      if (result.error) {
+        return { content: [{ type: "text" as const, text: `Error: ${result.error}` }] };
+      }
+
+      const sections: string[] = [];
+      sections.push(`# Simulation: ${result.entity} (Turn ${result.turn})`);
+      sections.push(`Scenario: ${result.scenario}`);
+      sections.push(`Session: ${result.session_id?.slice(0, 8)}...`);
+      sections.push('');
+      sections.push('---');
+      sections.push('');
+      sections.push(`**${result.entity}:**`);
+      sections.push(result.response);
+      sections.push('');
+      sections.push('---');
+      sections.push('*Send another message to continue the conversation. Set reset=true to start over.*');
+
+      return { content: [{ type: "text" as const, text: sections.join('\n') }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_shadow_board",
+  "Run a decision through Prime's Shadow Board — four AI advisors (CFO, Risk Officer, Strategist, Relationship Manager) evaluate it simultaneously from different perspectives. Use before any significant decision.",
+  {
+    decision: z.string().describe("The decision to evaluate"),
+    context: z.string().optional().describe("Additional context about the decision"),
+  },
+  async ({ decision, context }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpPost(`${srv}/api/shadow-board`, { decision, context }, 300000); // 5 min — runs 5 LLM calls
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_ripple",
+  "Trace the cascading implications of an event across ALL projects. Use when something significant happens — a deal closes, a person responds, a deadline changes, a relationship shifts. Shows first, second, and third order effects.",
+  { event: z.string().describe("Description of the significant event that occurred") },
+  async ({ event }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpPost(`${srv}/api/ripple`, { event }, 300000);
+      if (result.error) return { content: [{ type: "text" as const, text: `Error: ${result.error}` }] };
+
+      const sections: string[] = [];
+      sections.push(`# Ripple Analysis: ${result.event}\n`);
+
+      if (result.ripples?.length) {
+        sections.push('## Affected Projects\n');
+        for (const r of result.ripples) {
+          sections.push(`### ${r.project} [${r.new_status}]`);
+          sections.push(`Impact: ${r.impact}`);
+          sections.push(`Immediate action: ${r.immediate_action}`);
+          sections.push(`Downstream: ${r.downstream}\n`);
+        }
+      } else {
+        sections.push('No projects affected.\n');
+      }
+
+      if (result.cascading_actions?.length) {
+        sections.push('## Cascading Actions\n');
+        for (const a of result.cascading_actions) {
+          sections.push(`[${a.priority}] (${a.type}) ${a.title}${a.target ? ` → ${a.target}` : ''}`);
+          sections.push(`   Why: ${a.rationale}`);
+        }
+      }
+
+      return { content: [{ type: "text" as const, text: sections.join('\n') }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Ripple analysis failed: ${err.message}` }] };
+    }
+  }
+);
+
+server.tool(
+  "prime_entity",
+  "Get the complete living profile for any person — their motivations, communication patterns, relationship health, active commitments, and predicted next move. Updated in real-time from all sources. Returns theory of mind, communication trend, risk signals, and tone analysis. Supports partial name matching.",
+  {
+    name: z.string().describe("Person's name (full or partial — e.g. 'Costas' will match 'Costas Manganiotis')"),
+  },
+  async ({ name }) => {
+    const srv = await getServer();
+    if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
+    try {
+      const result = await httpGet(`${srv}/api/entity/${encodeURIComponent(name)}`, 30000);
+      if (result.error) {
+        return { content: [{ type: "text" as const, text: `Entity not found: "${name}". Try a different name or partial match.` }] };
+      }
+
+      const sections: string[] = [];
+      sections.push(`# ${result.name}`);
+      sections.push(`Role: ${result.role}`);
+      if (result.email) sections.push(`Email: ${result.email}`);
+      sections.push(`Relationship Health: ${result.relationship_health}/100`);
+      sections.push(`Communication Trend: ${result.communication_trend} (${result.trend_detail})`);
+      sections.push(`Last Interaction: ${result.last_interaction || 'unknown'}${result.days_since_contact !== null ? ` (${result.days_since_contact} days ago)` : ''}`);
+
+      if (result.profile) {
+        sections.push(`\n## Profile`);
+        sections.push(`  Nature: ${result.profile.communication_nature}`);
+        sections.push(`  Reply Expectation: ${result.profile.reply_expectation}`);
+        sections.push(`  Business Importance: ${result.profile.importance_to_business}`);
+        if (result.profile.importance_evidence) sections.push(`  Evidence: ${result.profile.importance_evidence}`);
+      }
+
+      if (result.theory_of_mind) {
+        const tom = result.theory_of_mind;
+        sections.push(`\n## Theory of Mind`);
+        if (tom.knows?.length) sections.push(`  Knows: ${tom.knows.join('; ')}`);
+        if (tom.wants?.length) sections.push(`  Wants: ${tom.wants.join('; ')}`);
+        if (tom.constraints?.length) sections.push(`  Constraints: ${tom.constraints.join('; ')}`);
+        if (tom.behavior_hypothesis) sections.push(`  Behavior: ${tom.behavior_hypothesis}`);
+        if (tom.likely_next_move) sections.push(`  Likely Next Move: ${tom.likely_next_move}`);
+      }
+
+      if (result.active_commitments?.length) {
+        sections.push(`\n## Active Commitments (${result.active_commitments.length})`);
+        for (const c of result.active_commitments) {
+          sections.push(`  - [${c.state}] ${c.text}${c.due_date ? ` (due: ${c.due_date})` : ''}`);
+        }
+      }
+
+      if (result.recent_communications?.length) {
+        sections.push(`\n## Recent Communications (${result.recent_communications.length})`);
+        for (const c of result.recent_communications) {
+          sections.push(`  - ${c.date?.slice(0, 10) || '?'} [${c.source}] ${c.title}`);
+          if (c.summary) sections.push(`    ${c.summary.slice(0, 200)}`);
+        }
+      }
+
+      if (result.projects?.length) sections.push(`\nProjects: ${result.projects.join(', ')}`);
+      if (result.tone?.length) sections.push(`Tone: ${result.tone.join(', ')}`);
+
+      if (result.risk_signals?.length) {
+        sections.push(`\n## Risk Signals`);
+        for (const r of result.risk_signals) sections.push(`  - ${r}`);
+      }
+
+      return { content: [{ type: "text" as const, text: sections.join('\n') }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
+    }
+  }
+);
+
 async function main() {
   // Check server connectivity at startup
   const srv = await getServer();

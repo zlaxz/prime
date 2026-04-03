@@ -170,6 +170,20 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
 
         console.log(`  ⚡ PROACTIVE: ${recentHighPriority.length} new items from key entities`);
 
+        // Ripple Engine: trace cascading implications of high-priority events
+        try {
+          const { traceRipple } = await import('../ripple.js');
+          const eventDesc = recentHighPriority.map((i: any) =>
+            `${i.entity_name} (${i.entity_context || 'key contact'}): "${i.title}"`
+          ).join('; ');
+          // Run async — don't block the sync loop
+          traceRipple(db, `New communications from key entities: ${eventDesc}`).then((result) => {
+            console.log(`  ⚡ Ripple complete: ${result.ripples?.length || 0} projects affected, ${result.cascading_actions?.length || 0} actions`);
+          }).catch((err: any) => {
+            console.log(`  ⚡ Ripple failed: ${err.message?.slice(0, 80)}`);
+          });
+        } catch {}
+
         // Event-driven intelligence: trigger intelligence cycle immediately
         // Don't wait for the next dream cron — analyze NOW while the signal is fresh
         const lastIntelRun = (db.prepare("SELECT value FROM graph_state WHERE key = 'last_intel_cycle'").get() as any)?.value;
