@@ -453,12 +453,28 @@ export async function runIntelligenceCycle(db: Database.Database): Promise<TaskR
     // Phase 4: Parse and store
     console.log('    Phase 4: Parsing and storing results...');
 
-    // Find JSON in response (Claude may wrap it in markdown)
-    let jsonStr = response;
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (jsonMatch) jsonStr = jsonMatch[0];
+    // Extract JSON from response — Claude may wrap in markdown, have trailing text,
+    // or the token escalation may have appended continuation text after the JSON
+    let brief: any;
+    const jsonStart = response.indexOf('{');
+    if (jsonStart === -1) throw new Error('No JSON found in response');
 
-    const brief = JSON.parse(jsonStr);
+    // Try progressively shorter substrings from the first { to find valid JSON
+    let parsed = false;
+    for (let end = response.length; end > jsonStart; end--) {
+      if (response[end - 1] !== '}') continue;
+      try {
+        brief = JSON.parse(response.slice(jsonStart, end));
+        parsed = true;
+        break;
+      } catch {}
+    }
+    if (!parsed) {
+      // Last resort: greedy match
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) brief = JSON.parse(jsonMatch[0]);
+      else throw new Error('Could not parse JSON from response');
+    }
 
     // Store everything
     db.prepare(

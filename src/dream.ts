@@ -106,12 +106,15 @@ async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessio
       if (code === 0) {
         const raw = stdout.trim();
         // Try to parse JSON envelope from --output-format json
+        // The GUI wrapper may include shell noise before/after the JSON
         try {
-          const envelope = JSON.parse(raw);
+          // Find the JSON envelope in the output (may have leading/trailing text)
+          const jsonStart = raw.indexOf('{"type":');
+          const jsonStr = jsonStart >= 0 ? raw.slice(jsonStart) : raw;
+          const envelope = JSON.parse(jsonStr);
           if (envelope.result !== undefined) {
             // Store session_id for persistent sessions
             if (envelope.session_id && sessionId === undefined) {
-              // First run: save the new session ID to graph_state
               try {
                 const db = getDb();
                 db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_claude_session_id', ?, datetime('now'))")
@@ -122,8 +125,9 @@ async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessio
             return;
           }
         } catch {}
-        // Fallback: raw text output
-        resolve(raw);
+        // Fallback: raw text output (strip any leading shell noise)
+        const cleaned = raw.includes('{"type":') ? raw : raw;
+        resolve(cleaned);
       } else {
         reject(new Error(`claude -p exited ${code}: ${stderr.slice(0, 300)}`));
       }
@@ -284,8 +288,13 @@ export async function callClaude(prompt: string, timeoutMs: number = 300000, ses
   // Token escalation: if response ends mid-sentence, retry with continuation prompt
   for (let contRetry = 0; contRetry < MAX_CONTINUATION_RETRIES; contRetry++) {
     const trimmed = response.trimEnd();
-    // Detect mid-sentence cutoff: doesn't end with sentence-ending punctuation, closing bracket, or code fence
-    const endsClean = /[.!?}\])`'"]$/.test(trimmed) || trimmed.endsWith('```') || trimmed.endsWith('---');
+    // Detect mid-sentence cutoff
+    // Be CONSERVATIVE — only retry if clearly cut mid-word/sentence
+    // JSON responses, markdown, code blocks, and lists all end "cleanly" even without periods
+    const endsClean = /[.!?}\])`'":\d\n]$/.test(trimmed)
+      || trimmed.endsWith('```') || trimmed.endsWith('---') || trimmed.endsWith('*')
+      || trimmed.endsWith(',') // JSON arrays/objects in progress are valid
+      || /\n\s*$/.test(response); // Ends with newline = probably complete
     if (endsClean || trimmed.length < 50) break;
 
     console.log(`    Token escalation retry ${contRetry + 1}/${MAX_CONTINUATION_RETRIES}: response appears cut short`);
