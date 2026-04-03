@@ -179,11 +179,55 @@ Return JSON array:
     db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('prediction_errors_latest', ?, datetime('now'))")
       .run(JSON.stringify(recentErrors));
 
+    // ── Hypothesis verification (meta-learning for intelligence cycle) ──
+    // Check hypotheses from hypothesis_history that are >24h old and not yet verified
+    let hypothesesVerified = 0;
+    try {
+      const historyRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'hypothesis_history'").get() as any)?.value;
+      if (historyRaw) {
+        const history = JSON.parse(historyRaw);
+        const cutoff = Date.now() - 24 * 3600000; // Only verify hypotheses >24h old
+        let updated = false;
+
+        for (const h of history) {
+          if (h.verified !== null) continue; // Already verified
+          if (new Date(h.generated_at).getTime() > cutoff) continue; // Too recent
+
+          // Check for new evidence since hypothesis was generated
+          const searchTerms = (h.claim || '').split(/\s+/).filter((w: string) => w.length > 4).slice(0, 4).join(' ');
+          if (!searchTerms) continue;
+
+          const newEvidence = db.prepare(`
+            SELECT title, summary, source_date FROM knowledge_primary
+            WHERE source_date > ? AND (title LIKE ? OR summary LIKE ?)
+            LIMIT 3
+          `).all(h.generated_at, `%${searchTerms.split(' ')[0]}%`, `%${searchTerms.split(' ')[0]}%`) as any[];
+
+          if (newEvidence.length > 0) {
+            // Mark as needing verification (will be resolved by intelligence cycle's persistent session)
+            h.verified = 'pending_review';
+            h.new_evidence = newEvidence.map((e: any) => e.title).slice(0, 3);
+            updated = true;
+            hypothesesVerified++;
+          } else if (Date.now() - new Date(h.generated_at).getTime() > 7 * 24 * 3600000) {
+            // Older than 7 days with no evidence either way → mark stale
+            h.verified = 'stale';
+            updated = true;
+          }
+        }
+
+        if (updated) {
+          db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('hypothesis_history', ?, datetime('now'))")
+            .run(JSON.stringify(history.slice(-100)));
+        }
+      }
+    } catch {}
+
     return {
       task: '15-prediction-verification',
       status: 'success',
       duration_seconds: (Date.now() - start) / 1000,
-      output: { verified: pending.length, correct, wrong, partial, unverifiable, overall_accuracy: overallAccuracy },
+      output: { verified: pending.length, correct, wrong, partial, unverifiable, overall_accuracy: overallAccuracy, hypotheses_checked: hypothesesVerified },
     };
   } catch (err: any) {
     return { task: '15-prediction-verification', status: 'failed', duration_seconds: (Date.now() - start) / 1000, error: err.message };
