@@ -93,7 +93,7 @@ class HTTPServer {
             }
 
             let sessionId = json["session_id"] as? String
-            let timeout = json["timeout"] as? Int ?? 120
+            let timeout = json["timeout"] as? Int ?? 300  // 5 min default for strategic questions with tool use
 
             // Build args: always use MCP, allow multi-turn for tool use
             var args = ["-p", "--output-format", "json", "--max-turns", "5"]
