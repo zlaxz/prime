@@ -49,8 +49,25 @@ Write ONLY the email body text. No subject line. No HTML tags.`;
     let quinnLetter: string;
     try {
       quinnLetter = await callClaude(quinnPrompt, 60000);
+      // If callClaude returned empty, use fallback
+      if (!quinnLetter || quinnLetter.trim().length < 50) throw new Error('Empty response');
     } catch {
-      quinnLetter = `${brief.headline || 'Good morning.'}\n\n${brief.the_one_thing || ''}\n\n— Quinn`;
+      // Fallback: write the letter directly from the data (no LLM needed)
+      const topAction = actions[0];
+      quinnLetter = [
+        `**${brief.headline || 'Good morning.'}**`,
+        '',
+        brief.the_one_thing || '',
+        '',
+        topAction ? `Here's what I'd focus on today:` : '',
+        ...(actions.slice(0, 3).map((a: any, i: number) =>
+          `${i + 1}. ${a.title}${a.target_person ? ` (→ ${a.target_person})` : ''} — ${a.rationale?.slice(0, 100) || ''}`
+        )),
+        '',
+        brief.theories_of_mind?.[0] ? `One thing to watch: ${brief.theories_of_mind[0].entity} — ${brief.theories_of_mind[0].behavior_hypothesis?.slice(0, 150)}` : '',
+        '',
+        'Reply to this email if you want me to adjust anything.',
+      ].filter(Boolean).join('\n');
     }
 
     // Wrap in clean HTML

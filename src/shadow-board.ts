@@ -54,7 +54,7 @@ function getBusinessContext(db: Database.Database): string {
   }
 
   // Key entities
-  const entities = db.prepare("SELECT name, type FROM entities ORDER BY updated_at DESC LIMIT 20").all() as any[];
+  const entities = db.prepare("SELECT canonical_name AS name, relationship_type AS type FROM entities WHERE user_dismissed = 0 ORDER BY last_seen_date DESC LIMIT 20").all() as any[];
   if (entities.length) {
     sections.push(`KEY PEOPLE/ORGS:\n${entities.map((e: any) => `- ${e.name} (${e.type})`).join('\n')}`);
   }
