@@ -803,6 +803,51 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
   });
 
+  // ── User feedback — votes, confirmations, corrections on any content ──
+  app.post('/api/feedback', async (req, res) => {
+    try {
+      const { type, content, vote, reason, project } = req.body;
+      // type: 'hypothesis', 'weak_signal', 'contradiction', 'action', 'insight'
+      // vote: 'confirmed', 'rejected', 'useful', 'not_useful'
+      // content: the text/claim being voted on
+      // reason: optional explanation
+
+      if (!type || !content || !vote) {
+        res.status(400).json({ error: 'type, content, and vote are required' });
+        return;
+      }
+
+      const { v4: uuidv4 } = await import('uuid');
+      const { insertKnowledge } = await import('../db.js');
+
+      // Store as knowledge item
+      insertKnowledge(db, {
+        id: uuidv4(),
+        title: `Feedback: ${vote} — ${content.slice(0, 100)}`,
+        summary: `User ${vote} this ${type}: "${content}"${reason ? `. Reason: ${reason}` : ''}`,
+        source: 'user-feedback',
+        source_ref: `feedback:${type}:${Date.now()}`,
+        source_date: new Date().toISOString(),
+        tags: ['user-feedback', `feedback-${vote}`, `feedback-${type}`],
+        project: project || undefined,
+        importance: vote === 'rejected' ? 'high' : 'normal',
+        metadata: { type, vote, content, reason },
+      });
+
+      // If rejected, also create a correction rule
+      if (vote === 'rejected') {
+        db.prepare(`
+          INSERT OR IGNORE INTO strategic_lessons (id, lesson_date, lesson_type, lesson, domain, severity, correction_rule)
+          VALUES (?, date('now'), 'user_correction', ?, ?, 'high', ?)
+        `).run(uuidv4(), `User rejected ${type}: "${content.slice(0, 200)}"`, type, reason || `Do not repeat this ${type}`);
+      }
+
+      res.json({ stored: true, vote });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Action approval (for ambient display + API clients) ──
   app.post('/api/approve-action', async (req, res) => {
     try {
