@@ -385,12 +385,21 @@ function tryParseJSON(text: string): any {
   // Strip markdown code fences
   const cleaned = text.replace(/^```(?:json)?\s*\n?/m, '').replace(/\n?```\s*$/m, '').trim();
   try { return JSON.parse(cleaned); } catch {}
-  // Try finding JSON array in the text
-  const arrayMatch = text.match(/\[[\s\S]*\]/);
-  if (arrayMatch) { try { return JSON.parse(arrayMatch[0]); } catch {} }
-  // Try finding JSON object in the text
-  const objMatch = text.match(/\{[\s\S]*\}/);
-  if (objMatch) { try { return JSON.parse(objMatch[0]); } catch {} }
+
+  // Progressive extraction: find the JSON by trying progressively shorter substrings
+  // This handles trailing text after the JSON (from token escalation, markdown, etc.)
+  const arrayStart = text.indexOf('[');
+  const objStart = text.indexOf('{');
+  const start = arrayStart >= 0 && (objStart < 0 || arrayStart < objStart) ? arrayStart : objStart;
+  const endChar = start === arrayStart ? ']' : '}';
+
+  if (start >= 0) {
+    for (let end = text.length; end > start; end--) {
+      if (text[end - 1] !== endChar) continue;
+      try { return JSON.parse(text.slice(start, end)); } catch {}
+    }
+  }
+
   return null;
 }
 
