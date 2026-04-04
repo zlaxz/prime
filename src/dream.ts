@@ -287,16 +287,8 @@ export async function callClaude(prompt: string, timeoutMs: number = 300000, ses
     }
   }
 
-  // Inject strategic thinking framework + self-improvement instruction into ALL prompts
-  try {
-    const thinkingPath = join(homedir(), 'GitHub', 'prime', 'prompts', 'strategic-thinking.md');
-    if (existsSync(thinkingPath)) {
-      const framework = readFileSync(thinkingPath, 'utf-8');
-      prompt = framework + '\n\n---\n\n' + prompt;
-    }
-  } catch {}
-
-  prompt += '\n\nSYSTEM NOTE: If you encounter a data quality issue, missing context, or a limitation that prevents good analysis, include at the END of your response:\nUPGRADE_REQUEST: [category] [description of what needs to be fixed]\nThis will be automatically queued for system improvement.';
+  // Strategic thinking framework REMOVED — was causing melodramatic, speculative output.
+  // UPGRADE_REQUEST system note REMOVED — biased toward finding problems instead of reporting facts.
 
   // Self-healing query loop: multi-stage recovery cascade
   const MAX_CONTINUATION_RETRIES = 3;
@@ -1914,7 +1906,7 @@ ${deepProjectContext ? '\n--- ORIGINAL SOURCE MATERIAL (actual emails and meetin
 
 ${getCorrectionRules(db, 'project') || getCorrectionRules(db, 'deal') || ''}
 ${getThreadContext(db) || ''}
-Think strategically. Don't just report status — identify the 2nd and 3rd order implications. What should Zach be setting up NOW that nobody is raising? What connections across projects exist?
+Report FACTS from the data. Do NOT speculate or dramatize. Status should reflect what the evidence shows, not worst-case scenarios. Be direct and grounded. If something is fine, say it's fine — don't manufacture urgency.
 
 Return ONLY this JSON array:
 [{
