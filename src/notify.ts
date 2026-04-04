@@ -98,11 +98,9 @@ export async function notify(db: Database.Database, options: NotifyOptions): Pro
           .replace(/\)/g, ')')
           .replace(/\n/g, '\\n');
 
-        // Use heredoc to avoid shell escaping issues with special characters
-        execSync(
-          `osascript <<'APPLESCRIPT'\ntell application "Messages" to send "${escaped}" to buddy "${phoneNumber}"\nAPPLESCRIPT`,
-          { timeout: 10000, shell: '/bin/bash' }
-        );
+        // Use spawn with array args to prevent command injection
+        const { spawnSync } = await import('child_process');
+        spawnSync('osascript', ['-e', `tell application "Messages" to send ${JSON.stringify(message)} to buddy "${phoneNumber}"`], { timeout: 10000 });
         results.push('imessage');
       } else {
         errors.push('imessage: no phone number configured (set with: recall config notify_phone_number "+1XXXXXXXXXX")');

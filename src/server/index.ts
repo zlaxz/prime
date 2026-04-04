@@ -18,16 +18,47 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
   const app = express();
   app.use(express.json({ limit: '10mb' }));
 
-  // CORS for any client
+  // ── SECURITY: API Key Authentication ──
+  // API_KEY loaded after db init (see below)
+
+  // CORS — restrict to known origins
+  const ALLOWED_ORIGINS = [
+    'http://localhost:5173',                    // Local dev
+    'http://localhost:3000',                    // Local dev alt
+    'https://prime-production.lovable.app',     // Lovable preview
+    'https://prime.recaptureinsurance.com',     // Self (tunnel)
+  ];
+
   app.use((_req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
+    const origin = _req.headers.origin || '';
+    if (ALLOWED_ORIGINS.includes(origin)) {
+      res.header('Access-Control-Allow-Origin', origin);
+    }
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, mcp-session-id');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key, mcp-session-id');
     if (_req.method === 'OPTIONS') return res.sendStatus(200);
     next();
   });
 
+  // Auth middleware — require API key on all routes except health and MCP
+  app.use((req, res, next) => {
+    // Skip auth for health checks and MCP (MCP has its own auth via session)
+    if (req.path === '/api/health' || req.path === '/api/status' || req.path.startsWith('/mcp')) return next();
+    // Skip auth for localhost requests (Mac Mini internal calls)
+    const ip = req.ip || req.socket.remoteAddress || '';
+    if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') return next();
+    // Require API key for external requests
+    if (API_KEY) {
+      const key = (req.headers['x-api-key'] as string) || req.headers.authorization?.replace('Bearer ', '');
+      if (!key || key !== API_KEY) {
+        return res.status(401).json({ error: 'unauthorized' });
+      }
+    }
+    next();
+  });
+
   const db = getDb();
+  const API_KEY = process.env.PRIME_API_KEY || getConfig(db, 'prime_api_key');
 
   // Health check
   app.get('/api/health', (_req, res) => {

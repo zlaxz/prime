@@ -216,29 +216,32 @@ export async function retrieveGmailAttachments(
           const tmpPath = `/tmp/prime_attachment_${Date.now()}.docx`;
           writeFileSync(tmpPath, buffer);
           try {
-            text = execSync(`textutil -convert txt -stdout "${tmpPath}" 2>/dev/null`).toString();
+            const { spawnSync } = await import('child_process');
+            const r = spawnSync('textutil', ['-convert', 'txt', '-stdout', tmpPath], { timeout: 10000 });
+            text = r.stdout?.toString() || '';
           } catch {
             text = `[Could not extract text from ${part.filename}]`;
           }
           try { unlinkSync(tmpPath); } catch {}
         } else if (ext.endsWith('.pdf')) {
-          // macOS has built-in PDF text extraction
-          const { execSync } = await import('child_process');
+          const { spawnSync } = await import('child_process');
           const { writeFileSync, unlinkSync } = await import('fs');
           const tmpPath = `/tmp/prime_attachment_${Date.now()}.pdf`;
           writeFileSync(tmpPath, buffer);
           try {
-            // Try mdls + textutil, or python pdftotext
-            text = execSync(`python3 -c "
+            // Use spawn with array args — prevents command injection via tmpPath
+            const pdfScript = `
 import sys
 try:
-    import fitz  # PyMuPDF
-    doc = fitz.open('${tmpPath}')
+    import fitz
+    doc = fitz.open(sys.argv[1])
     text = '\\n'.join(page.get_text() for page in doc)
     print(text[:10000])
 except:
     print('[PDF extraction requires PyMuPDF: pip install pymupdf]')
-" 2>/dev/null`).toString();
+`;
+            const result = spawnSync('python3', ['-c', pdfScript, tmpPath], { timeout: 15000 });
+            text = result.stdout?.toString() || '';
           } catch {
             text = `[Could not extract text from ${part.filename}]`;
           }
