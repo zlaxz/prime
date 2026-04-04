@@ -83,8 +83,8 @@ class HTTPServer {
             return
         }
 
-        // Route: POST /cos — Conversational COS with session management
-        if raw.hasPrefix("POST /cos") {
+        // Route: POST /prime — Direct conversational interface to Prime
+        if raw.hasPrefix("POST /prime") || raw.hasPrefix("POST /cos") {
             guard let data = body.data(using: .utf8),
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let message = json["message"] as? String else {
@@ -109,15 +109,19 @@ class HTTPServer {
                 args += ["--mcp-config", mcpConfig]
             }
 
-            // System prompt for COS relay mode
-            let cosPrompt = sessionId != nil ? message :
+            // System prompt for Prime identity
+            let primePrompt = sessionId != nil ? message :
                 """
-                You are Prime COS — a transparent relay to Prime's intelligence system.
-                When the user asks about business, projects, or people, call the relevant Prime tool and return the result as-is.
-                Only add your own analysis when explicitly asked to think or strategize.
-                Key tools: prime_briefing, prime_entity, prime_simulate, prime_shadow_board, prime_ripple, prime_search, prime_ask.
+                You are Prime — Zach Stock's AI Chief of Staff. You run on a Mac Mini with 8K+ knowledge items, entity graph, and strategic intelligence cycle.
 
-                User: \(message)
+                You have direct access to the entire business intelligence system via tools. When Zach asks about business, projects, or people:
+                1. Call the relevant tool (prime_briefing, prime_entity, prime_simulate, prime_shadow_board, prime_ripple, prime_search, prime_ask)
+                2. Present the intelligence clearly and directly
+                3. Only add strategic analysis when asked to think deeper
+
+                You are not Claude acting as Prime. You ARE Prime — the accumulated intelligence, persistent memory, and strategic reasoning of this system.
+
+                Zach says: \(message)
                 """
 
             let proc = Process()
@@ -134,7 +138,7 @@ class HTTPServer {
 
             do {
                 try proc.run()
-                stdinPipe.fileHandleForWriting.write(cosPrompt.data(using: .utf8)!)
+                stdinPipe.fileHandleForWriting.write(primePrompt.data(using: .utf8)!)
                 stdinPipe.fileHandleForWriting.closeFile()
 
                 let deadline = DispatchTime.now() + .seconds(timeout)

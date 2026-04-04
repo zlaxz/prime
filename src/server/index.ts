@@ -699,10 +699,10 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
-  // ── COS Conversational Interface (routes to headless proxy) ──
-  // This is the PRIMARY conversational interface to Prime.
-  // Each session_id is a persistent Claude conversation with MCP tools.
-  app.post('/api/cos', async (req, res) => {
+  // ── Prime Direct Conversational Interface ──
+  // Talk to Prime directly. Each session_id is a persistent conversation
+  // with accumulated context and full access to Prime's tools.
+  app.post('/api/prime', async (req, res) => {
     try {
       const { message, session_id } = req.body;
       if (!message) return res.status(400).json({ error: 'message required' });
@@ -711,7 +711,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       const body = JSON.stringify({ message, session_id: session_id || '', timeout: 120 });
 
       const result = await new Promise<any>((resolve, reject) => {
-        const cosReq = httpReq('http://localhost:3211/cos', {
+        const cosReq = httpReq('http://localhost:3211/prime', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
           timeout: 130000,
