@@ -157,6 +157,18 @@ function assembleContext(db: Database.Database): string {
     sections.push('');
   }
 
+  // 8b. Active playbooks (reusable patterns extracted from experience)
+  const playbooks = db.prepare(
+    "SELECT title, summary FROM knowledge WHERE source = 'playbook' ORDER BY source_date DESC LIMIT 10"
+  ).all() as any[];
+  if (playbooks.length > 0) {
+    sections.push('## ACTIVE PLAYBOOKS (reusable patterns — apply when situations match)\n');
+    for (const pb of playbooks) {
+      sections.push(`- **${pb.title}**: ${pb.summary?.slice(0, 150) || ''}`);
+    }
+    sections.push('');
+  }
+
   // 9. TODAY's items — raw, unprocessed, ALL of them (not just high-importance)
   // This is critical: pipeline perception tasks may not have run yet, but the
   // intelligence cycle must see today's emails/messages regardless of classification

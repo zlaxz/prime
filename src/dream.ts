@@ -3895,6 +3895,22 @@ export async function runDreamPipeline(
     }
   }
 
+  // ── PLAYBOOK EXTRACTION — distill reusable patterns from experience ──
+  if (!options.quick) {
+    console.log('  Task 26: Playbook extraction (distill patterns from corrections + decisions)...');
+    try {
+      const { extractPlaybooks } = await import('./playbooks.js');
+      const r26 = await extractPlaybooks(db);
+      results.push(r26);
+      console.log(`    ${r26.status === 'success' ? '✓' : r26.status === 'skipped' ? '○' : '✗'} ${r26.status} (${r26.duration_seconds.toFixed(1)}s)`);
+      if (r26.status === 'success' && r26.output?.titles) {
+        console.log(`      📋 ${r26.output.playbooks_extracted} playbooks: ${r26.output.titles.join(', ')}`);
+      }
+    } catch (err: any) {
+      console.log(`    ✗ Playbook extraction failed: ${err.message?.slice(0, 100)}`);
+    }
+  }
+
   // Update last dream run timestamp
   db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_dream_run', ?, datetime('now'))")
     .run(new Date().toISOString());
