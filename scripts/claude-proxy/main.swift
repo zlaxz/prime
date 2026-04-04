@@ -195,7 +195,9 @@ class HTTPServer {
         let extraArgs = json["args"] as? [String] ?? []
 
         // Build claude -p command
-        var args = ["-p", "--output-format", "json", "--max-turns", "1"] + extraArgs
+        // Allow enough turns for tool use (web search, MCP calls)
+        let maxTurns = (extraArgs.contains("--max-turns")) ? [] : ["--max-turns", "5"]
+        var args = ["-p", "--output-format", "json"] + maxTurns + extraArgs
 
         // Load MCP config if available
         let mcpConfig = NSHomeDirectory() + "/.claude/.mcp.json"
