@@ -772,13 +772,16 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       const payload = action?.payload ? (typeof action.payload === 'string' ? JSON.parse(action.payload) : action.payload) : {};
       const entityName = payload.to?.split('@')[0] || action?.summary?.split(' ').slice(0, 3).join(' ') || 'unknown';
 
-      // Create a correction rule based on the reason
+      // Create a correction rule — ACTION-specific, not entity-wide
+      // Dismissing an action about Charlie does NOT suppress all Charlie-related actions
+      const actionDesc = action?.summary?.slice(0, 80) || 'unknown action';
       const ruleMap: Record<string, string> = {
-        'already_handled': `Do NOT generate follow-up actions for "${entityName}" — user confirmed this is already handled.${explanation ? ' Context: ' + explanation : ''}`,
-        'on_hold': `SUPPRESS all actions related to "${entityName}" or "${action?.project}" — user explicitly put this on hold.${explanation ? ' Reason: ' + explanation : ''} Do not resurface until user reactivates.`,
-        'wrong_person': `The action about "${action?.summary}" was associated with the wrong person or project. ${explanation || 'Verify entity associations before generating actions.'}`,
-        'not_mine': `"${action?.summary}" is not the user's responsibility. Do not generate actions for this.`,
-        'noise': `"${entityName}" is noise/spam. Dismiss this entity and never surface actions for them.`,
+        'already_handled': `Action "${actionDesc}" is already done. Do not regenerate this specific action.${explanation ? ' Context: ' + explanation : ''}`,
+        'on_hold': `Action "${actionDesc}" is on hold.${explanation ? ' Reason: ' + explanation : ''} Do not resurface this specific action until conditions change.`,
+        'wrong_person': `Action "${actionDesc}" was associated with the wrong person or project. ${explanation || ''}`,
+        'not_mine': `"${actionDesc}" is not the user's responsibility.`,
+        'not_relevant': `"${actionDesc}" is not relevant right now. ${explanation || ''}`,
+        'noise': `"${actionDesc}" is noise. Do not regenerate this specific action.`,
       };
 
       const correctionRule = ruleMap[reason] || `User dismissed: ${reason}. ${explanation || ''}`;
@@ -808,12 +811,9 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         importance: 'high', // User corrections are high importance — the system must learn
       });
 
-      // If reason is 'noise', also dismiss the entity
-      if (reason === 'noise' && payload.to) {
-        db.prepare("UPDATE entities SET user_dismissed = 1 WHERE email = ?").run(payload.to);
-        db.prepare("INSERT OR IGNORE INTO dismissals (id, entity_id, reason) SELECT ?, id, ? FROM entities WHERE email = ?")
-          .run(uuid(), `User dismissed as noise: ${explanation || ''}`, payload.to);
-      }
+      // NEVER dismiss an entity just because an action was dismissed.
+      // Entity dismissal is a separate explicit action (via prime_correct or entity management).
+      // Dismissing "Follow up with Charlie" should NOT dismiss Charlie as a person.
 
       // If reason is 'on_hold', update entity_signals
       if (reason === 'on_hold') {
