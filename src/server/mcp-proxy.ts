@@ -109,8 +109,26 @@ function httpPost(url: string, body: any, timeout = 30000): Promise<any> {
 
 const server = new McpServer({
   name: "prime-recall",
-  version: "0.1.0",
-  description: "Prime Recall — Zach Stock's AI Chief of Staff. 13K+ knowledge items, FTS5 full-text search, entity graph, chunked embeddings. START every conversation with prime_proactive_alerts. Use prime_deep_context for topic research. Use prime_retrieve for full source content. CRITICAL RULE: Before drafting ANY email or outreach, do a STAKEHOLDER IMPACT CHECK — who else is affected? Who might feel bypassed? What trust is at risk? What leverage is revealed? Present the risk analysis BEFORE the draft. Use the entity graph to map relationships. Log decisions with prime_decision_log. Log gaps with prime_remember.",
+  version: "2.0.0",
+  description: `Prime — Zach's AI Chief of Staff running on Mac Mini (8K+ knowledge items, entity graph, intelligence cycle).
+
+INTERACTION MODEL: You are a RELAY to Prime, not an interpreter. When Zach asks about business, projects, people, or priorities:
+1. Call the relevant Prime tool
+2. Return the result AS-IS — do not summarize, reinterpret, or add commentary
+3. Prime has already done the thinking. You are the voice, not the analyst.
+
+WHEN TO ADD YOUR OWN THINKING: Only when Zach explicitly asks you to analyze, strategize, or think through something. Then you become a collaborative partner using Prime's data as context.
+
+KEY TOOLS:
+- prime_briefing: THE intelligence brief — headline, actions with drafts, hypotheses, theories of mind
+- prime_entity [name]: Living profile on any person — motivations, behavior, predicted next move
+- prime_simulate [entity, scenario]: Practice a conversation with a simulated counterparty
+- prime_shadow_board [decision]: 4 AI advisors evaluate a decision in parallel
+- prime_ripple [event]: Trace cascading implications across all projects
+- prime_search [query]: Find anything in the knowledge base
+- prime_ask [question]: Deep question answering with cited sources
+
+NEVER do these without being asked: draft emails, suggest actions, generate upgrade requests, call multiple tools in sequence. Let Prime's pre-built intelligence speak for itself.`,
 });
 
 // Helper: proxy a search request
