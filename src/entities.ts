@@ -44,13 +44,17 @@ function extractDomain(email: string): string | null {
 // ── Entity CRUD ──────────────────────────────────────────────
 
 export function getEntity(db: Database.Database, nameOrEmail: string): any {
-  // Try email match first
+  // Try exact canonical name first (most common case)
+  const byName = db.prepare('SELECT * FROM entities WHERE canonical_name = ?').get(nameOrEmail);
+  if (byName) return byName;
+
+  // Try email match
   const byEmail = db.prepare('SELECT * FROM entities WHERE email = ?').get(nameOrEmail.toLowerCase());
   if (byEmail) return byEmail;
 
-  // Try canonical name
-  const byName = db.prepare('SELECT * FROM entities WHERE canonical_name = ?').get(nameOrEmail);
-  if (byName) return byName;
+  // Try case-insensitive canonical name
+  const byNameCI = db.prepare('SELECT * FROM entities WHERE LOWER(canonical_name) = LOWER(?)').get(nameOrEmail);
+  if (byNameCI) return byNameCI;
 
   // Try alias lookup
   const normalized = normalizeName(nameOrEmail);
@@ -60,6 +64,12 @@ export function getEntity(db: Database.Database, nameOrEmail: string): any {
   if (alias) {
     return db.prepare('SELECT * FROM entities WHERE id = ?').get(alias.entity_id);
   }
+
+  // Try partial name match (first name → full name, excluding emails)
+  const partial = db.prepare(
+    "SELECT * FROM entities WHERE canonical_name LIKE ? AND canonical_name NOT LIKE '%@%' AND user_dismissed = 0 ORDER BY last_seen_date DESC LIMIT 1"
+  ).get(`${nameOrEmail}%`) as any;
+  if (partial) return partial;
 
   return null;
 }
@@ -514,13 +524,25 @@ export function getEntityProfile(db: Database.Database, nameOrEmail: string): an
 // Pure SQL — no LLM calls. Theory of mind comes from graph_state (intelligence cycle).
 
 export function getLivingProfile(db: Database.Database, nameOrEmail: string): any {
-  // Resolve entity — supports partial name matching via LIKE
+  // Resolve entity — fuzzy matching with priority: exact > name-like > email-like
   let entity = getEntity(db, nameOrEmail);
   if (!entity) {
-    // Fallback: partial match on canonical_name
+    // Priority 1: canonical_name contains the search term (NOT email addresses)
     entity = db.prepare(
-      'SELECT * FROM entities WHERE canonical_name LIKE ? AND user_dismissed = 0 ORDER BY last_seen_date DESC LIMIT 1'
+      "SELECT * FROM entities WHERE canonical_name LIKE ? AND canonical_name NOT LIKE '%@%' AND user_dismissed = 0 ORDER BY last_seen_date DESC LIMIT 1"
     ).get(`%${nameOrEmail}%`) as any;
+  }
+  if (!entity) {
+    // Priority 2: first name match (search "Costas" matches "Costas Manganiotis")
+    entity = db.prepare(
+      "SELECT * FROM entities WHERE canonical_name LIKE ? AND canonical_name NOT LIKE '%@%' AND user_dismissed = 0 ORDER BY last_seen_date DESC LIMIT 1"
+    ).get(`${nameOrEmail}%`) as any;
+  }
+  if (!entity) {
+    // Priority 3: any match including emails
+    entity = db.prepare(
+      'SELECT * FROM entities WHERE (canonical_name LIKE ? OR email LIKE ?) AND user_dismissed = 0 ORDER BY last_seen_date DESC LIMIT 1'
+    ).get(`%${nameOrEmail}%`, `%${nameOrEmail}%`) as any;
   }
   if (!entity) return null;
 
