@@ -438,30 +438,24 @@ server.tool(
 
 server.tool(
   "prime_actions",
-  "Get pending action items from the dream pipeline. These are staged actions waiting for user review — emails to send, documents to create, follow-ups to make. Use this to brief the user on what needs doing and walk through them one at a time.",
-  {
-    project: z.string().optional().describe("Filter by project name"),
-    status: z.string().optional().default("pending").describe("Filter: pending, approved, rejected, executed"),
-  },
-  async ({ project, status }) => {
+  "Get ranked action items from the intelligence cycle. These are specific, prioritized actions with full drafts — emails to send, calls to make, prep to do. Each includes rationale and ready-to-use content.",
+  {},
+  async () => {
     const srv = await getServer();
     if (!srv) return { content: [{ type: "text" as const, text: 'Prime server unreachable.' }] };
     try {
       const result = await httpGet(`${srv}/api/ambient`);
-      let actions = result.actions || [];
-      if (project) actions = actions.filter((a: any) => a.project?.toLowerCase().includes(project.toLowerCase()));
-      if (actions.length === 0) return { content: [{ type: "text" as const, text: 'No pending actions.' }] };
-      const text = actions.map((a: any, i: number) => {
-        let entry = `[${i + 1}] (${a.type}) ${a.summary}`;
-        if (a.project) entry += `\n   Project: ${a.project}`;
-        if (a.to) entry += `\n   To: ${a.to}`;
-        if (a.subject) entry += `\n   Subject: ${a.subject}`;
-        if (a.body) entry += `\n   Body preview: ${a.body.slice(0, 200)}`;
-        if (a.reasoning) entry += `\n   Why: ${a.reasoning}`;
-        entry += `\n   ID: ${a.id}`;
+      const actions = result.actions || [];
+      if (actions.length === 0) return { content: [{ type: "text" as const, text: 'No pending actions. The intelligence cycle may need to run.' }] };
+      const text = actions.map((a: any) => {
+        let entry = `**#${a.priority} [${a.type} | ${a.deadline}] ${a.title}**`;
+        if (a.target_person) entry += `\nTarget: ${a.target_person}`;
+        entry += `\nWhy: ${a.rationale}`;
+        if (a.draft) entry += `\n\nDraft:\n${a.draft}`;
+        if (a.depends_on) entry += `\n\nDepends on: ${a.depends_on}`;
         return entry;
-      }).join('\n\n');
-      return { content: [{ type: "text" as const, text: `${actions.length} pending actions:\n\n${text}` }] };
+      }).join('\n\n---\n\n');
+      return { content: [{ type: "text" as const, text: `${actions.length} actions:\n\n${text}` }] };
     } catch (err: any) {
       return { content: [{ type: "text" as const, text: `Error: ${err.message}` }] };
     }

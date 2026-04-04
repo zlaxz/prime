@@ -3401,7 +3401,19 @@ async function task22MemoryConsolidation(db: Database.Database): Promise<TaskRes
       console.log(`    Context budget: demoted ${excess} oldest high-priority items to normal`);
     }
 
-    const stats = { deduped, archived, contradictions_found: contradictions.length, promoted, demoted };
+    // ── Step 6: Auto-expire stale staged actions ──
+    // Staged actions older than 48h that are still pending → expire them
+    // The intelligence cycle generates fresh actions every run
+    const expiredActions = db.prepare(`
+      UPDATE staged_actions SET status = 'expired', acted_at = datetime('now')
+      WHERE status = 'pending' AND created_at < datetime('now', '-2 days')
+    `).run();
+    const actionsExpired = (expiredActions as any).changes || 0;
+    if (actionsExpired > 0) {
+      console.log(`    Auto-expired ${actionsExpired} stale staged actions (>48h old)`);
+    }
+
+    const stats = { deduped, archived, contradictions_found: contradictions.length, promoted, demoted, actions_expired: actionsExpired };
 
     return {
       task: '22-memory-consolidation',
