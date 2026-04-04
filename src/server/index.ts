@@ -699,6 +699,49 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
+  // ── COS Conversational Interface (routes to headless proxy) ──
+  // This is the PRIMARY conversational interface to Prime.
+  // Each session_id is a persistent Claude conversation with MCP tools.
+  app.post('/api/cos', async (req, res) => {
+    try {
+      const { message, session_id } = req.body;
+      if (!message) return res.status(400).json({ error: 'message required' });
+
+      const { request: httpReq } = await import('http');
+      const body = JSON.stringify({ message, session_id: session_id || '', timeout: 120 });
+
+      const result = await new Promise<any>((resolve, reject) => {
+        const cosReq = httpReq('http://localhost:3211/cos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+          timeout: 130000,
+        }, (cosRes) => {
+          let data = '';
+          cosRes.on('data', (d: Buffer) => { data += d.toString(); });
+          cosRes.on('end', () => {
+            try { resolve(JSON.parse(data)); }
+            catch { resolve({ content: data, session_id: '' }); }
+          });
+        });
+        cosReq.on('error', reject);
+        cosReq.on('timeout', () => { cosReq.destroy(); reject(new Error('COS proxy timeout')); });
+        cosReq.write(body);
+        cosReq.end();
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      // Fallback to direct ask if proxy unavailable
+      try {
+        const { chatMessage } = await import('../ai/chat.js');
+        const result = await chatMessage(db, { message: req.body.message, session_id: req.body.session_id });
+        res.json(result);
+      } catch (fallbackErr: any) {
+        res.status(500).json({ error: err.message });
+      }
+    }
+  });
+
   // ── Action approval (for ambient display + API clients) ──
   app.post('/api/approve-action', async (req, res) => {
     try {

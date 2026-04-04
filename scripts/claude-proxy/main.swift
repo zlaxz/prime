@@ -83,9 +83,99 @@ class HTTPServer {
             return
         }
 
-        // Must be POST /claude
+        // Route: POST /cos — Conversational COS with session management
+        if raw.hasPrefix("POST /cos") {
+            guard let data = body.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let message = json["message"] as? String else {
+                sendResponse(fd, status: 400, body: "{\"error\":\"missing message\"}")
+                return
+            }
+
+            let sessionId = json["session_id"] as? String
+            let timeout = json["timeout"] as? Int ?? 120
+
+            // Build args: always use MCP, allow multi-turn for tool use
+            var args = ["-p", "--output-format", "json", "--max-turns", "5"]
+
+            // Resume existing session or start fresh
+            if let sid = sessionId, !sid.isEmpty {
+                args += ["--resume", sid]
+            }
+
+            // Load MCP config
+            let mcpConfig = NSHomeDirectory() + "/.claude/.mcp.json"
+            if FileManager.default.fileExists(atPath: mcpConfig) {
+                args += ["--mcp-config", mcpConfig]
+            }
+
+            // System prompt for COS relay mode
+            let cosPrompt = sessionId != nil ? message :
+                """
+                You are Prime COS — a transparent relay to Prime's intelligence system.
+                When the user asks about business, projects, or people, call the relevant Prime tool and return the result as-is.
+                Only add your own analysis when explicitly asked to think or strategize.
+                Key tools: prime_briefing, prime_entity, prime_simulate, prime_shadow_board, prime_ripple, prime_search, prime_ask.
+
+                User: \(message)
+                """
+
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/claude")
+            proc.arguments = args
+            proc.environment = ProcessInfo.processInfo.environment
+
+            let stdinPipe = Pipe()
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            proc.standardInput = stdinPipe
+            proc.standardOutput = stdoutPipe
+            proc.standardError = stderrPipe
+
+            do {
+                try proc.run()
+                stdinPipe.fileHandleForWriting.write(cosPrompt.data(using: .utf8)!)
+                stdinPipe.fileHandleForWriting.closeFile()
+
+                let deadline = DispatchTime.now() + .seconds(timeout)
+                let sem = DispatchSemaphore(value: 0)
+                DispatchQueue.global().async { proc.waitUntilExit(); sem.signal() }
+
+                if sem.wait(timeout: deadline) == .timedOut {
+                    proc.terminate()
+                    sendResponse(fd, status: 504, body: "{\"error\":\"timeout\"}")
+                    return
+                }
+
+                let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: stdout, encoding: .utf8) ?? ""
+
+                if let jsonData = output.data(using: .utf8),
+                   let envelope = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                    let result = envelope["result"] as? String ?? output
+                    let newSessionId = envelope["session_id"] as? String ?? sessionId ?? ""
+                    let responseJSON = try! JSONSerialization.data(withJSONObject: [
+                        "content": result,
+                        "session_id": newSessionId,
+                    ])
+                    sendResponse(fd, status: 200, body: String(data: responseJSON, encoding: .utf8)!)
+                } else {
+                    sendResponse(fd, status: 200, body: "{\"content\":\"\(output.prefix(5000))\",\"session_id\":\"\"}")
+                }
+            } catch {
+                sendResponse(fd, status: 500, body: "{\"error\":\"\(error.localizedDescription)\"}")
+            }
+            return
+        }
+
+        // Route: POST /claude — Raw claude -p call (for dream pipeline)
         guard raw.hasPrefix("POST /claude") else {
-            sendResponse(fd, status: 404, body: "{\"error\":\"not found\"}")
+            // List sessions
+            if raw.hasPrefix("GET /sessions") {
+                sendResponse(fd, status: 200, body: "{\"note\":\"session management via /cos endpoint\"}")
+                return
+            }
+            sendResponse(fd, status: 404, body: "{\"error\":\"not found. Use POST /cos for COS chat, POST /claude for raw calls.\"}")
             return
         }
 
