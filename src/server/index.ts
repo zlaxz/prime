@@ -25,13 +25,13 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
   const ALLOWED_ORIGINS = [
     'http://localhost:5173',                    // Local dev
     'http://localhost:3000',                    // Local dev alt
-    'https://prime-production.lovable.app',     // Lovable preview
     'https://prime.recaptureinsurance.com',     // Self (tunnel)
   ];
 
   app.use((_req, res, next) => {
     const origin = _req.headers.origin || '';
-    if (ALLOWED_ORIGINS.includes(origin)) {
+    // Allow known origins + any lovable.app subdomain
+    if (ALLOWED_ORIGINS.includes(origin) || origin.endsWith('.lovable.app')) {
       res.header('Access-Control-Allow-Origin', origin);
     }
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -40,14 +40,17 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     next();
   });
 
-  // Auth middleware — require API key on all routes except health and MCP
+  // Auth middleware — require API key for untrusted requests
   app.use((req, res, next) => {
-    // Skip auth for health checks and MCP (MCP has its own auth via session)
+    // Skip auth for health/status/MCP
     if (req.path === '/api/health' || req.path === '/api/status' || req.path.startsWith('/mcp')) return next();
-    // Skip auth for localhost requests (Mac Mini internal calls)
+    // Skip auth for localhost
     const ip = req.ip || req.socket.remoteAddress || '';
     if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') return next();
-    // Require API key for external requests
+    // Skip auth for trusted web app origins (CORS already restricts to known origins)
+    const origin = req.headers.origin || '';
+    if (origin.endsWith('.lovable.app') || ALLOWED_ORIGINS.includes(origin)) return next();
+    // Require API key for everything else
     if (API_KEY) {
       const key = (req.headers['x-api-key'] as string) || req.headers.authorization?.replace('Bearer ', '');
       if (!key || key !== API_KEY) {

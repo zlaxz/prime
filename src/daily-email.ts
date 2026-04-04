@@ -49,9 +49,11 @@ Write ONLY the email body text. No subject line. No HTML tags.`;
     let quinnLetter: string;
     try {
       quinnLetter = await callClaude(quinnPrompt, 60000);
-      // If callClaude returned empty, use fallback
-      if (!quinnLetter || quinnLetter.trim().length < 50) throw new Error('Empty response');
-    } catch {
+      // Strip any whitespace/newlines and check for real content
+      const cleaned = (quinnLetter || '').replace(/\s+/g, ' ').trim();
+      if (cleaned.length < 50) throw new Error(`Response too short: ${cleaned.length} chars`);
+    } catch (callErr: any) {
+      console.log(`[quinn] Claude letter failed (${callErr.message?.slice(0, 60)}), using fallback`);
       // Fallback: write the letter directly from the data (no LLM needed)
       const topAction = actions[0];
       quinnLetter = [
