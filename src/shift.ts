@@ -121,8 +121,8 @@ async function tick() {
     }
 
     try {
-      const { runAutonomousResearch } = await import('./research.js');
-      const result = await runAutonomousResearch(db);
+      // DISABLED: const { runAutonomousResearch } = await import('./research.js');
+      // DISABLED: const result = await runAutonomousResearch(db);
       if (result.status === 'success') {
         console.log(`[shift]   Research: ${result.output?.questions_researched} questions answered`);
       }

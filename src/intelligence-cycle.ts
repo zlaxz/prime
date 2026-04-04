@@ -425,27 +425,25 @@ Analyze everything and produce a strategic intelligence brief. Return ONLY valid
       "depends_on": "What must be true or done first, or null"
     }
   ],
-  "research_queue": [
-    {
-      "question": "Specific factual question that would change the analysis if answered",
-      "hypothesis_id": "Which hypothesis this would confirm or deny",
-      "search_terms": "What to search for on the web",
-      "priority": "critical|high|medium",
-      "why": "How answering this question changes the strategic picture"
-    }
-  ]
+  "research_queue": []
 }
 
 Requirements:
-- Generate 5-8 hypotheses. At least 2 must connect DIFFERENT projects. At least 1 must be theory-of-mind (why someone is acting a certain way). At least 1 must be speculative/non-obvious.
-- Rate confidence honestly: 30=speculation, 50=plausible, 70=likely, 90=near-certain. Do NOT default everything to 50.
-- For the top 3-5 entities in the data, provide a theory of mind.
-- For the top 2 hypotheses, trace implication chains (1st→2nd→3rd order).
-- Flag any contradictions you find between claims, commitments, and behavior.
-- Identify weak signals that don't fit any pattern but could be strategically important.
-- "The one thing" must be actionable THIS WEEK with a specific person and specific ask.
-- Generate 3-5 ACTIONS ranked by priority. Each must be concrete — specific person, specific deliverable, specific deadline. For emails, WRITE THE FULL DRAFT in Zach's voice. For calls, provide talking points. For preparation, provide the outline. The goal is ZERO activation energy — Zach should be able to execute each action with ONE tap.
-- Generate 2-5 RESEARCH QUESTIONS — things you DON'T KNOW that would materially change the analysis. These will be autonomously researched via web search. Focus on: verifiable facts, market data, company information, regulatory status, public records. NOT opinions or strategy — FACTS that can be found.`;
+GROUND RULES (read these FIRST):
+- You are a REPORTER, not a strategist. Report what the DATA shows. Do not speculate.
+- If you don't have evidence for something, don't say it. Silence > manufactured insight.
+- Do NOT present generic industry knowledge as a discovery. If you learned it from a web search, it's background context, not breaking news.
+- Research findings are LOW CONFIDENCE unless verified against Zach's actual situation. Never build an 80%+ hypothesis on a Google search result.
+- Fewer, better outputs. 2 solid hypotheses > 5 speculative ones. 2 clear actions > 5 dramatic ones.
+- Use CALM language. "Worth checking:" not "CRITICAL RISK." "Consider:" not "Act NOW."
+- Never lecture Zach's own contacts about things they obviously know (e.g., don't tell a Lloyd's broker about Lloyd's rules).
+
+WHAT TO PRODUCE:
+- 2-4 hypotheses based on EVIDENCE IN THE DATA. Confidence must reflect actual evidence strength. No filler hypotheses.
+- "The one thing" must be genuinely the highest-leverage action, not the scariest scenario.
+- 2-3 ACTIONS max. Each concrete with a person and deadline. For emails, draft in Zach's voice — direct, peer-to-peer, never lecturing.
+- 0-2 research questions ONLY if genuinely useful. Do NOT generate research questions just to fill the field.
+- Skip implication chains, weak signals, and contradictions unless they're genuinely surprising. Empty arrays are fine.`;
 
 // ── Main Entry Point ────────────────────────────────────────
 
