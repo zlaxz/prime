@@ -32,6 +32,41 @@ interface TaskResult {
 function assembleContext(db: Database.Database): string {
   const sections: string[] = [];
 
+  // 0. USER CORRECTIONS — ABSOLUTE TRUTH (must be at top of context so LLM can't miss them)
+  const corrections = db.prepare(`
+    SELECT title, summary FROM knowledge
+    WHERE source IN ('correction', 'manual', 'training')
+    AND (title LIKE '%CORRECTION%' OR title LIKE '%TRAINING%' OR source = 'correction')
+    ORDER BY source_date DESC LIMIT 20
+  `).all() as any[];
+
+  if (corrections.length > 0) {
+    sections.push('## VERIFIED CORRECTIONS (ABSOLUTE — never contradict these)\n');
+    for (const c of corrections) {
+      sections.push('- ' + (c.title || '').slice(0, 200));
+      if (c.summary && !c.summary.startsWith(c.title)) {
+        sections.push('  ' + c.summary.slice(0, 300));
+      }
+    }
+    sections.push('');
+  }
+
+  // Also load manual/training items as high-priority context
+  const manualItems = db.prepare(`
+    SELECT title, summary FROM knowledge
+    WHERE source = 'manual' AND title NOT LIKE '%CORRECTION%' AND title NOT LIKE '%TRAINING%'
+    ORDER BY source_date DESC LIMIT 10
+  `).all() as any[];
+
+  if (manualItems.length > 0) {
+    sections.push('## USER-PROVIDED CONTEXT (Zach entered these directly — treat as authoritative)\n');
+    for (const m of manualItems) {
+      sections.push('- ' + (m.title || '').slice(0, 200));
+    }
+    sections.push('');
+  }
+
+
   // 1. Project profiles (from Task 07)
   const profilesRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'project_profiles'").get() as any)?.value;
   if (profilesRaw) {
