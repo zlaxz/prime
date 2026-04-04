@@ -64,14 +64,24 @@ function createClaudeCodeProvider(): LLMProvider {
           proc.stdin!.end();
         });
 
-        // Parse result — GUI wrapper returns raw text, direct CLI returns JSON envelope
-        let result: string;
+        // Parse result — claude -p outputs JSON envelope with .result field
+        // May contain multiple JSON objects if output was large or had tool calls
+        let result: string = '';
         try {
+          // Try parsing as single JSON envelope
           const envelope = JSON.parse(stdout);
           result = envelope.result || '';
         } catch {
-          // GUI wrapper (claude-gui.sh) returns raw text, not JSON envelope
-          result = stdout.trim();
+          // If JSON parse fails (truncated, multiple objects, or raw text):
+          // Try to extract "result" field with regex
+          const resultMatch = stdout.match(/"result"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+          if (resultMatch) {
+            result = JSON.parse(`"${resultMatch[1]}"`); // unescape JSON string
+          } else {
+            // Last resort: strip any JSON envelope wrapper and return text
+            result = stdout.replace(/^\s*\{.*?"result"\s*:\s*"?/s, '').replace(/"?\s*,?\s*"stop_reason".*$/s, '').trim();
+            if (!result || result.startsWith('{')) result = stdout.trim();
+          }
         }
 
         // If we requested JSON, try to extract it
