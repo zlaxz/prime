@@ -741,6 +741,33 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       const { message, session_id } = req.body;
       if (!message) return res.status(400).json({ error: 'message required' });
 
+      // Store user feedback immediately — don't wait for COS response
+      // This ensures "I handled this" / "that's wrong" gets into the knowledge base
+      try {
+        const userLower = message.toLowerCase();
+        const isDecision = /\b(decided|done|handled|completed|paused|stopped|cancelled|postponed|approved|rejected|signed|confirmed|changed|updated|moved|dropped)\b/.test(userLower);
+        const isCorrection = /\b(wrong|incorrect|not right|actually|no that's|stop showing|already|don't|doesn't|isn't)\b/.test(userLower);
+        if (isDecision || isCorrection) {
+          const { v4: uuidv4 } = await import('uuid');
+          const { insertKnowledge } = await import('../db.js');
+          insertKnowledge(db, {
+            id: uuidv4(),
+            title: `User update: ${message.slice(0, 120)}`,
+            summary: message,
+            source: 'user-feedback',
+            source_ref: `prime:${session_id || 'new'}:${Date.now()}`,
+            source_date: new Date().toISOString(),
+            tags: isCorrection ? ['user-correction', 'feedback'] : ['user-decision', 'feedback'],
+            importance: 'high',
+            metadata: { session_id, type: isCorrection ? 'correction' : 'decision' },
+          });
+          if (isCorrection) {
+            db.prepare(`INSERT OR IGNORE INTO strategic_lessons (id, lesson_date, lesson_type, lesson, domain, severity, correction_rule) VALUES (?, date('now'), 'user_correction', ?, 'general', 'high', ?)`)
+              .run(uuidv4(), `User said: ${message.slice(0, 200)}`, message.slice(0, 500));
+          }
+        }
+      } catch { /* non-critical */ }
+
       const { request: httpReq } = await import('http');
       const body = JSON.stringify({ message, session_id: session_id || '', timeout: 120 });
 

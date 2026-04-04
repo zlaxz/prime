@@ -668,6 +668,39 @@ export async function chatMessage(
     VALUES (?, ?, 'assistant', ?, ?, ?, ?, datetime('now'))
   `).run(assistantMsgId, sessionId, response, JSON.stringify(sources), JSON.stringify(actionIds), intent);
 
+  // ── Extract user decisions/corrections and store as knowledge ──
+  // When the user says "I handled X", "X is done", "I decided to Y", etc.
+  // store it so the dream pipeline and future sessions know about it
+  try {
+    const userLower = opts.message.toLowerCase();
+    const isDecision = /\b(decided|done|handled|completed|paused|stopped|cancelled|postponed|approved|rejected|signed|confirmed|changed|updated|moved|dropped)\b/.test(userLower);
+    const isCorrection = /\b(wrong|incorrect|not right|actually|no that's|stop showing|already|don't|doesn't|isn't)\b/.test(userLower);
+
+    if (isDecision || isCorrection) {
+      const { insertKnowledge } = await import('../db.js');
+      insertKnowledge(db, {
+        id: uuid(),
+        title: `User update: ${opts.message.slice(0, 120)}`,
+        summary: opts.message,
+        source: 'user-feedback',
+        source_ref: `chat:${sessionId}:${userMsgId}`,
+        source_date: new Date().toISOString(),
+        tags: isCorrection ? ['user-correction', 'feedback'] : ['user-decision', 'feedback'],
+        project: session.primary_project || undefined,
+        importance: 'high',
+        metadata: { session_id: sessionId, intent, type: isCorrection ? 'correction' : 'decision' },
+      });
+
+      // If it's a correction, also create a strategic lesson
+      if (isCorrection) {
+        db.prepare(`
+          INSERT OR IGNORE INTO strategic_lessons (id, lesson_date, lesson_type, lesson, domain, severity, correction_rule)
+          VALUES (?, date('now'), 'user_correction', ?, 'general', 'high', ?)
+        `).run(uuid(), `User said: ${opts.message.slice(0, 200)}`, opts.message.slice(0, 500));
+      }
+    }
+  } catch { /* non-critical — don't break chat if extraction fails */ }
+
   // Update session
   const msgCount = (db.prepare('SELECT COUNT(*) as cnt FROM chat_messages WHERE session_id = ?').get(sessionId) as any).cnt;
   db.prepare(`
