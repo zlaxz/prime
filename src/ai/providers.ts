@@ -64,9 +64,15 @@ function createClaudeCodeProvider(): LLMProvider {
           proc.stdin!.end();
         });
 
-        // Parse the JSON envelope from claude CLI
-        const envelope = JSON.parse(stdout);
-        const result = envelope.result || '';
+        // Parse result — GUI wrapper returns raw text, direct CLI returns JSON envelope
+        let result: string;
+        try {
+          const envelope = JSON.parse(stdout);
+          result = envelope.result || '';
+        } catch {
+          // GUI wrapper (claude-gui.sh) returns raw text, not JSON envelope
+          result = stdout.trim();
+        }
 
         // If we requested JSON, try to extract it
         if (options.json && result) {
