@@ -710,19 +710,21 @@ export async function sendEmail(
 
   // Build RFC 2822 message
   const contentType = options.html ? 'text/html' : 'text/plain';
-  const messageParts = [
+  // Build headers (filter empty optional ones) then body
+  const headers = [
     `From: ${userEmail}`,
     `To: ${options.to}`,
-    options.cc ? `Cc: ${options.cc}` : '',
-    options.bcc ? `Bcc: ${options.bcc}` : '',
+    options.cc ? `Cc: ${options.cc}` : null,
+    options.bcc ? `Bcc: ${options.bcc}` : null,
     `Subject: ${options.subject}`,
     'MIME-Version: 1.0',
     `Content-Type: ${contentType}; charset=utf-8`,
-    '',
-    options.body,
-  ].filter(Boolean).join('\r\n');
+  ].filter(h => h !== null).join('\r\n');
 
-  const encodedMessage = Buffer.from(messageParts).toString('base64url');
+  // RFC 2822: blank line MUST separate headers from body
+  const messageParts = headers + '\r\n\r\n' + options.body;
+
+  const encodedMessage = Buffer.from(messageParts, 'utf-8').toString('base64url');
 
   try {
     const result = await gmail.users.messages.send({
