@@ -2457,6 +2457,16 @@ program
   });
 
 // ============================================================
+// recall shift — autonomous shift daemon (replaces cron)
+// ============================================================
+program
+  .command('shift')
+  .description('Start the Prime shift daemon — continuous autonomous monitoring and intelligence')
+  .action(async () => {
+    await import('./shift.js');
+  });
+
+// ============================================================
 // recall deep-session — run a deep strategic work session
 // ============================================================
 program
