@@ -123,6 +123,12 @@ async function tick() {
       }
     } catch {}
 
+    // Send daily intelligence email via Quinn
+    try {
+      const { sendDailyIntelligenceEmail } = await import('./daily-email.js');
+      await sendDailyIntelligenceEmail(db);
+    } catch {}
+
     db.prepare(
       "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_full_cycle', ?, datetime('now'))"
     ).run(JSON.stringify(new Date().toISOString()));
