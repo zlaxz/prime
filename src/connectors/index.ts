@@ -123,11 +123,29 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
             const { items } = await scanCalendarForAccount(db, member.email);
             results.push({ source: `calendar:${member.name}`, items });
           }
+
         } catch (err: any) {
           results.push({ source: `calendar:${member.name}`, items: 0, error: err.message?.slice(0, 80) });
         }
       }
-    }
+    
+
+      if (member.sync_drive) {
+        try {
+          const { scanDrive } = await import('./drive.js');
+          const driveResult = await scanDrive(db, {
+            days: 30,
+            maxFiles: 50,
+            sourceAccount: member.email,
+          });
+          if (driveResult.items > 0) {
+            results.push({ source: 'drive:' + member.name, items: driveResult.items });
+          }
+        } catch (driveErr: any) {
+          // Drive scan failed — not critical
+        }
+      }
+}
   } catch (teamErr: any) {
     console.log(`  Team sync error: ${teamErr.message?.slice(0, 60)}`);
   }
