@@ -128,6 +128,48 @@ async function tick() {
     ).run(JSON.stringify(new Date().toISOString()));
   }
 
+  // ── HEALTH CHECK (every tick) ──
+  try {
+    const health: string[] = [];
+
+    // Check intelligence brief freshness
+    const briefAge = db.prepare("SELECT (julianday('now') - julianday(updated_at)) * 24 as hours FROM graph_state WHERE key = 'intelligence_brief'").get() as any;
+    if (!briefAge || briefAge.hours > 8) health.push(`Intelligence brief stale (${briefAge?.hours?.toFixed(1) || 'never'}h old)`);
+
+    // Check proxy
+    try {
+      const { execSync } = await import('child_process');
+      execSync('curl -s -f http://localhost:3211/health', { timeout: 3000 });
+    } catch {
+      health.push('Claude proxy DOWN — dream tasks will fall back to GUI wrapper');
+    }
+
+    // Check serve
+    try {
+      const { execSync } = await import('child_process');
+      execSync('curl -s -f http://localhost:3210/api/status', { timeout: 3000 });
+    } catch {
+      health.push('Prime serve DOWN — API and MCP unavailable');
+    }
+
+    // Check Terminal windows
+    try {
+      const { execSync } = await import('child_process');
+      const count = parseInt(execSync("osascript -e 'tell application \"Terminal\" to count windows' 2>/dev/null || echo 0").toString().trim());
+      if (count > 5) {
+        health.push(`${count} Terminal windows accumulated — closing`);
+        execSync("osascript -e 'tell application \"Terminal\" to close every window' 2>/dev/null");
+      }
+    } catch {}
+
+    if (health.length > 0) {
+      console.log(`[shift]   ⚠️ HEALTH: ${health.join(' | ')}`);
+      db.prepare(
+        "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('system_health', ?, datetime('now'))"
+      ).run(JSON.stringify({ issues: health, checked_at: new Date().toISOString() }));
+    }
+  } catch {}
+
   console.log(`[shift] ${now.toLocaleTimeString()} — Tick complete.`);
 }
 

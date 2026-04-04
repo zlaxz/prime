@@ -498,6 +498,84 @@ export async function runIntelligenceCycle(db: Database.Database): Promise<TaskR
       else throw new Error('Could not parse JSON from response');
     }
 
+    // ── Phase 4.5: Quality Gate — catch obvious failures before storing ──
+    console.log('    Phase 4.5: Quality gate...');
+    let qualityIssues: string[] = [];
+
+    // Check 1: Actions recommending contact with someone who already responded today
+    if (brief.actions) {
+      const recentSenders = db.prepare(`
+        SELECT DISTINCT json_extract(metadata, '$.last_from') as sender
+        FROM knowledge WHERE source = 'gmail' AND source_date >= datetime('now', '-24 hours')
+        AND json_extract(metadata, '$.last_from') IS NOT NULL
+      `).all().map((r: any) => r.sender?.toLowerCase() || '');
+
+      brief.actions = brief.actions.filter((a: any) => {
+        if (!a.target_person) return true;
+        const target = a.target_person.toLowerCase();
+        // Check if this person already sent us something today
+        const alreadyResponded = recentSenders.some((s: string) => s.includes(target) || target.includes(s.split(' ')[0]?.toLowerCase()));
+        if (alreadyResponded && (a.type === 'email' || a.title?.toLowerCase().includes('follow up'))) {
+          qualityIssues.push(`Removed "${a.title}" — ${a.target_person} already communicated today`);
+          return false;
+        }
+        return true;
+      });
+    }
+
+    // Check 2: Actions about dismissed entities
+    if (brief.actions) {
+      brief.actions = brief.actions.filter((a: any) => {
+        if (!a.target_person) return true;
+        const dismissed = db.prepare(
+          "SELECT 1 FROM entities WHERE canonical_name LIKE ? AND user_dismissed = 1"
+        ).get(`%${a.target_person}%`) as any;
+        if (dismissed) {
+          qualityIssues.push(`Removed "${a.title}" — ${a.target_person} is dismissed`);
+          return false;
+        }
+        return true;
+      });
+    }
+
+    // Check 3: Empty or malformed output
+    if (!brief.headline || brief.headline.length < 10) {
+      qualityIssues.push('Headline missing or too short — keeping previous');
+      const prevBrief = (db.prepare("SELECT value FROM graph_state WHERE key = 'intelligence_brief'").get() as any)?.value;
+      if (prevBrief) {
+        const prev = JSON.parse(prevBrief);
+        brief.headline = prev.headline;
+        brief.the_one_thing = brief.the_one_thing || prev.the_one_thing;
+      }
+    }
+
+    // Check 4: Duplicate actions (same title as previous cycle)
+    if (brief.actions) {
+      const prevActionsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'intelligence_actions'").get() as any)?.value;
+      if (prevActionsRaw) {
+        const prevTitles = new Set(JSON.parse(prevActionsRaw).map((a: any) => a.title?.toLowerCase()));
+        const beforeCount = brief.actions.length;
+        // Don't remove — just flag. Same recommendation twice might be intentional.
+        for (const a of brief.actions) {
+          if (prevTitles.has(a.title?.toLowerCase())) {
+            qualityIssues.push(`Repeated action: "${a.title}" (was in previous cycle too)`);
+          }
+        }
+      }
+    }
+
+    if (qualityIssues.length > 0) {
+      console.log(`      Quality gate: ${qualityIssues.length} issues caught`);
+      for (const issue of qualityIssues) console.log(`        - ${issue}`);
+    } else {
+      console.log('      Quality gate: passed');
+    }
+
+    // Store quality issues for UI display
+    db.prepare(
+      "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('intelligence_quality', ?, datetime('now'))"
+    ).run(JSON.stringify({ issues: qualityIssues, checked_at: new Date().toISOString() }));
+
     // Store everything
     db.prepare(
       "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('intelligence_brief', ?, datetime('now'))"
