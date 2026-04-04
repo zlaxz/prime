@@ -561,14 +561,31 @@ export async function scanSentMail(
   // ============================================================
   // PHASE D: Create items for Zach-initiated threads (uses DeepSeek)
   // ============================================================
+  // Create items for threads where Zach sent the latest message but the thread
+  // either doesn't exist in KB OR exists but hasn't been updated since Zach replied.
+  // This ensures Prime knows about EVERY email Zach sends, not just ones he initiated.
   const newThreads = threadData.filter(td => {
+    if (!td.userSentLast) return false; // Only care about threads where Zach was last to send
     const sourceRef = `thread:${td.id}`;
-    const exists = db.prepare('SELECT 1 FROM knowledge WHERE source_ref = ?').get(sourceRef);
-    return !exists && td.userSentFirst;
+    const existing = db.prepare('SELECT id, source_date, source FROM knowledge WHERE source_ref = ?').get(sourceRef) as any;
+    if (!existing) {
+      // Thread not in KB at all — create it
+      return true;
+    }
+    // Thread exists — check if the inbox version has been updated with Zach's reply
+    // If the KB item is older than the thread's last message, it needs updating
+    if (existing.source === 'gmail' && td.lastDate) {
+      const kbDate = new Date(existing.source_date).getTime();
+      const threadDate = new Date(td.lastDate).getTime();
+      if (threadDate > kbDate + 60000) { // Thread is newer by >1 min
+        return true; // Will upsert via insertKnowledge (source_ref match)
+      }
+    }
+    return false;
   });
 
   if (newThreads.length > 0) {
-    console.log(`  Phase D: Creating ${newThreads.length} items for Zach-initiated threads...`);
+    console.log(`  Phase D: Creating/updating ${newThreads.length} items for Zach's sent messages...`);
     const CONCURRENCY = 5;
 
     for (let i = 0; i < newThreads.length; i += CONCURRENCY) {
