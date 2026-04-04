@@ -136,10 +136,24 @@ async function tick() {
       }
     } catch {}
 
-    // Send daily intelligence email via Quinn
+    // Send DAILY intelligence email via Quinn — ONCE per day, morning only
     try {
-      const { sendDailyIntelligenceEmail } = await import('./daily-email.js');
-      await sendDailyIntelligenceEmail(db);
+      const lastEmailRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'last_quinn_email'").get() as any)?.value;
+      const lastEmail = lastEmailRaw ? new Date(JSON.parse(lastEmailRaw)).getTime() : 0;
+      const hoursSinceEmail = (Date.now() - lastEmail) / 3600000;
+      const currentHour = new Date().getHours();
+
+      // Only send if: >20 hours since last email AND it's between 6-9am
+      if (hoursSinceEmail > 20 && currentHour >= 6 && currentHour <= 9) {
+        const { sendDailyIntelligenceEmail } = await import('./daily-email.js');
+        const sent = await sendDailyIntelligenceEmail(db);
+        if (sent) {
+          db.prepare(
+            "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_quinn_email', ?, datetime('now'))"
+          ).run(JSON.stringify(new Date().toISOString()));
+          console.log('[shift]   Quinn daily email sent');
+        }
+      }
     } catch {}
 
     db.prepare(
