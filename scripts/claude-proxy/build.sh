@@ -13,6 +13,9 @@ mkdir -p "$APP_DIR"
 echo "Compiling claude-proxy..."
 swiftc "$DIR/main.swift" -o "$BINARY" -framework Cocoa -O
 
+echo "Code-signing binary..."
+codesign --force --sign - "$BINARY" 2>/dev/null
+
 echo "Creating launchd plist..."
 cat > "$HOME/Library/LaunchAgents/com.prime.claude-proxy.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
