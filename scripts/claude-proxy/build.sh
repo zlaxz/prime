@@ -10,11 +10,20 @@ BINARY="$APP_DIR/claude-proxy"
 
 mkdir -p "$APP_DIR"
 
-echo "Compiling claude-proxy..."
-swiftc "$DIR/main.swift" -o "$BINARY" -framework Cocoa -O
+# Only recompile if source changed (prevents Keychain trust invalidation)
+SOURCE_HASH=$(shasum "$DIR/main.swift" | cut -d' ' -f1)
+BUILT_HASH=""
+[ -f "$APP_DIR/.source_hash" ] && BUILT_HASH=$(cat "$APP_DIR/.source_hash")
 
-echo "Code-signing binary..."
-codesign --force --sign - "$BINARY" 2>/dev/null
+if [ "$SOURCE_HASH" != "$BUILT_HASH" ] || [ ! -f "$BINARY" ]; then
+  echo "Compiling claude-proxy (source changed)..."
+  swiftc "$DIR/main.swift" -o "$BINARY" -framework Cocoa -O
+  codesign --force --sign - "$BINARY" 2>/dev/null
+  echo "$SOURCE_HASH" > "$APP_DIR/.source_hash"
+  echo "⚠️  Binary rebuilt — you may need to approve Keychain access on Mac Mini screen"
+else
+  echo "claude-proxy binary unchanged — skipping recompile (preserves Keychain trust)"
+fi
 
 echo "Creating launchd plist..."
 cat > "$HOME/Library/LaunchAgents/com.prime.claude-proxy.plist" << PLIST
