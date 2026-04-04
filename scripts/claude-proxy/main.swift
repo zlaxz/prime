@@ -206,7 +206,7 @@ class HTTPServer {
 
         // Build claude -p command
         // Allow enough turns for tool use (web search, MCP calls)
-        let maxTurns = (extraArgs.contains("--max-turns")) ? [] : ["--max-turns", "5"]
+        let maxTurns = (extraArgs.contains("--max-turns")) ? [] : ["--max-turns", "10"]
         var args = ["-p", "--output-format", "json"] + maxTurns + extraArgs
 
         // Load MCP config if available

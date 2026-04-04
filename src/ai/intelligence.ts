@@ -179,7 +179,7 @@ function buildPersonContexts(db: Database.Database, filters: EntityFilters): Map
 
       // Still no entity — use first non-self contact as key
       if (!entityId) {
-        entityName = contacts[0];
+        entityName = contacts[0] || 'unknown';
         entityId = `unresolved:${entityName!.toLowerCase()}`;
       }
     }

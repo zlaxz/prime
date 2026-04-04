@@ -97,6 +97,19 @@ async function tick() {
   const lastFull = lastFullRaw ? new Date(JSON.parse(lastFullRaw)).getTime() : 0;
 
   if (Date.now() - lastFull > 4 * HOUR_MS) {
+    // Run dream pipeline FIRST (entity profiles, project profiles, commitments)
+    // Intelligence cycle reads these outputs, so they must be fresh
+    console.log('[shift]   Running dream pipeline (project/entity profiles, commitments)...');
+    try {
+      const { runDreamPipeline } = await import('./dream.js');
+      const dreamResult = await runDreamPipeline({ quick: false });
+      const succeeded = dreamResult.tasks.filter((t: any) => t.status === 'success').length;
+      const failed = dreamResult.tasks.filter((t: any) => t.status === 'failed').length;
+      console.log('[shift]   Dream: ' + succeeded + ' succeeded, ' + failed + ' failed (' + dreamResult.total_duration.toFixed(0) + 's)');
+    } catch (err: any) {
+      console.log('[shift]   Dream pipeline failed: ' + (err.message || '').slice(0, 60));
+    }
+
     console.log(`[shift]   Running full intelligence cycle...`);
 
     try {

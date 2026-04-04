@@ -96,7 +96,44 @@ function assembleContext(db: Database.Database): string {
     sections.push('');
   }
 
-  // 4. World narrative (from Task 09)
+  // 3b. TEAM ACTIVITY — what team members are doing (from their email/calendar)
+  const teamMembers = db.prepare(
+    "SELECT email, name, role FROM team_members WHERE active = 1 AND relationship_to_ceo != 'self'"
+  ).all() as any[];
+
+  if (teamMembers.length > 0) {
+    sections.push('## TEAM ACTIVITY\n');
+    for (const member of teamMembers) {
+      const memberItems = db.prepare(`
+        SELECT title, summary, source_date, project, source
+        FROM knowledge
+        WHERE source_account = ? AND source_date >= datetime('now', '-7 days')
+        ORDER BY source_date DESC LIMIT 10
+      `).all(member.email) as any[];
+
+      const memberCommitments = db.prepare(`
+        SELECT text, project, due_date, state FROM commitments
+        WHERE owner LIKE ? AND state NOT IN ('fulfilled', 'cancelled', 'archived')
+      `).all(`%${member.name.split(' ')[0]}%`) as any[];
+
+      if (memberItems.length > 0 || memberCommitments.length > 0) {
+        sections.push(`### ${member.name} (${member.role})`);
+        sections.push(`Recent activity: ${memberItems.length} items in last 7 days`);
+        for (const item of memberItems.slice(0, 5)) {
+          sections.push(`  - ${item.source_date?.slice(0, 10) || '?'} [${item.source}] ${item.title?.slice(0, 100)}`);
+        }
+        if (memberCommitments.length > 0) {
+          sections.push(`Open commitments:`);
+          for (const c of memberCommitments) {
+            sections.push(`  - [${c.state}] ${c.text}${c.due_date ? ' (due: ' + c.due_date.slice(0, 10) + ')' : ''}`);
+          }
+        }
+        sections.push('');
+      }
+    }
+  }
+
+    // 4. World narrative (from Task 09)
   const narrativeRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'world_narrative'").get() as any)?.value;
   if (narrativeRaw) {
     sections.push('## WORLD NARRATIVE\n');

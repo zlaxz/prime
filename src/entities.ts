@@ -141,7 +141,7 @@ export function mergeEntities(db: Database.Database, fromName: string, toName: s
   const mentions = db.prepare('SELECT * FROM entity_mentions WHERE entity_id = ?').all(fromEntity.id) as any[];
   for (const m of mentions) {
     try {
-      db.prepare('INSERT OR IGNORE INTO entity_mentions (id, entity_id, knowledge_item_id, role, direction, mention_date) VALUES (?, ?, ?, ?, ?, ?)')
+      db.prepare('INSERT OR IGNORE INTO entity_mentions (id, entity_id, knowledge_item_id, role, direction, mention_date, source_account) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(uuid(), toEntity.id, m.knowledge_item_id, m.role, m.direction, m.mention_date);
     } catch {}
   }
@@ -330,7 +330,7 @@ export function buildEntityGraph(
       // Create mention
       const direction = meta.waiting_on_user === false ? 'outbound' : (meta.waiting_on_user === true ? 'inbound' : null);
       try {
-        db.prepare('INSERT OR IGNORE INTO entity_mentions (id, entity_id, knowledge_item_id, role, direction, mention_date) VALUES (?, ?, ?, ?, ?, ?)')
+        db.prepare('INSERT OR IGNORE INTO entity_mentions (id, entity_id, knowledge_item_id, role, direction, mention_date, source_account) VALUES (?, ?, ?, ?, ?, ?, ?)')
           .run(uuid(), entityId, item.id, 'mentioned', direction, item.source_date);
         stats.mentions++;
       } catch {}
@@ -360,7 +360,7 @@ export function buildEntityGraph(
       }
 
       try {
-        db.prepare('INSERT OR IGNORE INTO entity_mentions (id, entity_id, knowledge_item_id, role, direction, mention_date) VALUES (?, ?, ?, ?, ?, ?)')
+        db.prepare('INSERT OR IGNORE INTO entity_mentions (id, entity_id, knowledge_item_id, role, direction, mention_date, source_account) VALUES (?, ?, ?, ?, ?, ?, ?)')
           .run(uuid(), entityId, item.id, 'mentioned', null, item.source_date);
         stats.mentions++;
       } catch {}

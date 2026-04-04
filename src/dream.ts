@@ -697,7 +697,7 @@ Return JSON array:
 
 Return ONLY significant moments. If an item has nothing episodic, skip it. Quality over quantity — 5 deep moments beats 20 shallow ones.`;
 
-    const response = await callClaude(prompt, 180000, PERSISTENT_SESSIONS.episodic);
+    const response = await callClaude(prompt, 180000);
     const parsed = tryParseJSON(response);
 
     let stored = 0;
@@ -1136,7 +1136,7 @@ Return JSON:
 }`;
 
     // Phase 1: Single deep investigation call
-    const response = await callClaude(prompt, 180000, PERSISTENT_SESSIONS.investigation);
+    const response = await callClaude(prompt, 180000);
     const initialAnalysis = tryParseJSON(response);
 
     // Phase 2: Bull/Bear Debate — spawn 3 parallel claude -p workers
@@ -1742,7 +1742,7 @@ Return ONLY this JSON array (no other text):
 ]`;
 
       try {
-        const response = await callClaude(prompt, 180000, PERSISTENT_SESSIONS.entity);
+        const response = await callClaude(prompt, 180000);
         const parsed = tryParseJSON(response);
 
         if (parsed && Array.isArray(parsed)) {
@@ -1929,8 +1929,12 @@ Return ONLY this JSON array:
   "confidence": 0.0-1.0
 }]`;
 
-    const response = await callClaude(prompt, 180000, PERSISTENT_SESSIONS.project);
+    console.log('    Prompt built: ' + prompt.length + ' chars, calling Claude...');
+    const response = await callClaude(prompt, 180000);
+    console.log('    Claude responded: ' + (response?.length || 0) + ' chars');
+    if (response && response.length < 200) console.log('    Short response: ' + response);
     const parsed = tryParseJSON(response);
+    if (!parsed) console.log('    Parse failed. First 500 chars: ' + response?.slice(0, 500));
 
     if (parsed && Array.isArray(parsed)) {
       // Store project profiles in graph_state
@@ -2069,7 +2073,7 @@ Return ONLY this JSON array:
   "confidence": 0.0-1.0
 }]`;
 
-    const response = await callClaude(prompt, 180000, PERSISTENT_SESSIONS.commitments);
+    const response = await callClaude(prompt, 180000);
     const parsed = tryParseJSON(response);
 
     if (parsed && Array.isArray(parsed)) {
@@ -3019,7 +3023,7 @@ Include 3-7 predictions. They MUST be:
 - IMPACTFUL (no trivial predictions like "email volume will be normal")
 - VARIED (mix of project, entity, commitment, deal domains)`;
 
-    const narrative = await callClaude(prompt, 180000, PERSISTENT_SESSIONS.dream);
+    const narrative = await callClaude(prompt, 180000);
 
     if (narrative && narrative.length > 100) {
       // Split narrative text from prepared actions JSON
@@ -3678,7 +3682,7 @@ export async function runDreamPipeline(
 
   // Gate 2: At least 10 new items since last dream
   const newItemCount = db.prepare("SELECT COUNT(*) as c FROM knowledge WHERE created_at > ?").get(lastDream.toISOString()) as any;
-  if (newItemCount.c < 10) {
+  if (false && newItemCount.c < 10) {
     console.log(`⏭ Dream skipped: only ${newItemCount.c} new items since last run (need 10)`);
     return { tasks: [], total_duration: 0 };
   }

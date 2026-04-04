@@ -94,6 +94,44 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
     }
   }
 
+    // ── TEAM MEMBER SYNC (via service account) ──
+  // Sync Gmail + Calendar for non-CEO team members using domain-wide delegation
+  try {
+    const teamMembers = db.prepare(
+      "SELECT email, name, role FROM team_members WHERE active = 1 AND relationship_to_ceo != 'self'"
+    ).all() as any[];
+
+    for (const member of teamMembers) {
+      if (member.sync_gmail) {
+        try {
+          const { items } = await scanGmail(db, {
+            days: 7,
+            maxThreads: 50,
+            sourceAccount: member.email,
+            useServiceAccount: true,
+          });
+          results.push({ source: `gmail:${member.name}`, items });
+        } catch (err: any) {
+          results.push({ source: `gmail:${member.name}`, items: 0, error: err.message?.slice(0, 80) });
+        }
+      }
+
+      if (member.sync_calendar) {
+        try {
+          const { scanCalendarForAccount } = await import('./calendar.js');
+          if (typeof scanCalendarForAccount === 'function') {
+            const { items } = await scanCalendarForAccount(db, member.email);
+            results.push({ source: `calendar:${member.name}`, items });
+          }
+        } catch (err: any) {
+          results.push({ source: `calendar:${member.name}`, items: 0, error: err.message?.slice(0, 80) });
+        }
+      }
+    }
+  } catch (teamErr: any) {
+    console.log(`  Team sync error: ${teamErr.message?.slice(0, 60)}`);
+  }
+
   // ── CALENDAR-TRIGGERED MEETING PREP ──
   // After sync, check if there's a meeting in the next 2 hours.
   // If so, store it in graph_state for the COS to pick up via prime_proactive_alerts.

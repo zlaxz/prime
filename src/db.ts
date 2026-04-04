@@ -676,6 +676,23 @@ function initSchema(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_chat_session_threads ON chat_session_threads(thread_id);
 
     -- ============================================================
+    -- Team Members — org-wide intelligence for Zach's COS
+    -- Prime sees the whole org but filters through Zach's lens
+    -- ============================================================
+    CREATE TABLE IF NOT EXISTS team_members (
+      email TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      role TEXT DEFAULT 'employee',
+      relationship_to_ceo TEXT DEFAULT 'reports_to',
+      sync_gmail INTEGER DEFAULT 1,
+      sync_calendar INTEGER DEFAULT 1,
+      sync_drive INTEGER DEFAULT 0,
+      active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+
+    -- ============================================================
     -- Deep Sessions — strategic work sessions that SOLVE problems
     -- Single claude -p call with all tools, produces finished work
     -- ============================================================
@@ -875,6 +892,7 @@ export interface KnowledgeItem {
   embedding?: number[];
   artifact_path?: string;
   metadata?: Record<string, any>;
+  source_account?: string;
 }
 
 export function insertKnowledge(db: Database.Database, item: KnowledgeItem) {
@@ -883,15 +901,15 @@ export function insertKnowledge(db: Database.Database, item: KnowledgeItem) {
     : null;
 
   // Upsert: if source_ref already exists, reuse the existing ID to trigger OR REPLACE on PK
-  const existing = db.prepare('SELECT id FROM knowledge WHERE source_ref = ?').get(item.source_ref) as any;
+  const existing = db.prepare('SELECT id FROM knowledge WHERE source_ref = ? AND (source_account = ? OR source_account IS NULL)').get(item.source_ref, item.source_account || null) as any;
   const id = existing?.id || item.id;
 
   db.prepare(
     `INSERT OR REPLACE INTO knowledge
     (id, title, summary, source, source_ref, source_date, contacts, organizations,
      decisions, commitments, action_items, tags, project, importance, embedding,
-     artifact_path, metadata, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+     artifact_path, metadata, source_account, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
   ).run(
     id,
     item.title,
@@ -910,6 +928,7 @@ export function insertKnowledge(db: Database.Database, item: KnowledgeItem) {
     embeddingBlob,
     item.artifact_path || null,
     JSON.stringify(item.metadata || {}),
+    item.source_account || null,
   );
 }
 

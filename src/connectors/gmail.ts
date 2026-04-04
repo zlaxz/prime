@@ -7,6 +7,26 @@ import { insertKnowledge, setConfig, getConfig, type KnowledgeItem } from '../db
 import { generateEmbedding } from '../embedding.js';
 import { extractIntelligence, extractIntelligenceV2, toV1 } from '../ai/extract.js';
 
+import { existsSync, readFileSync } from 'fs';
+import { homedir } from 'os';
+import { join } from 'path';
+
+const SERVICE_ACCOUNT_PATH = join(homedir(), '.prime', 'service-account.json');
+
+// Get an authenticated Gmail/Calendar client for any team member via service account
+export function getServiceAccountAuth(targetEmail: string, scopes: string[]) {
+  if (!existsSync(SERVICE_ACCOUNT_PATH)) return null;
+  const keyFile = JSON.parse(readFileSync(SERVICE_ACCOUNT_PATH, 'utf-8'));
+  const { JWT } = google.auth as any;
+  const auth = new JWT({
+    email: keyFile.client_email,
+    key: keyFile.private_key,
+    scopes,
+    subject: targetEmail,
+  });
+  return auth;
+}
+
 const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.send',
@@ -89,42 +109,52 @@ export async function connectGmail(db: Database.Database): Promise<boolean> {
 
 export async function scanGmail(
   db: Database.Database,
-  options: { days?: number; maxThreads?: number } = {}
+  options: { days?: number; maxThreads?: number; sourceAccount?: string; useServiceAccount?: boolean } = {}
 ): Promise<{ threads: number; items: number }> {
   const days = options.days || 90;
   const maxThreads = options.maxThreads || 500;
 
   const tokens = getConfig(db, 'gmail_tokens');
   const apiKey = getConfig(db, 'openai_api_key');
-  if (!tokens) throw new Error('Gmail not connected. Run: prime connect gmail');
+  if (!tokens && !options.useServiceAccount) throw new Error('Gmail not connected. Run: prime connect gmail');
   if (!apiKey) throw new Error('No API key. Run: prime init');
 
   const clientId = CLIENT_ID || getConfig(db, 'google_client_id') || '';
   const clientSecret = CLIENT_SECRET || getConfig(db, 'google_client_secret') || '';
 
-  if (!clientId || !clientSecret) {
+  if (!clientId && !clientSecret && !options.useServiceAccount) {
     throw new Error('Google OAuth credentials missing. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env');
   }
 
-  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, REDIRECT_URI);
-  oauth2Client.setCredentials(tokens);
+  // Service account path for team member accounts
+  let authClient: any;
+  if (options.useServiceAccount && options.sourceAccount) {
+    const saAuth = getServiceAccountAuth(options.sourceAccount, ['https://www.googleapis.com/auth/gmail.readonly']);
+    if (!saAuth) throw new Error('Service account not found at ' + SERVICE_ACCOUNT_PATH);
+    authClient = saAuth;
+  } else {
+    const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, REDIRECT_URI);
+    oauth2Client.setCredentials(tokens);
+    authClient = oauth2Client;
 
-  // Handle token refresh — persist new tokens automatically
-  oauth2Client.on('tokens', (newTokens) => {
-    const current = getConfig(db, 'gmail_tokens');
-    setConfig(db, 'gmail_tokens', { ...current, ...newTokens });
-  });
+    // Handle token refresh — persist new tokens automatically
+    oauth2Client.on('tokens', (newTokens) => {
+      const current = getConfig(db, 'gmail_tokens');
+      setConfig(db, 'gmail_tokens', { ...current, ...newTokens });
+    });
 
-  // Force token refresh if expired
-  try {
-    const { credentials } = await oauth2Client.refreshAccessToken();
-    oauth2Client.setCredentials(credentials);
-    setConfig(db, 'gmail_tokens', credentials);
-  } catch (refreshErr: any) {
-    throw new Error(`Gmail token refresh failed: ${refreshErr.message}. Run: recall connect gmail`);
+    // Force token refresh if expired
+    try {
+      const { credentials } = await oauth2Client.refreshAccessToken();
+      oauth2Client.setCredentials(credentials);
+      setConfig(db, 'gmail_tokens', credentials);
+    } catch (refreshErr: any) {
+      throw new Error(`Gmail token refresh failed: ${refreshErr.message}. Run: recall connect gmail`);
+    }
+    authClient = oauth2Client;
   }
 
-  const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+  const gmail = google.gmail({ version: 'v1', auth: authClient });
 
   // Calculate date threshold
   const afterDate = new Date(Date.now() - days * 86400000);
@@ -251,7 +281,8 @@ export async function scanGmail(
   // Dedup: skip threads already in the knowledge base
   const beforeDedup = threadData.length;
   const deduped = threadData.filter(td => {
-    const existing = db.prepare('SELECT id FROM knowledge WHERE source_ref = ?').get(`thread:${td.id}`);
+    const sourceAccount = options.sourceAccount || userEmail;
+      const existing = db.prepare('SELECT id FROM knowledge WHERE source_ref = ? AND (source_account = ? OR source_account IS NULL)').get(`thread:${td.id}`, sourceAccount);
     return !existing;
   });
   if (beforeDedup - deduped.length > 0) {
@@ -291,6 +322,7 @@ export async function scanGmail(
         title: ext.title || `Email: ${td.subject}`,
         summary: ext.summary,
         source: 'gmail',
+        source_account: options.sourceAccount || userEmail,
         source_ref: `thread:${td.id}`,
         source_date: td.lastDate ? new Date(td.lastDate).toISOString() : undefined,
         contacts: ext.contacts,
@@ -606,6 +638,7 @@ export async function scanSentMail(
             title: extracted.title || `Sent: ${td.subject}`,
             summary: extracted.summary,
             source: 'gmail-sent',
+        source_account: options?.sourceAccount || userEmail,
             source_ref: `thread:${td.id}`,
             source_date: td.lastDate ? new Date(td.lastDate).toISOString() : undefined,
             contacts: extracted.contacts,
