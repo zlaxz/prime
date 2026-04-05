@@ -301,6 +301,7 @@ export async function scanGmail(
     /SeatGeek|OpenTable|Yelp|DoorDash/i, /Gusto.*new tasks/i,
     /pdfFiller|RingCentral|Mailsuite/i, /surveymonkey|typeform/i,
     /Amazon Business|promo.*code/i, /Frank Kern/i,
+    /quinn@recaptureinsurance\.com/i, // NEVER ingest Quinn's emails — system output, not source data
   ];
   const beforeNoise = threadData.length;
   const filtered = threadData.filter(td => {
