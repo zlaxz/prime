@@ -200,7 +200,7 @@ async function loadEntityRegistry(): Promise<{ contacts: string[]; projects: str
     // CANONICAL project list — hardcoded to prevent garbage project names from propagating
     const projects = [
       'Recapture Insurance', 'Carefront', 'Foresite', 'Prime',
-      'LTC Program', 'Quant Engine', 'COI Processing',
+      'Quant Engine', 'COI Processing',
       'MGA Insurance Underwriting and M&A Insights',
       'PlacementIQ', 'Stock Insurance Group', 'SOVEREIGN',
       'Alliance/Crest Settlement (Legal)', 'AgencyEquity',
@@ -297,6 +297,19 @@ function validateExtractionV2(result: ExtractionResultV2, sourceContent: string)
   // Validate project evidence — must have quotes
   if (result.project && (!result.project.evidence || result.project.evidence.length === 0)) {
     result.project = null;
+  }
+
+  // Normalize project aliases
+  const PROJECT_ALIASES: Record<string, string> = {
+    "ltc program": "Carefront",
+    "ltc": "Carefront",
+    "long-term care": "Carefront",
+    "foresite acquisition": "Foresite",
+    "foresite healthcare": "Foresite",
+  };
+  if (result.project) {
+    const alias = PROJECT_ALIASES[result.project.name.toLowerCase()];
+    if (alias) result.project.name = alias;
   }
 
   // Validate project name against known projects

@@ -2155,7 +2155,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     
     const id = crypto.randomUUID();
     db.prepare(
-      "INSERT INTO brain_corrections (id, original_claim, corrected_claim, correction_type, affected_project, propagation_status, created_at) VALUES (?, ?, ?, 'fact', ?, 'pending', datetime('now'))"
+      "INSERT INTO brain_corrections (id, original_claim, corrected_claim, correction_type, affected_project, propagation_status) VALUES (?, ?, ?, 'fact', ?, 'pending')"
     ).run(id, claim, correction, project || null);
 
     // Also store as a knowledge item so agents find it immediately
