@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { getConfig, searchByFTS } from './db.js';
 import { callClaude } from './dream.js';
+import { retrieveDeepContext } from './source-retrieval.js';
 import { syncAll } from './connectors/index.js';
 
 // ============================================================
@@ -29,7 +30,7 @@ interface TaskResult {
 // Gathers ALL outputs from the dream pipeline's perception tasks
 // into one structured context document for Claude to reason about.
 
-function assembleContext(db: Database.Database): string {
+async function assembleContext(db: Database.Database): Promise<string> {
   const sections: string[] = [];
 
   // 0. USER CORRECTIONS — ABSOLUTE TRUTH (must be at top of context so LLM can't miss them)
@@ -79,6 +80,33 @@ function assembleContext(db: Database.Database): string {
       sections.push(`Next action: ${p.next_action || 'none identified'}`);
       sections.push('');
     }
+  }
+
+
+  // 1b. GO TO THE SHELF — retrieve actual source content for active projects
+  // Index cards tell us what's relevant. The shelf has the actual content.
+  try {
+    const activeProjects = profilesRaw ? JSON.parse(profilesRaw)
+      .filter((p: any) => p.status !== 'archived' && p.status !== 'dead')
+      .slice(0, 5) : [];
+
+    for (const project of activeProjects) {
+      const recentItems = db.prepare(
+        'SELECT title, source, source_ref, source_date, metadata FROM knowledge WHERE project = ? AND source IN (\'gmail\', \'gmail-sent\', \'otter\', \'fireflies\') ORDER BY source_date DESC LIMIT 5'
+      ).all(project.project) as any[];
+
+      if (recentItems.length > 0) {
+        const deepContent = await retrieveDeepContext(db, recentItems, 3);
+        if (deepContent && deepContent.length > 100) {
+          sections.push('## ACTUAL SOURCE MATERIAL: ' + project.project + '\n');
+          sections.push(deepContent.slice(0, 8000));
+          sections.push('');
+        }
+      }
+    }
+  } catch (err: any) {
+    // Source retrieval is best-effort — don't fail the cycle
+    console.log('    Source retrieval warning: ' + (err.message || '').slice(0, 80));
   }
 
   // 2. Entity profiles (from Task 06)
@@ -498,7 +526,7 @@ export async function runIntelligenceCycle(db: Database.Database): Promise<TaskR
 
     // Phase 1: Assemble all pipeline outputs into context
     console.log('    Phase 1: Assembling context from all pipeline outputs...');
-    const pipelineContext = assembleContext(db);
+    const pipelineContext = await assembleContext(db);
     console.log(`      ${pipelineContext.length} chars of pipeline context`);
 
     // Phase 2: Detect anomalies (pure SQL)
