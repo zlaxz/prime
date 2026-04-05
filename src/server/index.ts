@@ -2117,6 +2117,60 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       res.json(briefing);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+
+  // ── Wiki Pages + PM Reports API ──
+  
+  // Get all compiled wiki pages
+  app.get('/api/wiki', (req, res) => {
+    const pages = db.prepare(
+      "SELECT page_type, subject_name, content, compiled_at, version FROM compiled_pages ORDER BY page_type, compiled_at DESC"
+    ).all();
+    res.json({ pages });
+  });
+
+  // Get a specific wiki page
+  app.get('/api/wiki/:type/:subject', (req, res) => {
+    const page = db.prepare(
+      "SELECT * FROM compiled_pages WHERE page_type = ? AND subject_id = ?"
+    ).get(req.params.type, req.params.subject);
+    if (!page) return res.status(404).json({ error: 'Page not found' });
+    res.json(page);
+  });
+
+  // Get PM agent state (memory, concerns, session info)
+  app.get('/api/pm/:project', (req, res) => {
+    const state = db.prepare(
+      "SELECT * FROM agent_state WHERE agent_type = 'pm' AND subject_id = ?"
+    ).get(req.params.project);
+    if (!state) return res.status(404).json({ error: 'PM not found' });
+    res.json(state);
+  });
+
+  // Submit a correction from the web UI
+  app.post('/api/correct', async (req, res) => {
+    const { claim, correction, project, entity } = req.body;
+    if (!claim || !correction) return res.status(400).json({ error: 'claim and correction required' });
+    
+    const id = require('crypto').randomUUID();
+    db.prepare(
+      "INSERT INTO brain_corrections (id, original_claim, corrected_claim, correction_type, affected_project, propagation_status, created_at) VALUES (?, ?, ?, 'fact', ?, 'pending', datetime('now'))"
+    ).run(id, claim, correction, project || null);
+
+    // Also store as a knowledge item so agents find it immediately
+    const { v4: uuid } = await import('uuid');
+    db.prepare(
+      "INSERT INTO knowledge (id, title, summary, source, source_ref, source_date, importance, provenance, project) VALUES (?, ?, ?, 'correction', ?, datetime('now'), 'critical', 'correction', ?)"
+    ).run(uuid(), 'CORRECTION: ' + correction.slice(0, 80), correction, 'correction:' + id, project || null);
+
+    // Mark affected wiki pages stale
+    if (project) {
+      db.prepare("UPDATE compiled_pages SET stale = 1 WHERE subject_id = ?").run(project);
+    }
+
+    res.json({ success: true, id });
+  });
+
+
     }
   });
 
