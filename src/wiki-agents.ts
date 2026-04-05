@@ -212,17 +212,20 @@ export async function compileAllPages(db: Database.Database): Promise<{ projects
     ORDER BY last_activity DESC LIMIT 8
   `).all() as any[];
 
-  console.log('    Compiling ' + projects.length + ' project wiki pages (parallel)...');
-  const projectResults = await Promise.allSettled(
-    projects.map(p => compileProjectPage(db, p.project).then(() => {
-      projectCount++;
-      console.log('      ' + p.project + ' compiled');
-      return p.project;
-    }))
-  );
-  for (const r of projectResults) {
-    if (r.status === 'rejected') {
-      errors.push('project: ' + (r.reason?.message || '').slice(0, 80));
+  console.log('    Compiling ' + projects.length + ' project wiki pages (3 concurrent)...');
+  const CONCURRENCY = 3;
+  for (let i = 0; i < projects.length; i += CONCURRENCY) {
+    const batch = projects.slice(i, i + CONCURRENCY);
+    const results = await Promise.allSettled(
+      batch.map(p => compileProjectPage(db, p.project).then(() => {
+        projectCount++;
+        console.log('      ' + p.project + ' compiled');
+      }))
+    );
+    for (const r of results) {
+      if (r.status === 'rejected') {
+        errors.push('project: ' + (r.reason?.message || '').slice(0, 80));
+      }
     }
   }
 
@@ -240,17 +243,19 @@ export async function compileAllPages(db: Database.Database): Promise<{ projects
     ORDER BY mentions DESC LIMIT 10
   `).all() as any[];
 
-  console.log('    Compiling ' + entities.length + ' entity wiki pages (parallel)...');
-  const entityResults = await Promise.allSettled(
-    entities.map(e => compileEntityPage(db, e.canonical_name, e.id).then(() => {
-      entityCount++;
-      console.log('      ' + e.canonical_name + ' compiled');
-      return e.canonical_name;
-    }))
-  );
-  for (const r of entityResults) {
-    if (r.status === 'rejected') {
-      errors.push('entity: ' + (r.reason?.message || '').slice(0, 80));
+  console.log('    Compiling ' + entities.length + ' entity wiki pages (3 concurrent)...');
+  for (let i = 0; i < entities.length; i += CONCURRENCY) {
+    const batch = entities.slice(i, i + CONCURRENCY);
+    const results = await Promise.allSettled(
+      batch.map(e => compileEntityPage(db, e.canonical_name, e.id).then(() => {
+        entityCount++;
+        console.log('      ' + e.canonical_name + ' compiled');
+      }))
+    );
+    for (const r of results) {
+      if (r.status === 'rejected') {
+        errors.push('entity: ' + (r.reason?.message || '').slice(0, 80));
+      }
     }
   }
 
