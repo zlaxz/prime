@@ -110,6 +110,16 @@ async function tick() {
       console.log('[shift]   Dream pipeline failed: ' + (err.message || '').slice(0, 60));
     }
 
+    // Compile wiki pages (project + entity agents go to the shelf)
+    console.log('[shift]   Compiling wiki pages...');
+    try {
+      const { compileAllPages } = await import('./wiki-agents.js');
+      const wikiResult = await compileAllPages(db);
+      console.log('[shift]   Wiki: ' + wikiResult.projects + ' projects, ' + wikiResult.entities + ' entities compiled');
+    } catch (err: any) {
+      console.log('[shift]   Wiki compilation failed: ' + (err.message || '').slice(0, 60));
+    }
+
     console.log(`[shift]   Running full intelligence cycle...`);
 
     try {

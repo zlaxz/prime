@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { getConfig, searchByFTS } from './db.js';
 import { callClaude } from './dream.js';
 import { retrieveDeepContext } from './source-retrieval.js';
+import { getWikiContext } from './wiki-agents.js';
 import { syncAll } from './connectors/index.js';
 
 // ============================================================
@@ -541,13 +542,21 @@ export async function runIntelligenceCycle(db: Database.Database): Promise<TaskR
     const dayName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][now.getDay()];
     const dateStr = dayName + ', ' + now.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "America/Denver" });
 
-    const cosPrompt = [
+        // Load compiled wiki pages — these are authoritative, source-verified
+    const wikiContext = getWikiContext(db);
+    const hasWiki = wikiContext.length > 100 && !wikiContext.includes('No wiki pages');
+
+const cosPrompt = [
       'You are Prime, Zach Stock\'s AI Chief of Staff at Recapture Insurance.',
       'TODAY IS: ' + dateStr + '. Use the correct day of week for ALL dates.',
       '',
       'YOUR JOB: Produce a grounded morning intelligence brief. You have tools — USE THEM.',
       '',
       'PROCESS:',
+      hasWiki ? 'IMPORTANT: Wiki pages have been compiled by research agents who already read actual source material. Start by reading these — they are your primary context. Use tools only for follow-up questions or to verify changes since the wiki was last updated.' : 'No wiki pages available — use tools to research directly.',
+      '',
+      hasWiki ? wikiContext : '',
+      '',
       '1. Call prime_get_projects to see active projects and their status',
       '2. For the top 2-3 most important projects, call prime_search to find recent activity',
       '3. For critical items, call prime_retrieve to read ACTUAL source material (emails, documents)',
