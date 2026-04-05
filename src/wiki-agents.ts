@@ -212,15 +212,17 @@ export async function compileAllPages(db: Database.Database): Promise<{ projects
     ORDER BY last_activity DESC LIMIT 8
   `).all() as any[];
 
-  console.log('    Compiling ' + projects.length + ' project wiki pages...');
-  for (const p of projects) {
-    try {
-      await compileProjectPage(db, p.project);
+  console.log('    Compiling ' + projects.length + ' project wiki pages (parallel)...');
+  const projectResults = await Promise.allSettled(
+    projects.map(p => compileProjectPage(db, p.project).then(() => {
       projectCount++;
       console.log('      ' + p.project + ' compiled');
-    } catch (err: any) {
-      errors.push(p.project + ': ' + (err.message || '').slice(0, 80));
-      console.log('      ' + p.project + ' FAILED: ' + (err.message || '').slice(0, 60));
+      return p.project;
+    }))
+  );
+  for (const r of projectResults) {
+    if (r.status === 'rejected') {
+      errors.push('project: ' + (r.reason?.message || '').slice(0, 80));
     }
   }
 
@@ -238,15 +240,17 @@ export async function compileAllPages(db: Database.Database): Promise<{ projects
     ORDER BY mentions DESC LIMIT 10
   `).all() as any[];
 
-  console.log('    Compiling ' + entities.length + ' entity wiki pages...');
-  for (const e of entities) {
-    try {
-      await compileEntityPage(db, e.canonical_name, e.id);
+  console.log('    Compiling ' + entities.length + ' entity wiki pages (parallel)...');
+  const entityResults = await Promise.allSettled(
+    entities.map(e => compileEntityPage(db, e.canonical_name, e.id).then(() => {
       entityCount++;
       console.log('      ' + e.canonical_name + ' compiled');
-    } catch (err: any) {
-      errors.push(e.canonical_name + ': ' + (err.message || '').slice(0, 80));
-      console.log('      ' + e.canonical_name + ' FAILED: ' + (err.message || '').slice(0, 60));
+      return e.canonical_name;
+    }))
+  );
+  for (const r of entityResults) {
+    if (r.status === 'rejected') {
+      errors.push('entity: ' + (r.reason?.message || '').slice(0, 80));
     }
   }
 
