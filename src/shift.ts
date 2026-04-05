@@ -129,8 +129,10 @@ async function tick() {
     } catch {}
 
     try {
-      const { extractPlaybooks } = await import('./playbooks.js');
-      const result = await extractPlaybooks(db);
+      // DISABLED: playbook extractor creates self-teaching protocols that encourage speculation
+      // const { extractPlaybooks } = await import('./playbooks.js');
+      // const result = await extractPlaybooks(db);
+      const result = { status: 'skipped' } as any;
       if (result.status === 'success') {
         console.log(`[shift]   Playbooks: ${result.output?.playbooks_extracted} extracted`);
       }
