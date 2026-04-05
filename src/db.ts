@@ -691,6 +691,21 @@ function initSchema(db: Database.Database) {
       created_at TEXT DEFAULT (datetime('now'))
     );
 
+    -- Agent State — persistent identity, memory, and session tracking for wiki agents + PMs
+    CREATE TABLE IF NOT EXISTS agent_state (
+      agent_type TEXT NOT NULL,
+      subject_id TEXT NOT NULL,
+      soul TEXT,
+      memory TEXT,
+      concerns TEXT,
+      last_wiki_page TEXT,
+      conversation_history TEXT,
+      session_id TEXT,
+      last_run_at TEXT,
+      PRIMARY KEY (agent_type, subject_id)
+    );
+
+
 
     -- ============================================================
     -- Deep Sessions — strategic work sessions that SOLVE problems
