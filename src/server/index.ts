@@ -2117,6 +2117,8 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       res.json(briefing);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
 
   // ── Wiki Pages + PM Reports API ──
   
@@ -2168,10 +2170,6 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     }
 
     res.json({ success: true, id });
-  });
-
-
-    }
   });
 
   app.get('/api/entity', async (req, res) => {
