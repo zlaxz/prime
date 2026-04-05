@@ -161,7 +161,7 @@ export async function scanGmail(
   const afterEpoch = Math.floor(afterDate.getTime() / 1000);
 
   // Fetch threads with pagination to capture everything in the date range
-  const query = `after:${afterEpoch} -category:promotions -category:social -category:updates -from:noreply -from:no-reply`;
+  const query = `after:${afterEpoch} -category:promotions -category:social -category:updates -category:forums -from:noreply -from:no-reply -from:notifications -from:mailer -from:newsletter -from:digest -from:marketing -from:support -from:donotreply -from:info@`;
   const threads: { id: string; historyId?: string }[] = [];
   let pageToken: string | undefined;
 
@@ -292,6 +292,27 @@ export async function scanGmail(
   threadData.length = 0;
   threadData.push(...deduped);
 
+  
+  // Pre-extraction noise filter: skip items that are clearly not business intelligence
+  const NOISE_PATTERNS = [
+    /newsletter/i, /unsubscribe/i, /marketing.*email/i, /promotional/i,
+    /daily.*digest/i, /weekly.*report/i, /auto-?generated/i,
+    /noreply|no-reply|donotreply/i, /receipt.*payment/i,
+    /SeatGeek|OpenTable|Yelp|DoorDash/i, /Gusto.*new tasks/i,
+    /pdfFiller|RingCentral|Mailsuite/i, /surveymonkey|typeform/i,
+    /Amazon Business|promo.*code/i, /Frank Kern/i,
+  ];
+  const beforeNoise = threadData.length;
+  const filtered = threadData.filter(td => {
+    const text = (td.subject + ' ' + td.content).slice(0, 500);
+    return !NOISE_PATTERNS.some(p => p.test(text));
+  });
+  if (beforeNoise - filtered.length > 0) {
+    console.log('  Filtered ' + (beforeNoise - filtered.length) + ' noise threads');
+    threadData.length = 0;
+    threadData.push(...filtered);
+  }
+
   // Phase 2: AI extraction in parallel (Claude Code CLI calls)
   console.log(`  Extracting intelligence (${CONCURRENCY} concurrent)...`);
   let extracted = 0;
@@ -311,6 +332,11 @@ export async function scanGmail(
 
       const lastFromIsUser = td.lastFrom.toLowerCase().includes(userEmail.toLowerCase());
       const daysSinceLastMessage = Math.floor((Date.now() - new Date(td.lastDate).getTime()) / 86400000);
+
+      // Skip noise items (extraction identified as automated/marketing)
+      if (ext.tags?.includes('noise') || ext.title === '[NOISE]') {
+        return;
+      }
 
       let importance = ext.importance;
       if (!lastFromIsUser && daysSinceLastMessage > 7) {

@@ -178,7 +178,9 @@ CRITICAL RULES:
 3. Confidence: 1.0 = explicit, 0.8 = strongly implied, 0.6 = inferred. Below 0.6 = don't extract.
 4. Commitments = PROMISES someone made. Action items = TASKS that need doing (not promised).
 5. importance: critical = revenue/legal, high = key relationship/deadline, normal = routine, low = FYI.
-6. Empty arrays for categories with no extractions. Do not invent items.`;
+6. Empty arrays for categories with no extractions. Do not invent items.
+7. NOISE FILTER: If the content is a newsletter, marketing email, receipt, notification, survey, or automated message — return ONLY: {"schema_version":2,"title":"[NOISE]","summary":"Automated/marketing content — not business intelligence","contacts":[],"organizations":[],"decisions":[],"commitments":[],"action_items":[],"tags":["noise"],"project":null,"importance":"low","importance_reasoning":"Automated or marketing content"}
+8. PROJECT ASSIGNMENT: Only assign to a project from the KNOWN PROJECTS list if you have clear evidence. If unclear, set project to null. Do NOT invent project names.`;
 
 // Cache entity registry (reload every 5 minutes)
 let _cachedRegistry: { contacts: string[]; projects: string[] } | null = null;
@@ -195,9 +197,14 @@ async function loadEntityRegistry(): Promise<{ contacts: string[]; projects: str
       "SELECT DISTINCT canonical_name FROM entities WHERE type = 'person' AND user_dismissed = 0 ORDER BY canonical_name"
     ).all() as any[]).map(r => r.canonical_name);
 
-    const projects = (db.prepare(
-      "SELECT DISTINCT project FROM knowledge_primary WHERE project IS NOT NULL AND project != '' GROUP BY project HAVING COUNT(*) >= 3 ORDER BY COUNT(*) DESC"
-    ).all() as any[]).map(r => r.project);
+    // CANONICAL project list — hardcoded to prevent garbage project names from propagating
+    const projects = [
+      'Recapture Insurance', 'Carefront', 'Foresite', 'Prime',
+      'LTC Program', 'Quant Engine', 'COI Processing',
+      'MGA Insurance Underwriting and M&A Insights',
+      'PlacementIQ', 'Stock Insurance Group', 'SOVEREIGN',
+      'Alliance/Crest Settlement (Legal)', 'AgencyEquity',
+    ];
 
     _cachedRegistry = { contacts, projects };
     _registryLoadedAt = Date.now();
