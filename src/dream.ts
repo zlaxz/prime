@@ -3599,15 +3599,19 @@ export async function runDreamPipeline(
   results.push(r03);
   console.log(`    ${r03.status === 'success' ? '✓' : '✗'} ${r03.status} (${r03.duration_seconds.toFixed(1)}s)${r03.output ? ` — ${JSON.stringify(r03.output).slice(0, 100)}` : ''}`);
 
-  // Task 12: Proactive Meeting Prep (calendar-driven, always runs)
+  // Task 12: Meeting prep (skip in quick mode — wiki agents handle this)
   console.log('  Task 12: Meeting prep...');
-  const r12 = await task12MeetingPrep(db);
+  const r12 = options.quick
+    ? { task: '12-meeting-prep', status: 'skipped' as const, duration_seconds: 0, output: { reason: 'quick mode' } }
+    : await task12MeetingPrep(db);
   results.push(r12);
   console.log(`    ${r12.status === 'success' ? '✓' : r12.status === 'skipped' ? '○' : '✗'} ${r12.status} (${r12.duration_seconds.toFixed(1)}s)${r12.output ? ` — ${JSON.stringify(r12.output).slice(0, 100)}` : ''}`);
 
-  // Task 13: Episodic Memory Extraction (always runs — builds understanding, not summaries)
+  // Task 13: Episodic extraction (skip in quick mode — wiki agents do this)
   console.log('  Task 13: Episodic memory extraction (LLM)...');
-  const r13 = await task13EpisodicExtraction(db);
+  const r13 = options.quick
+    ? { task: '13-episodic', status: 'skipped' as const, duration_seconds: 0, output: { reason: 'quick mode' } }
+    : await task13EpisodicExtraction(db);
   results.push(r13);
   console.log(`    ${r13.status === 'success' ? '✓' : r13.status === 'skipped' ? '○' : '✗'} ${r13.status} (${r13.duration_seconds.toFixed(1)}s)${r13.output ? ` — ${JSON.stringify(r13.output).slice(0, 100)}` : ''}`);
 
