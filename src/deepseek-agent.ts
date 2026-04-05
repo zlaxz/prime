@@ -142,7 +142,7 @@ async function executeTool(db: Database.Database, name: string, args: any): Prom
         FROM knowledge
         WHERE (title LIKE ? OR summary LIKE ?) ${projectWhere}
         AND source NOT IN ('agent-report', 'agent-notification', 'briefing', 'playbook')
-        ORDER BY CASE WHEN provenance = 'primary' THEN 0 ELSE 1 END, source_date DESC LIMIT ?
+        ORDER BY CASE WHEN source IN ('correction', 'manual', 'training') THEN 0 WHEN provenance = 'primary' THEN 1 ELSE 2 END, source_date DESC LIMIT ?
       `).all('%' + args.query + '%', '%' + args.query + '%', limit) as any[];
       return JSON.stringify(likeResults);
     }
