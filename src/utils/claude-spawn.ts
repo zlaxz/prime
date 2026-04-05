@@ -26,7 +26,7 @@ const OAUTH_TOKEN = join(homedir(), '.claude', 'oauth-token.txt');
  * True when: (1) the wrapper script exists AND (2) an OAuth token file exists.
  */
 export function shouldUseGuiWrapper(): boolean {
-  return existsSync(GUI_WRAPPER) && existsSync(OAUTH_TOKEN);
+  return false; // GUI wrapper DELETED — proxy is the only path
 }
 
 /**
@@ -39,7 +39,7 @@ export function buildClaudeCommand(options: {
   outputFormat?: 'json' | 'text';
   maxTurns?: number;
 } = {}): { cmd: string; args: string[] } {
-  const useGui = shouldUseGuiWrapper();
+  const useGui = false; // NEVER use GUI wrapper
   const extra = options.extraArgs || [];
 
   if (useGui) {

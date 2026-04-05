@@ -205,7 +205,7 @@ Now solve this problem. Take as long as you need. Use all available tools. Produ
 
 // ── Claude -p Execution ──
 // Uses shared claude-spawn utility which handles:
-// - Mac Mini: routes through claude-gui.sh (GUI Terminal, keychain accessible, MCP tools loaded)
+// - Mac Mini: routes through headless proxy at localhost:3211
 // - Laptop: direct claude -p (keychain works natively)
 
 async function runClaudeP(
