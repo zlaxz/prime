@@ -53,8 +53,30 @@ async function getGmailClient(db: Database.Database) {
   return google.gmail({ version: 'v1', auth: oauth2 });
 }
 
-export async function retrieveGmailThread(db: Database.Database, threadId: string): Promise<string | null> {
-  const gmail = await getGmailClient(db);
+// Gmail client via service account — for team member emails (Forrest, etc.)
+async function getGmailClientForAccount(db: Database.Database, email: string) {
+  try {
+    const { getServiceAccountAuth } = await import('./connectors/gmail.js');
+    const auth = getServiceAccountAuth(email, ['https://www.googleapis.com/auth/gmail.readonly']);
+    if (!auth) return null;
+    return google.gmail({ version: 'v1', auth });
+  } catch {
+    return null;
+  }
+}
+
+// Smart Gmail client — picks the right auth based on source_account
+async function getSmartGmailClient(db: Database.Database, sourceAccount?: string) {
+  if (sourceAccount && sourceAccount !== 'zach.stock@recaptureinsurance.com') {
+    const saClient = await getGmailClientForAccount(db, sourceAccount);
+    if (saClient) return saClient;
+  }
+  return getGmailClient(db);
+}
+
+
+export async function retrieveGmailThread(db: Database.Database, threadId: string, sourceAccount?: string): Promise<string | null> {
+  const gmail = await getSmartGmailClient(db, sourceAccount);
   if (!gmail) return null;
 
   try {
@@ -297,7 +319,7 @@ export async function retrieveSourceContent(
     const threadId = item.source_ref.replace('thread:', '');
     if (!threadId) return null;
 
-    const content = await retrieveGmailThread(db, threadId);
+    const content = await retrieveGmailThread(db, threadId, item.source_account);
     if (!content) return null;
 
     // Cache for this dream run (can be cleared later to save space)
