@@ -110,43 +110,46 @@ async function tick() {
       console.log('[shift]   Dream pipeline failed: ' + (err.message || '').slice(0, 60));
     }
 
-    // Compile wiki pages (project + entity agents go to the shelf)
-    console.log('[shift]   Compiling wiki pages...');
+    // NEW: Wiki compilation via DeepSeek agents (reads actual sources)
+    console.log('[shift]   Compiling wiki pages (DeepSeek agents)...');
     try {
-      const { compileAllPages } = await import('./wiki-agents.js');
-      const wikiResult = await compileAllPages(db);
-      console.log('[shift]   Wiki: ' + wikiResult.projects + ' projects, ' + wikiResult.entities + ' entities compiled');
+      const { compileWikiPages } = await import('./wiki-compiler.js');
+      const wikiResult = await compileWikiPages(db);
+      console.log('[shift]   Wiki: ' + wikiResult.compiled + ' compiled, ' + wikiResult.skipped + ' skipped (' + (wikiResult.durationMs / 1000).toFixed(0) + 's)');
     } catch (err: any) {
       console.log('[shift]   Wiki compilation failed: ' + (err.message || '').slice(0, 60));
     }
 
-    console.log(`[shift]   Running full intelligence cycle...`);
-
+    // NEW: PM agents (Opus, persistent sessions, active projects only)
+    console.log('[shift]   Running PM agents...');
     try {
-      const { runIntelligenceCycle } = await import('./intelligence-cycle.js');
-      const result = await runIntelligenceCycle(db);
-      console.log(`[shift]   Intelligence: ${result.status} (${result.duration_seconds.toFixed(0)}s) — ${result.output?.headline?.slice(0, 60) || ''}`);
+      const { runPMAgent } = await import('./pm-agent.js');
+      for (const pm of [
+        { project: 'Carefront', agentId: 'carefront-pm' },
+        { project: 'Foresite', agentId: 'foresite-pm' },
+      ]) {
+        try {
+          const result = await runPMAgent(db, pm);
+          console.log('[shift]   PM ' + pm.agentId + ': done (' + (result.durationMs / 1000).toFixed(0) + 's)');
+        } catch (pmErr: any) {
+          console.log('[shift]   PM ' + pm.agentId + ' failed: ' + (pmErr.message || '').slice(0, 60));
+        }
+      }
     } catch (err: any) {
-      console.log(`[shift]   Intelligence failed: ${err.message?.slice(0, 60)}`);
+      console.log('[shift]   PM agents failed: ' + (err.message || '').slice(0, 60));
     }
 
+    // NEW: COS agent reads wiki pages and produces brief
+    console.log('[shift]   Running COS agent...');
     try {
-      // DISABLED: const { runAutonomousResearch } = await import('./research.js');
-      // DISABLED: const result = await runAutonomousResearch(db);
-      if (result.status === 'success') {
-        console.log(`[shift]   Research: ${result.output?.questions_researched} questions answered`);
-      }
-    } catch {}
+      const { runCOS } = await import('./cos-agent.js');
+      const cosResult = await runCOS(db);
+      console.log('[shift]   COS: ' + (cosResult.durationMs / 1000).toFixed(0) + 's — ' + (cosResult.headline || '').slice(0, 60));
+    } catch (err: any) {
+      console.log('[shift]   COS failed: ' + (err.message || '').slice(0, 60));
+    }
 
-    try {
-      // DISABLED: playbook extractor creates self-teaching protocols that encourage speculation
-      // const { extractPlaybooks } = await import('./playbooks.js');
-      // const result = await extractPlaybooks(db);
-      const result = { status: 'skipped' } as any;
-      if (result.status === 'success') {
-        console.log(`[shift]   Playbooks: ${result.output?.playbooks_extracted} extracted`);
-      }
-    } catch {}
+    // Research + playbooks REMOVED (replaced by wiki agents + PM agents)
 
     // Send DAILY intelligence email via Quinn — ONCE per day, morning only
     try {
