@@ -2023,7 +2023,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         res.status(400).json({ error: 'topic and suggested_by are required' });
         return;
       }
-      const id = require('crypto').randomUUID();
+      const id = crypto.randomUUID();
       db.prepare(
         `INSERT INTO deep_session_suggestions (id, suggested_by, topic, project, reasoning, urgency)
          VALUES (?, ?, ?, ?, ?, ?)`
@@ -2151,16 +2151,16 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     const { claim, correction, project, entity } = req.body;
     if (!claim || !correction) return res.status(400).json({ error: 'claim and correction required' });
     
-    const id = require('crypto').randomUUID();
+    const id = crypto.randomUUID();
     db.prepare(
       "INSERT INTO brain_corrections (id, original_claim, corrected_claim, correction_type, affected_project, propagation_status, created_at) VALUES (?, ?, ?, 'fact', ?, 'pending', datetime('now'))"
     ).run(id, claim, correction, project || null);
 
     // Also store as a knowledge item so agents find it immediately
-    const { v4: uuid } = await import('uuid');
+    const { v4: uuidv4 } = await import('uuid');
     db.prepare(
       "INSERT INTO knowledge (id, title, summary, source, source_ref, source_date, importance, provenance, project) VALUES (?, ?, ?, 'correction', ?, datetime('now'), 'critical', 'correction', ?)"
-    ).run(uuid(), 'CORRECTION: ' + correction.slice(0, 80), correction, 'correction:' + id, project || null);
+    ).run(uuidv4(), 'CORRECTION: ' + correction.slice(0, 80), correction, 'correction:' + id, project || null);
 
     // Mark affected wiki pages stale
     if (project) {
