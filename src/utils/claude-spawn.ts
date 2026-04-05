@@ -44,14 +44,14 @@ export function buildClaudeCommand(options: {
 
   if (useGui) {
     // GUI wrapper: reads prompt from stdin, passes args through
-    const args: string[] = [];
+    const args: string[] = ['--model', 'claude-opus-4-6'];
     if (options.sessionId) args.push('--resume', options.sessionId);
     if (options.maxTurns) args.push('--max-turns', String(options.maxTurns));
     args.push(...extra);
     return { cmd: GUI_WRAPPER, args };
   } else {
     // Direct CLI
-    const args: string[] = ['-p'];
+    const args: string[] = ['-p', '--model', 'claude-opus-4-6'];
     if (options.sessionId) args.push('--resume', options.sessionId);
     if (options.outputFormat === 'json') args.push('--output-format', 'json');
     if (options.maxTurns) args.push('--max-turns', String(options.maxTurns));
