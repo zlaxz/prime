@@ -1749,18 +1749,26 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       // 2. Store the answer as a knowledge item so it feeds into future dream pipeline analysis
       const { v4: uuidv4 } = await import('uuid');
       const { insertKnowledge } = await import('../db.js');
+      // CEO answers are ground truth — primary provenance, critical importance
       insertKnowledge(db, {
         id: uuidv4(),
-        title: `Answer: ${question.question.slice(0, 120)}`,
-        summary: answer.trim(),
-        source: 'user-input',
+        title: `CEO Answer: ${question.question.slice(0, 100)}`,
+        summary: `Q: ${question.question}\nA: ${answer.trim()}`,
+        source: "user-feedback",
         source_ref: `prime-question:${questionId}`,
         source_date: new Date().toISOString(),
-        tags: ['user-answer', question.category],
+        contacts: question.entity ? [question.entity] : [],
+        tags: ["user-answer", "ceo-input", question.category].filter(Boolean),
         project: question.project || undefined,
-        importance: 'high',
+        importance: "critical",
+        provenance: "primary",
         metadata: { question_id: questionId, question_text: question.question, category: question.category, entity: question.entity },
       });
+
+      // Mark affected wiki pages stale so they recompile with this new info
+      if (question.project) {
+        db.prepare("UPDATE compiled_pages SET stale = 1 WHERE subject_id = ?").run(question.project);
+      }
 
       // 3. If the question was about a prediction review, update the prediction outcome
       let predictionUpdated = false;
