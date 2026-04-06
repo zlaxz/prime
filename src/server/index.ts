@@ -285,10 +285,12 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
 
   app.get('/api/query/projects', (_req, res) => {
     const results = searchByText(db, '', 1000);
+    const _dRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'dismissed_projects'").get() as any)?.value;
+    const dismissed: string[] = _dRaw ? JSON.parse(_dRaw) : [];
     const projects = new Map<string, { name: string; items: number; importance: string }>();
 
     for (const item of results) {
-      if (item.project) {
+      if (item.project && !dismissed.includes(item.project)) {
         const existing = projects.get(item.project) || { name: item.project, items: 0, importance: 'normal' };
         existing.items++;
         if (item.importance === 'critical' || (item.importance === 'high' && existing.importance !== 'critical')) {
