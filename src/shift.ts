@@ -184,6 +184,17 @@ async function tick() {
 
     db.prepare(
       "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_full_cycle', ?, datetime('now'))"
+
+    // Auto-sync: commit and push any changes after full cycle
+    try {
+      const { execSync } = await import("child_process");
+      const cwd = "/Users/zachstock/GitHub/prime";
+      const status = execSync("git status --porcelain", { cwd, encoding: "utf-8" }).trim();
+      if (status) {
+        execSync("git add -A && git commit -m "Auto-commit: Session " + new Date().toISOString().slice(0, 10) + " " + new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) + """, { cwd });
+      }
+      execSync("git push origin main 2>/dev/null || true", { cwd });
+    } catch {}
     ).run(JSON.stringify(new Date().toISOString()));
   }
 
