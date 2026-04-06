@@ -120,6 +120,17 @@ async function tick() {
       console.log('[shift]   Wiki compilation failed: ' + (err.message || '').slice(0, 60));
     }
 
+
+    // NEW: Verification layer — audit wiki claims against actual sources
+    console.log("[shift]   Verifying wiki claims (DeepSeek audit)...");
+    try {
+      const { verifyWikiPages } = await import("./verification.js");
+      const verResult = await verifyWikiPages(db, { maxPages: 3, claimsPerPage: 3 });
+      const rate = verResult.totalClaims > 0 ? Math.round((verResult.verified / verResult.totalClaims) * 100) : 0;
+      console.log("[shift]   Verification: " + verResult.verified + "/" + verResult.totalClaims + " verified (" + rate + "%), " + verResult.incorrect + " flagged (" + (verResult.durationMs / 1000).toFixed(0) + "s)");
+    } catch (err: any) {
+      console.log("[shift]   Verification failed: " + (err.message || "").slice(0, 60));
+    }
     // NEW: PM agents (Opus, persistent sessions, active projects only)
     console.log('[shift]   Running PM agents...');
     try {
