@@ -123,6 +123,7 @@ Rules:
     const agent = new DeepSeekAgent(db, {
       model: 'deepseek-chat',  // Chat is faster + cheaper for verification
       maxTurns: 40,
+      maxTokens: 8000,
       temperature: 0.3,
     });
 
