@@ -1,6 +1,35 @@
 import type Database from 'better-sqlite3';
 import { compileProjectWiki, compileEntityWiki } from './deepseek-agent.js';
 
+const MEMORY_MARKER = '---AGENT_MEMORY---';
+const MAX_MEMORY_CHARS = 3000;
+
+/**
+ * Parse agent output to separate wiki content from memory section.
+ * Returns { wikiContent, memory }.
+ */
+function parseAgentOutput(content: string): { wikiContent: string; memory: string | null } {
+  const idx = content.indexOf(MEMORY_MARKER);
+  if (idx === -1) return { wikiContent: content, memory: null };
+  return {
+    wikiContent: content.slice(0, idx).trimEnd(),
+    memory: content.slice(idx + MEMORY_MARKER.length).trim(),
+  };
+}
+
+/**
+ * Append new memory to existing, keeping under MAX_MEMORY_CHARS.
+ * Most recent memory is kept; oldest is trimmed.
+ */
+function accumulateMemory(existing: string | null, newMemory: string | null): string | null {
+  if (!newMemory) return existing || null;
+  if (!existing) return newMemory.slice(0, MAX_MEMORY_CHARS);
+  const combined = existing + '\n\n--- Cycle ' + new Date().toISOString().slice(0, 10) + ' ---\n' + newMemory;
+  if (combined.length <= MAX_MEMORY_CHARS) return combined;
+  // Keep the tail (most recent learnings)
+  return combined.slice(combined.length - MAX_MEMORY_CHARS);
+}
+
 // ============================================================
 // Wiki Compiler — Orchestrates DeepSeek research agents
 //
@@ -90,7 +119,11 @@ export async function compileWikiPages(db: Database.Database): Promise<CompileRe
             memory: state?.memory || undefined,
           });
 
-          // Store wiki page
+          // Parse memory from agent output
+          const { wikiContent, memory: newMemory } = parseAgentOutput(result.content);
+          const accMemory = accumulateMemory(state?.memory || null, newMemory);
+
+          // Store wiki page (without memory section)
           const { v4: uuid } = await import('uuid');
           db.prepare(`
             INSERT OR REPLACE INTO compiled_pages (id, page_type, subject_id, subject_name, content,
@@ -98,13 +131,13 @@ export async function compileWikiPages(db: Database.Database): Promise<CompileRe
             VALUES (?, 'project', ?, ?, ?,
               COALESCE((SELECT version + 1 FROM compiled_pages WHERE page_type = 'project' AND subject_id = ?), 1),
               ?, datetime('now'), datetime('now'), 0)
-          `).run(uuid(), project, project, result.content, project, result.sourceRefsRead.length);
+          `).run(uuid(), project, project, wikiContent, project, result.sourceRefsRead.length);
 
-          // Update agent state
+          // Update agent state with memory
           db.prepare(`
-            INSERT OR REPLACE INTO agent_state (agent_type, subject_id, last_wiki_page, last_run_at)
-            VALUES ('wiki_project', ?, ?, datetime('now'))
-          `).run(project, result.content);
+            INSERT OR REPLACE INTO agent_state (agent_type, subject_id, last_wiki_page, memory, last_run_at)
+            VALUES ('wiki_project', ?, ?, ?, datetime('now'))
+          `).run(project, wikiContent, accMemory);
 
           console.log(`      ${project}: ${result.turns} turns, ${result.toolCalls} tools, ${(result.durationMs / 1000).toFixed(0)}s`);
           compiled++;

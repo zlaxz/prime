@@ -401,6 +401,15 @@ export async function compileProjectWiki(
   parts.push('After investigating, compile a wiki page with: Status, Situation, Key People, Timeline (day-of-week), Open Items, What Zach Should Know.');
   parts.push('Every claim must be based on something you actually retrieved and read.');
   parts.push('Stay focused on ' + projectName + '. When you have enough information, WRITE THE PAGE.');
+  parts.push('');
+  parts.push('After writing the wiki page, add a section:');
+  parts.push('---AGENT_MEMORY---');
+  parts.push('Note what you learned about researching this project that will help next cycle:');
+  parts.push('- Which search terms found the best results');
+  parts.push('- Which sources were most informative');
+  parts.push('- Key people and their communication patterns');
+  parts.push('- Anything that surprised you or was hard to find');
+  parts.push('Keep it concise — 5-10 bullet points max.');
 
   const agent = new DeepSeekAgent(db, options);
   return agent.run(parts.join('\n'));
@@ -444,6 +453,12 @@ export async function compileEntityWiki(
     parts.push('');
   }
 
+  if (options?.memory) {
+    parts.push('WHAT I REMEMBER FROM PREVIOUS CYCLES:');
+    parts.push(options.memory);
+    parts.push('');
+  }
+
   if (options?.previousPage) {
     parts.push('YOUR PREVIOUS PAGE:');
     parts.push(options.previousPage);
@@ -452,6 +467,15 @@ export async function compileEntityWiki(
 
   parts.push('Use tools to investigate. Read actual source material. Compile a wiki page with:');
   parts.push('Role, Relationship to Zach, Current State, Key Facts, Recent Communication, Open Items.');
+  parts.push('');
+  parts.push('After writing the wiki page, add a section:');
+  parts.push('---AGENT_MEMORY---');
+  parts.push('Note what you learned about researching this entity that will help next cycle:');
+  parts.push('- Which search terms found the best results');
+  parts.push('- Which sources were most informative');
+  parts.push('- Key communication patterns you noticed');
+  parts.push('- Anything that surprised you or was hard to find');
+  parts.push('Keep it concise — 5-10 bullet points max.');
 
   const agent = new DeepSeekAgent(db, { maxTurns: 50, ...options });
   return agent.run(parts.join('\n'));
