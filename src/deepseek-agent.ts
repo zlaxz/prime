@@ -353,7 +353,20 @@ export async function compileProjectWiki(
     "SELECT title FROM knowledge WHERE source IN ('correction', 'manual') AND (summary LIKE ? OR title LIKE ?) ORDER BY source_date DESC LIMIT 10"
   ).all('%' + projectName + '%', '%' + projectName + '%') as any[];
 
+  // Load research agent identity preamble
+  let preamble = '';
+  try {
+    const { readFileSync } = await import('fs');
+    const homedir = process.env.HOME || '/Users/zachstock';
+    preamble = readFileSync(homedir + '/.prime/agents/research/IDENTITY.md', 'utf-8');
+  } catch {}
+
   const parts: string[] = [];
+
+  if (preamble) {
+    parts.push(preamble);
+    parts.push('');
+  }
 
   if (options?.soul) {
     parts.push(options.soul);
@@ -366,7 +379,7 @@ export async function compileProjectWiki(
     parts.push('');
   }
 
-  parts.push(`You are a project research analyst compiling a wiki page for ${projectName}.`);
+  parts.push(`Your current assignment: compile a wiki page for ${projectName}.`);
   parts.push(`TODAY IS: ${dateStr}`);
   parts.push('');
 
@@ -408,8 +421,20 @@ export async function compileEntityWiki(
     "SELECT title FROM knowledge WHERE source IN ('correction', 'manual') AND (summary LIKE ? OR title LIKE ?) ORDER BY source_date DESC LIMIT 5"
   ).all('%' + entityName + '%', '%' + entityName + '%') as any[];
 
+  // Load research agent identity preamble
+  let preamble = '';
+  try {
+    const { readFileSync } = await import('fs');
+    const homedir = process.env.HOME || '/Users/zachstock';
+    preamble = readFileSync(homedir + '/.prime/agents/research/IDENTITY.md', 'utf-8');
+  } catch {}
+
   const parts: string[] = [];
-  parts.push(`You are an entity research analyst compiling a wiki page for ${entityName}.`);
+  if (preamble) {
+    parts.push(preamble);
+    parts.push('');
+  }
+  parts.push(`Your current assignment: compile a wiki page for the entity ${entityName}.`);
   parts.push(`TODAY IS: ${dateStr}`);
   parts.push('');
 
