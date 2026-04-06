@@ -24,14 +24,21 @@ export async function compileWikiPages(db: Database.Database): Promise<CompileRe
   let skipped = 0;
   let failed = 0;
 
-  // Determine which projects need wiki pages
-  const projects = db.prepare(`
+  // Load dismissed projects list from graph_state
+  const dismissedRaw = (db.prepare(
+    "SELECT value FROM graph_state WHERE key = 'dismissed_projects'"
+  ).get() as any)?.value;
+  const dismissedProjects: string[] = dismissedRaw ? JSON.parse(dismissedRaw) : [];
+
+  // Determine which projects need wiki pages (excluding dismissed)
+  const allProjects = db.prepare(`
     SELECT project, COUNT(*) as cnt, MAX(source_date) as last_activity
     FROM knowledge WHERE project IS NOT NULL AND project != ''
     AND source_date >= datetime('now', '-30 days')
     GROUP BY project HAVING cnt >= 3
     ORDER BY last_activity DESC LIMIT 16
   `).all() as any[];
+  const projects = allProjects.filter(p => !dismissedProjects.includes(p.project));
 
   // Check staleness: skip pages compiled recently with no new data
   const BATCH_SIZE = 5;

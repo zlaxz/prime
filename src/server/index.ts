@@ -2172,6 +2172,49 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     res.json({ success: true, id });
   });
 
+  // ── Dismissed Projects API ──
+
+  // Dismiss a project from wiki compilation
+  app.post('/api/dismiss-project', (req, res) => {
+    try {
+      const { project } = req.body;
+      if (!project) { res.status(400).json({ error: 'project required' }); return; }
+
+      // Load current list
+      const raw = (db.prepare(
+        "SELECT value FROM graph_state WHERE key = 'dismissed_projects'"
+      ).get() as any)?.value;
+      const dismissed: string[] = raw ? JSON.parse(raw) : [];
+
+      if (!dismissed.includes(project)) {
+        dismissed.push(project);
+        db.prepare(
+          "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('dismissed_projects', ?, datetime('now'))"
+        ).run(JSON.stringify(dismissed));
+      }
+
+      // Delete any existing compiled pages for this project
+      db.prepare("DELETE FROM compiled_pages WHERE subject_id = ?").run(project);
+
+      res.json({ success: true, dismissed });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get list of dismissed projects
+  app.get('/api/dismissed-projects', (req, res) => {
+    try {
+      const raw = (db.prepare(
+        "SELECT value FROM graph_state WHERE key = 'dismissed_projects'"
+      ).get() as any)?.value;
+      const dismissed: string[] = raw ? JSON.parse(raw) : [];
+      res.json({ dismissed });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get('/api/entity', async (req, res) => {
     try {
       const name = req.query.name as string;
