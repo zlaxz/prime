@@ -104,7 +104,7 @@ export async function compileWikiPages(db: Database.Database): Promise<CompileRe
           db.prepare(`
             INSERT OR REPLACE INTO agent_state (agent_type, subject_id, last_wiki_page, last_run_at)
             VALUES ('wiki_project', ?, ?, datetime('now'))
-          `).run(project, result.content.slice(0, 10000));
+          `).run(project, result.content);
 
           console.log(`      ${project}: ${result.turns} turns, ${result.toolCalls} tools, ${(result.durationMs / 1000).toFixed(0)}s`);
           compiled++;

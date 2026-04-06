@@ -391,7 +391,7 @@ export async function compileProjectWiki(
 
   if (options?.previousPage) {
     parts.push('YOUR PREVIOUS WIKI PAGE (update it, don\'t rewrite from scratch):');
-    parts.push(options.previousPage.slice(0, 3000));
+    parts.push(options.previousPage);
     parts.push('');
   }
 
@@ -446,7 +446,7 @@ export async function compileEntityWiki(
 
   if (options?.previousPage) {
     parts.push('YOUR PREVIOUS PAGE:');
-    parts.push(options.previousPage.slice(0, 2000));
+    parts.push(options.previousPage);
     parts.push('');
   }
 
