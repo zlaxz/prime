@@ -2203,13 +2203,29 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
   });
 
   // Get list of dismissed projects
+
+  // Restore a dismissed project
+  app.post("/api/restore-project", (req, res) => {
+    try {
+      const { project } = req.body;
+      if (!project) { res.status(400).json({ error: "project required" }); return; }
+      const raw = (db.prepare("SELECT value FROM graph_state WHERE key = 'dismissed_projects'" ).get() as any)?.value;
+      const dismissed: string[] = raw ? JSON.parse(raw) : [];
+      const updated = dismissed.filter(p => p !== project);
+      db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('dismissed_projects', ?, datetime('now')").run(JSON.stringify(updated));
+      res.json({ success: true, dismissed: updated });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get('/api/dismissed-projects', (req, res) => {
     try {
       const raw = (db.prepare(
         "SELECT value FROM graph_state WHERE key = 'dismissed_projects'"
       ).get() as any)?.value;
       const dismissed: string[] = raw ? JSON.parse(raw) : [];
-      res.json({ dismissed });
+      res.json({ projects: dismissed });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
