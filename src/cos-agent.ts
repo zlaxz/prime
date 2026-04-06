@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { request as httpRequest } from 'http';
+import { v4 as uuid } from 'uuid';
 
 // ============================================================
 // COS Agent — Quinn Parker, AI Chief of Staff
@@ -9,6 +10,9 @@ import { request as httpRequest } from 'http';
 // fresh items, PM concerns. Produces:
 //   1. JSON brief (for web UI + graph_state)
 //   2. Email letter (for morning send)
+//   3. Memory update (append-only learnings)
+//   4. Concerns update (active watchlist)
+//   5. KB insights (facts for other agents)
 // ============================================================
 
 interface COSResult {
@@ -20,6 +24,9 @@ interface COSResult {
   raw_response: string;
   durationMs: number;
   sessionId: string;
+  memoryUpdate: string;
+  concernsUpdate: string;
+  kbInsightsCount: number;
 }
 
 function callProxy(prompt: string, sessionId?: string, timeoutSec = 300): Promise<{ result: string; sessionId: string }> {
@@ -70,6 +77,7 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
       the_one_thing: 'Run the wiki compilation pipeline.',
       actions: [], project_updates: [], email_body: '',
       raw_response: '', durationMs: Date.now() - start, sessionId: '',
+      memoryUpdate: '', concernsUpdate: '', kbInsightsCount: 0,
     };
   }
 
@@ -118,6 +126,13 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
     ? 'NEW SINCE LAST CYCLE:\n' + freshItems.map((i: any) => '- [' + i.source + '] ' + i.title).join('\n')
     : '';
 
+  // 6b. Load Quinn's memory and concerns from agent_state
+  const quinnState = db.prepare(
+    "SELECT memory, concerns FROM agent_state WHERE agent_type = 'cos' AND subject_id = 'global'"
+  ).get() as any;
+  const quinnMemory = quinnState?.memory || '';
+  const quinnConcerns = quinnState?.concerns || '';
+
   // 7. Build COS prompt
   const now = new Date();
   const dayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][now.getDay()];
@@ -140,6 +155,18 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
     promptParts.push('');
   }
 
+  // Inject Quinn's persistent memory and concerns
+  if (quinnMemory) {
+    promptParts.push('## WHAT I REMEMBER');
+    promptParts.push(quinnMemory.slice(0, 4000));
+    promptParts.push('');
+  }
+  if (quinnConcerns) {
+    promptParts.push("## WHAT I'M WATCHING");
+    promptParts.push(quinnConcerns.slice(0, 2000));
+    promptParts.push('');
+  }
+
   promptParts.push(
     correctionText, '',
     calendarText, '',
@@ -148,7 +175,7 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
     '## YOUR INTELLIGENCE (compiled by your research team)',
     wikiContext.slice(0, 30000),
     '',
-    'Produce TWO outputs separated by ---EMAIL---',
+    'Produce FIVE outputs separated by these exact markers:',
     '',
     'FIRST: A JSON brief for the web dashboard:',
     '```json',
@@ -173,6 +200,27 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
     'NO: corporate headers, bullet lists of everything, "ACTIONS:" sections, repeating what was in the last email.',
     'YES: conversational, opinionated, like a letter from a trusted advisor who actually cares.',
     'Keep it under 300 words. Every sentence must earn its place.',
+    '',
+    '---MEMORY_UPDATE---',
+    '',
+    'THIRD: Learnings to remember for next cycle. These get appended to your long-term memory.',
+    'Include: patterns you noticed, what Zach responded to, what got ignored, cross-project insights, relationship dynamics observed.',
+    'Each entry should be dated with today\'s date. Be concise -- key facts and patterns only.',
+    'If nothing new to remember, write "No new learnings this cycle."',
+    '',
+    '---CONCERNS_UPDATE---',
+    '',
+    'FOURTH: Your active worry list. What you\'re watching, with dates added/resolved.',
+    'This REPLACES your previous concerns entirely. Keep it current.',
+    'If nothing concerns you, write "No active concerns."',
+    '',
+    '---KB_INSIGHTS---',
+    '',
+    'FIFTH: Facts and patterns that OTHER agents (PMs, specialists) should know about.',
+    'Each on its own line. Format: ENTITY_OR_PROJECT | insight text',
+    'Example: Neil Dick | responds within 24h when contacted before 9am MDT',
+    'Example: Carefront | broker outreach stalled 3 consecutive cycles as of April 6',
+    'Only include genuinely useful cross-cutting insights. If none, write "No new insights."',
   );
 
   const prompt = promptParts.filter(Boolean).join('\n');
@@ -181,15 +229,50 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
   console.log('    COS: calling Opus' + (sessionId ? ' (resuming)' : ' (new)') + '...');
   const response = await callProxy(prompt, sessionId, 300);
 
-  // 9. Parse JSON brief and email from response
-  let brief: any = {};
+  // 9. Parse all sections from response
+  const content = response.result;
+
+  // Split on markers -- each section is between markers
+  const emailMarker = content.indexOf('---EMAIL---');
+  const memoryMarker = content.indexOf('---MEMORY_UPDATE---');
+  const concernsMarker = content.indexOf('---CONCERNS_UPDATE---');
+  const kbMarker = content.indexOf('---KB_INSIGHTS---');
+
+  // Extract JSON brief (everything before ---EMAIL---)
+  const jsonPart = emailMarker >= 0 ? content.slice(0, emailMarker) : content;
+
+  // Extract email (between ---EMAIL--- and ---MEMORY_UPDATE--- or end)
   let emailBody = '';
+  if (emailMarker >= 0) {
+    const emailStart = emailMarker + '---EMAIL---'.length;
+    const emailEnd = memoryMarker >= 0 ? memoryMarker : (concernsMarker >= 0 ? concernsMarker : (kbMarker >= 0 ? kbMarker : content.length));
+    emailBody = content.slice(emailStart, emailEnd).trim();
+  }
 
-  const parts = response.result.split('---EMAIL---');
-  const jsonPart = parts[0] || response.result;
-  emailBody = (parts[1] || '').trim();
+  // Extract memory update (between ---MEMORY_UPDATE--- and ---CONCERNS_UPDATE--- or end)
+  let memoryUpdate = '';
+  if (memoryMarker >= 0) {
+    const memStart = memoryMarker + '---MEMORY_UPDATE---'.length;
+    const memEnd = concernsMarker >= 0 ? concernsMarker : (kbMarker >= 0 ? kbMarker : content.length);
+    memoryUpdate = content.slice(memStart, memEnd).trim();
+  }
 
-  // Extract JSON from first part
+  // Extract concerns (between ---CONCERNS_UPDATE--- and ---KB_INSIGHTS--- or end)
+  let concernsUpdate = '';
+  if (concernsMarker >= 0) {
+    const conStart = concernsMarker + '---CONCERNS_UPDATE---'.length;
+    const conEnd = kbMarker >= 0 ? kbMarker : content.length;
+    concernsUpdate = content.slice(conStart, conEnd).trim();
+  }
+
+  // Extract KB insights (after ---KB_INSIGHTS---)
+  let kbInsightsRaw = '';
+  if (kbMarker >= 0) {
+    kbInsightsRaw = content.slice(kbMarker + '---KB_INSIGHTS---'.length).trim();
+  }
+
+  // Parse JSON brief
+  let brief: any = {};
   try {
     const jsonMatch = jsonPart.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
@@ -205,8 +288,8 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
   } catch {}
 
   // If no email section, extract from after JSON
-  if (!emailBody && response.result.length > jsonPart.length) {
-    emailBody = response.result.slice(jsonPart.length).trim();
+  if (!emailBody && content.length > jsonPart.length) {
+    emailBody = content.slice(jsonPart.length).trim();
   }
 
   // Fallback: generate email from brief
@@ -229,7 +312,7 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
   // Clean up email
   emailBody = emailBody.replace(/^```[\s\S]*?```\s*/g, '').trim();
 
-  // 10. Store results
+  // 10. Store results in graph_state (existing behavior)
   db.prepare(
     "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('intelligence_brief', ?, datetime('now'))"
   ).run(JSON.stringify(brief));
@@ -242,10 +325,90 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
     "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('cos_email_body', ?, datetime('now'))"
   ).run(emailBody);
 
-  // Update COS agent state with session ID
-  db.prepare(
-    "INSERT OR REPLACE INTO agent_state (agent_type, subject_id, session_id, last_run_at) VALUES ('cos', 'global', ?, datetime('now'))"
-  ).run(response.sessionId || sessionId || '');
+  // 11. Update Quinn's memory (append-only, like PM agents)
+  if (memoryUpdate && memoryUpdate !== 'No new learnings this cycle.') {
+    const existingMemory = quinnMemory || '';
+    const newMemory = existingMemory
+      ? existingMemory + '\n\n## Cycle ' + dateStr + '\n' + memoryUpdate
+      : '## Cycle ' + dateStr + '\n' + memoryUpdate;
+    // Store in agent_state.memory (will be written in the UPDATE below)
+    db.prepare(
+      "INSERT OR REPLACE INTO agent_state (agent_type, subject_id, memory, concerns, session_id, last_run_at) VALUES ('cos', 'global', ?, ?, ?, datetime('now'))"
+    ).run(
+      newMemory,
+      (concernsUpdate && concernsUpdate !== 'No active concerns.') ? concernsUpdate : (quinnConcerns || null),
+      response.sessionId || sessionId || '',
+    );
+    console.log('    COS: memory updated (' + memoryUpdate.length + ' chars appended)');
+  } else {
+    // 12. Update concerns even if no memory update
+    if (concernsUpdate && concernsUpdate !== 'No active concerns.') {
+      db.prepare(
+        "INSERT OR REPLACE INTO agent_state (agent_type, subject_id, memory, concerns, session_id, last_run_at) VALUES ('cos', 'global', ?, ?, ?, datetime('now'))"
+      ).run(
+        quinnMemory || null,
+        concernsUpdate,
+        response.sessionId || sessionId || '',
+      );
+      console.log('    COS: concerns updated');
+    } else {
+      // Just update session_id and last_run_at
+      db.prepare(
+        "INSERT OR REPLACE INTO agent_state (agent_type, subject_id, memory, concerns, session_id, last_run_at) VALUES ('cos', 'global', ?, ?, ?, datetime('now'))"
+      ).run(
+        quinnMemory || null,
+        quinnConcerns || null,
+        response.sessionId || sessionId || '',
+      );
+    }
+  }
+
+  // 13. Write KB insights (deduplicated)
+  let kbInsightsCount = 0;
+  if (kbInsightsRaw && kbInsightsRaw !== 'No new insights.') {
+    const lines = kbInsightsRaw.split('\n').filter(l => l.includes('|'));
+    for (const line of lines) {
+      const pipeIdx = line.indexOf('|');
+      if (pipeIdx < 0) continue;
+      const entity = line.slice(0, pipeIdx).trim().replace(/^[-*]\s*/, '');
+      const insight = line.slice(pipeIdx + 1).trim();
+      if (!entity || !insight) continue;
+
+      // Deduplicate: check if similar cos-insight exists for this entity/project
+      const existing = db.prepare(
+        "SELECT id FROM knowledge WHERE source = 'cos-insight' AND (project = ? OR title LIKE ?) LIMIT 1"
+      ).get(entity, '%' + entity + '%') as any;
+
+      // Also check if the exact insight text already exists
+      const exactDupe = db.prepare(
+        "SELECT id FROM knowledge WHERE source = 'cos-insight' AND summary = ? LIMIT 1"
+      ).get(insight) as any;
+
+      if (exactDupe) {
+        continue; // Skip exact duplicates
+      }
+
+      // If entity already has a cos-insight, supersede it
+      const insightId = uuid();
+      if (existing) {
+        db.prepare("UPDATE knowledge SET superseded_by = ?, valid_until = datetime('now') WHERE id = ?").run(insightId, existing.id);
+      }
+
+      db.prepare(
+        "INSERT INTO knowledge (id, title, summary, source, source_ref, source_date, importance, project, created_at, updated_at) VALUES (?, ?, ?, 'cos-insight', ?, datetime('now'), 'high', ?, datetime('now'), datetime('now'))"
+      ).run(
+        insightId,
+        'COS Insight: ' + entity,
+        insight,
+        'cos-cycle-' + dateStr,
+        entity,
+      );
+      kbInsightsCount++;
+    }
+    if (kbInsightsCount > 0) {
+      console.log('    COS: wrote ' + kbInsightsCount + ' KB insights');
+    }
+  }
 
   console.log('    COS: done in ' + ((Date.now() - start) / 1000).toFixed(1) + 's -- ' + (brief.headline || '(no headline)').slice(0, 80));
 
@@ -258,5 +421,8 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
     raw_response: response.result,
     durationMs: Date.now() - start,
     sessionId: response.sessionId || sessionId || '',
+    memoryUpdate,
+    concernsUpdate,
+    kbInsightsCount,
   };
 }
