@@ -70,8 +70,16 @@ function createClaudeCodeProvider(): LLMProvider {
         try {
           // Try parsing as single JSON envelope
           const envelope = JSON.parse(stdout);
+          if (envelope.is_error || envelope.subtype?.includes('error')) {
+            // Error envelope (max_turns, etc.) — extract any partial result
+            result = envelope.result || '';
+            if (!result) {
+              throw new Error(`Claude CLI error: ${envelope.subtype || 'unknown'} after ${envelope.num_turns || '?'} turns`);
+            }
+          }
           result = envelope.result || '';
-        } catch {
+        } catch (parseErr: any) {
+          if (parseErr.message?.startsWith('Claude CLI error')) throw parseErr;
           // If JSON parse fails (truncated, multiple objects, or raw text):
           // Try to extract "result" field with regex
           const resultMatch = stdout.match(/"result"\s*:\s*"((?:[^"\\]|\\.)*)"/);
