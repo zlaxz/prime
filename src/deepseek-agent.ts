@@ -221,7 +221,13 @@ async function executeTool(db: Database.Database, name: string, args: any): Prom
         WHERE source = 'calendar' AND source_date >= datetime('now') AND source_date <= datetime('now', '+' || ? || ' days')
         ORDER BY source_date ASC
       `).all(days) as any[];
-      return JSON.stringify(results);
+      // Add explicit day-of-week to prevent LLM date errors
+      const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const enriched = results.map((r: any) => {
+        const d = new Date(r.source_date);
+        return { ...r, day_of_week: dayNames[d.getDay()] };
+      });
+      return JSON.stringify(enriched);
     }
 
     case 'get_entity_profile': {

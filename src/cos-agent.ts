@@ -88,8 +88,15 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
   const calendar = db.prepare(
     "SELECT title, source_date FROM knowledge WHERE source = 'calendar' AND source_date >= datetime('now') AND source_date <= datetime('now', '+7 days') ORDER BY source_date ASC"
   ).all() as any[];
+  const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const calendarText = calendar.length > 0
-    ? 'UPCOMING CALENDAR:\n' + calendar.map((c: any) => '- ' + (c.source_date || '').slice(0, 10) + ' ' + c.title).join('\n')
+    ? 'UPCOMING CALENDAR:\n' + calendar.map((c: any) => {
+        const d = new Date(c.source_date);
+        const day = dayNames[d.getDay()];
+        const dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const time = c.source_date?.includes('T') ? d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Denver' }) : '';
+        return '- ' + day + ' ' + dateStr + (time ? ' ' + time : '') + ' -- ' + c.title;
+      }).join('\n')
     : '';
 
   // 5. PM concerns (from project managers)
