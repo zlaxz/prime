@@ -6,3 +6,6 @@ dist/
 !src/**
 .env
 .env
+*.db
+test-*.ts
+opus-*.ts
