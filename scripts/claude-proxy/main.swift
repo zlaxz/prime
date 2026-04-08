@@ -96,7 +96,7 @@ class HTTPServer {
             let timeout = json["timeout"] as? Int ?? 300  // 5 min default for strategic questions with tool use
 
             // Build args: always use MCP, allow enough turns for tool calls + response
-            var args = ["-p", "--output-format", "json", "--max-turns", "15"]
+            var args = ["-p", "--output-format", "json", "--max-turns", "50"]
 
             // Resume existing session or start fresh
             if let sid = sessionId, !sid.isEmpty {
@@ -206,7 +206,7 @@ class HTTPServer {
 
         // Build claude -p command
         // Allow enough turns for tool use (web search, MCP calls)
-        let maxTurns = (extraArgs.contains("--max-turns")) ? [] : ["--max-turns", "10"]
+        let maxTurns = (extraArgs.contains("--max-turns")) ? [] : ["--max-turns", "50"]
         var args = ["-p", "--output-format", "json"] + maxTurns + extraArgs
 
         // Load MCP config if available

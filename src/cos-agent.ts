@@ -35,8 +35,8 @@ function callProxy(prompt: string, sessionId?: string, timeoutSec = 300): Promis
       prompt,
       timeout: timeoutSec,
       args: sessionId
-        ? ['--resume', sessionId, '--max-turns', '5']
-        : ['--max-turns', '5'],
+        ? ['--resume', sessionId]
+        : [],
     });
     const req = httpRequest('http://localhost:3211/claude', {
       method: 'POST',
@@ -133,6 +133,14 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
   const quinnMemory = quinnState?.memory || '';
   const quinnConcerns = quinnState?.concerns || '';
 
+  // 6c. Load Quinn's SOUL.md identity
+  let quinnSoul = '';
+  try {
+    const { readFileSync } = await import('fs');
+    const homedir = process.env.HOME || '/Users/zachstock';
+    quinnSoul = readFileSync(homedir + '/.prime/agents/cos/SOUL.md', 'utf-8');
+  } catch {}
+
   // 7. Build COS prompt
   const now = new Date();
   const dayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][now.getDay()];
@@ -143,9 +151,18 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
   ).get() as any;
   const sessionId = cosState?.session_id || undefined;
 
-  const promptParts = [
-    "You are Quinn Parker, Zach Stock's AI Chief of Staff at Recapture Insurance.",
-    "You are NOT summarizing someone else's work. YOU are the COS. This is YOUR intelligence, YOUR analysis, YOUR recommendations.",
+  const promptParts: string[] = [];
+
+  // Load identity if available
+  if (quinnSoul) {
+    promptParts.push(quinnSoul);
+    promptParts.push('');
+  } else {
+    promptParts.push("You are Quinn Parker, Zach Stock's AI Chief of Staff at Recapture Insurance.");
+    promptParts.push("You are NOT summarizing someone else's work. YOU are the COS. This is YOUR intelligence, YOUR analysis, YOUR recommendations.");
+  }
+
+  promptParts.push(
     'TODAY IS: ' + dateStr,
     '',
   ];
@@ -232,11 +249,37 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
   // 9. Parse all sections from response
   const content = response.result;
 
-  // Split on markers -- each section is between markers
-  const emailMarker = content.indexOf('---EMAIL---');
-  const memoryMarker = content.indexOf('---MEMORY_UPDATE---');
-  const concernsMarker = content.indexOf('---CONCERNS_UPDATE---');
-  const kbMarker = content.indexOf('---KB_INSIGHTS---');
+  console.log('    COS raw response length: ' + content.length + ' chars');
+
+  // Fuzzy marker search -- Opus sometimes adds spaces or changes case
+  function findMarker(text: string, marker: string): number {
+    let idx = text.indexOf(marker);
+    if (idx >= 0) return idx;
+    // Case-insensitive
+    idx = text.toLowerCase().indexOf(marker.toLowerCase());
+    if (idx >= 0) return idx;
+    // Try without the dashes (just the word)
+    const word = marker.replace(/---/g, '').trim();
+    const regex = new RegExp('-{2,3}\\s*' + word + '\\s*-{2,3}', 'i');
+    const match = text.match(regex);
+    if (match && match.index !== undefined) return match.index;
+    return -1;
+  }
+
+  // Find marker end positions (after the marker text itself)
+  function markerEnd(text: string, marker: string, pos: number): number {
+    if (pos < 0) return -1;
+    // Find the end of the marker line
+    const lineEnd = text.indexOf('\n', pos);
+    return lineEnd >= 0 ? lineEnd + 1 : pos + marker.length;
+  }
+
+  const emailMarker = findMarker(content, '---EMAIL---');
+  const memoryMarker = findMarker(content, '---MEMORY_UPDATE---');
+  const concernsMarker = findMarker(content, '---CONCERNS_UPDATE---');
+  const kbMarker = findMarker(content, '---KB_INSIGHTS---');
+
+  console.log('    COS markers: email=' + (emailMarker >= 0) + ' memory=' + (memoryMarker >= 0) + ' concerns=' + (concernsMarker >= 0) + ' kb=' + (kbMarker >= 0));
 
   // Extract JSON brief (everything before ---EMAIL---)
   const jsonPart = emailMarker >= 0 ? content.slice(0, emailMarker) : content;
@@ -244,7 +287,9 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
   // Extract email (between ---EMAIL--- and ---MEMORY_UPDATE--- or end)
   let emailBody = '';
   if (emailMarker >= 0) {
-    const emailStart = emailMarker + '---EMAIL---'.length;
+    // Skip past the marker line itself
+    const emailLineEnd = content.indexOf('\n', emailMarker);
+    const emailStart = emailLineEnd >= 0 ? emailLineEnd + 1 : emailMarker + 15;
     const emailEnd = memoryMarker >= 0 ? memoryMarker : (concernsMarker >= 0 ? concernsMarker : (kbMarker >= 0 ? kbMarker : content.length));
     emailBody = content.slice(emailStart, emailEnd).trim();
   }
