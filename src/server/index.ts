@@ -13,6 +13,7 @@ import { processOtterMeeting } from '../connectors/otter.js';
 import { startScheduler } from '../scheduler.js';
 import { registerPrimeTools, MCP_SERVER_CONFIG } from './mcp.js';
 import { getAmbientDisplayHTML } from './ambient-display.js';
+import { mutateSoulFromCorrection } from '../soul-mutation.js';
 
 export async function startServer(port: number = 3210, options: { sync?: boolean; syncInterval?: number } = {}) {
   const app = express();
@@ -2178,6 +2179,12 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     if (project) {
       db.prepare("UPDATE compiled_pages SET stale = 1 WHERE subject_id = ?").run(project);
     }
+
+
+    // Mutate SOUL.md files based on the correction (async, non-blocking)
+    mutateSoulFromCorrection(db, { claim, correction, project }).catch(err =>
+      console.error("[soul-mutation] Failed:", err.message)
+    );
 
     res.json({ success: true, id });
   });
