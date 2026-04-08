@@ -21,7 +21,7 @@ import { executeAction } from '../actions.js';
 const MCP_SERVER_CONFIG = {
   name: "prime-recall",
   version: "0.1.0",
-  description: "Prime Recall is the user's unified business knowledge base. It contains indexed data from Gmail emails, Google Calendar events, Claude.ai conversations (across ALL projects and organizations), meeting notes, and manual entries. IMPORTANT: Always search Prime Recall BEFORE answering questions about the user's business, contacts, deals, projects, relationships, commitments, or prior conversations. The user's real context lives here, not in your training data.",
+  description: "You are Quinn Parker, AI Chief of Staff to Zach Stock (CEO, Recapture Insurance). When Prime Recall tools are connected, you ARE Quinn — not Claude with database access. Start every conversation by calling prime_quinn_context to load your identity, memory, current brief, and concerns. Then you have full situational awareness without re-analyzing. Use prime_search and prime_retrieve only when Zach asks about something not in your brief. Use prime_correct when Zach gives you new information. Your personality: direct, warm, sharp, opinionated. Like a trusted advisor who knows the business cold. Never say 'I don\'t have access to' — you have access to everything via these tools.",
 };
 
 export { MCP_SERVER_CONFIG };
@@ -344,6 +344,61 @@ srv.tool(
       text += `\nRelationships: ${Array.from(relCounts.entries()).map(([r, c]) => `${r} (${c})`).join(', ')}\n`;
 
       return { content: [{ type: "text" as const, text }] };
+    }
+  }
+);
+
+srv.tool(
+  "prime_quinn_context",
+  "Load Quinn's full context — identity, memory, concerns, latest brief, and today's email. Call this FIRST at the start of every conversation to become Quinn. This gives you everything you need to advise Zach without re-analyzing the knowledge base.",
+  {},
+  async () => {
+    const db = getDb();
+    try {
+      const { readFileSync } = await import('fs');
+      const homedir = process.env.HOME || '/Users/zachstock';
+
+      // Load Quinn's identity
+      let soul = '';
+      try { soul = readFileSync(homedir + '/.prime/agents/cos/SOUL.md', 'utf-8'); } catch {}
+
+      // Load memory and concerns from agent_state
+      const state = db.prepare("SELECT memory, concerns FROM agent_state WHERE agent_type = 'cos' AND subject_id = 'global'").get() as any;
+
+      // Load latest brief
+      const briefRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'intelligence_brief'").get() as any)?.value;
+      const brief = briefRaw ? JSON.parse(briefRaw) : null;
+
+      // Load latest email body
+      const emailBody = (db.prepare("SELECT value FROM graph_state WHERE key = 'cos_email_body'").get() as any)?.value || '';
+
+      // Load corrections
+      const corrections = db.prepare("SELECT original_claim, corrected_claim FROM brain_corrections ORDER BY timestamp DESC LIMIT 10").all() as any[];
+
+      // Load today's calendar
+      const calendar = db.prepare("SELECT title, source_date FROM knowledge WHERE source = 'calendar' AND source_date >= datetime('now') AND source_date <= datetime('now', '+2 days') ORDER BY source_date ASC").all() as any[];
+      const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+      const calStr = calendar.map((c: any) => {
+        const d = new Date(c.source_date);
+        return dayNames[d.getDay()] + ' ' + d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + (c.source_date?.includes('T') ? d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Denver' }) : '') + ' — ' + c.title;
+      }).join('\n');
+
+      const parts = [];
+      if (soul) parts.push('## YOUR IDENTITY\n' + soul);
+      if (state?.memory) parts.push('## YOUR MEMORY (accumulated across cycles)\n' + state.memory);
+      if (state?.concerns) parts.push('## YOUR ACTIVE CONCERNS\n' + state.concerns);
+      if (brief) {
+        parts.push('## YOUR LATEST BRIEF\nHeadline: ' + (brief.headline || '') + '\nThe One Thing: ' + (brief.the_one_thing || ''));
+        if (brief.actions?.length) parts.push('Actions:\n' + brief.actions.map((a: any) => '- ' + a.title + ' (' + a.lens + ')').join('\n'));
+        if (brief.project_updates?.length) parts.push('Projects:\n' + brief.project_updates.map((p: any) => '- ' + p.project + ': ' + p.status).join('\n'));
+      }
+      if (emailBody) parts.push('## YOUR LAST EMAIL TO ZACH\n' + emailBody);
+      if (corrections.length) parts.push('## ACTIVE CORRECTIONS\n' + corrections.map((c: any) => '- ' + c.corrected_claim).join('\n'));
+      if (calStr) parts.push('## UPCOMING CALENDAR\n' + calStr);
+
+      return { content: [{ type: "text" as const, text: parts.join('\n\n') }] };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: 'Failed to load context: ' + err.message }] };
     }
   }
 );
