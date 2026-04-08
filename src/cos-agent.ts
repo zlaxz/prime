@@ -165,7 +165,7 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
   promptParts.push(
     'TODAY IS: ' + dateStr,
     '',
-  ];
+  );
 
   if (sessionId) {
     promptParts.push('This is a continuing conversation. You remember what you said in previous emails. Focus on what is NEW or CHANGED. Do not repeat yourself.');
