@@ -140,10 +140,10 @@ async function executeTool(db: Database.Database, name: string, args: any): Prom
       const likeResults = db.prepare(`
         SELECT title, substr(summary, 1, 300) as summary, source, source_date, source_ref, source_account, provenance
         FROM knowledge
-        WHERE (title LIKE ? OR summary LIKE ?) ${projectWhere}
+        WHERE (title LIKE ? OR summary LIKE ? OR contacts LIKE ?) ${projectWhere}
         AND source NOT IN ('agent-report', 'agent-notification', 'briefing', 'playbook', 'cos-insight', 'verification')
         ORDER BY CASE WHEN source IN ('correction', 'manual', 'training') THEN 0 WHEN provenance = 'primary' THEN 1 ELSE 2 END, source_date DESC LIMIT ?
-      `).all('%' + args.query + '%', '%' + args.query + '%', limit) as any[];
+      `).all('%' + args.query + '%', '%' + args.query + '%', '%' + args.query + '%', limit) as any[];
       return JSON.stringify(likeResults);
     }
 
