@@ -176,14 +176,41 @@ async function runClaudeViaProxy(prompt: string, options: {
 
 /**
  * Spawn claude -p in background (detached, fire-and-forget).
+ * Routes through the localhost:3211 proxy first (Mac Mini Keychain access),
+ * falling back to direct spawn if proxy is unavailable.
+ *
  * Prompt is passed as a CLI argument (for short prompts) or
  * via a temp file + shell pipe (for long prompts in agents).
  */
-export function spawnClaudeBackground(options: {
+export async function spawnClaudeBackground(options: {
   prompt?: string;
   promptPath?: string;
   extraArgs?: string[];
-}): ChildProcess {
+}): Promise<void> {
+  // Resolve prompt text (from direct string or temp file)
+  let prompt: string;
+  if (options.prompt) {
+    prompt = options.prompt;
+  } else if (options.promptPath) {
+    const { readFileSync } = await import('fs');
+    prompt = readFileSync(options.promptPath, 'utf-8');
+  } else {
+    throw new Error('spawnClaudeBackground requires either prompt or promptPath');
+  }
+
+  // Try proxy first (fire-and-forget — don't wait for claude to finish)
+  try {
+    await spawnClaudeBackgroundViaProxy(prompt, options.extraArgs);
+    // Proxy accepted the request — clean up temp file if any
+    if (options.promptPath) {
+      try { const { unlinkSync } = await import('fs'); unlinkSync(options.promptPath); } catch {}
+    }
+    return;
+  } catch {
+    // Proxy unavailable — fall back to direct spawn
+  }
+
+  // Direct spawn fallback (laptop / no proxy)
   const { cmd, args } = buildClaudeCommand({ extraArgs: options.extraArgs });
   const env = buildClaudeEnv();
 
@@ -196,19 +223,51 @@ export function spawnClaudeBackground(options: {
       env,
     });
     child.unref();
-    return child;
-  } else if (options.prompt) {
+  } else {
     // Short prompt as arg
-    const child = spawn(cmd, [...args, options.prompt], {
+    const child = spawn(cmd, [...args, prompt], {
       detached: true,
       stdio: 'ignore',
       env,
     });
     child.unref();
-    return child;
-  } else {
-    throw new Error('spawnClaudeBackground requires either prompt or promptPath');
   }
+}
+
+/**
+ * Fire-and-forget POST to the proxy for background agent spawns.
+ * Resolves once the proxy accepts the request (not when claude finishes).
+ * The proxy runs claude in the background — we don't wait for the result.
+ */
+async function spawnClaudeBackgroundViaProxy(prompt: string, extraArgs?: string[]): Promise<void> {
+  const { request: httpRequest } = await import('http');
+  const args: string[] = [...(extraArgs || [])];
+  // Background agents get generous timeout (5 min)
+  const body = JSON.stringify({ prompt, timeout: 300, args, background: true });
+
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port: 3211,
+      path: '/claude',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      timeout: 5000, // 5s to confirm proxy accepted — not waiting for claude to finish
+    }, (res) => {
+      // We don't need the response body for fire-and-forget
+      // But we consume it to avoid memory leaks
+      res.resume();
+      if (res.statusCode === 200 || res.statusCode === 202) {
+        resolve();
+      } else {
+        reject(new Error(`Proxy ${res.statusCode}`));
+      }
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Proxy timeout')); });
+    req.write(body);
+    req.end();
+  });
 }
 
 /**

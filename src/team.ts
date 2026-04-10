@@ -581,7 +581,7 @@ export async function runAgent(
   writeTmp(promptPath, prompt);
 
   if (background) {
-    spawnClaudeBackground({
+    await spawnClaudeBackground({
       promptPath,
       extraArgs: ['--allowedTools', 'mcp__prime-recall__*'],
     });
