@@ -102,7 +102,7 @@ async function tick() {
     console.log('[shift]   Running dream pipeline (project/entity profiles, commitments)...');
     try {
       const { runDreamPipeline } = await import('./dream.js');
-      const dreamResult = await runDreamPipeline({ quick: true }); // SQL tasks only — LLM tasks replaced by wiki agents + PMs
+      const dreamResult = await runDreamPipeline({ quick: false }); // Full mode — includes intelligence cycle, hypotheses, questions
       const succeeded = dreamResult.tasks.filter((t: any) => t.status === 'success').length;
       const failed = dreamResult.tasks.filter((t: any) => t.status === 'failed').length;
       console.log('[shift]   Dream: ' + succeeded + ' succeeded, ' + failed + ' failed (' + dreamResult.total_duration.toFixed(0) + 's)');
