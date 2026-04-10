@@ -66,7 +66,7 @@ async function tick() {
           "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('upcoming_meeting_alert', ?, datetime('now'))"
         ).run(JSON.stringify(meetings.map((m: any) => ({ title: m.title, time: m.source_date }))));
       }
-    } catch {}
+    } catch (e) {}
 
     // Commitment deadline check — anything due in next 24 hours
     try {
@@ -85,7 +85,7 @@ async function tick() {
           "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('urgent_commitments', ?, datetime('now'))"
         ).run(JSON.stringify(urgentCommitments));
       }
-    } catch {}
+    } catch (e) {}
 
     db.prepare(
       "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_hourly_check', ?, datetime('now'))"
@@ -192,7 +192,7 @@ async function tick() {
           console.log('[shift]   Quinn daily email sent');
         }
       }
-    } catch {}
+    } catch (e) {}
 
     db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_full_cycle', ?, datetime('now'))").run(JSON.stringify(new Date().toISOString()));
 
@@ -206,7 +206,7 @@ async function tick() {
         execSync(`git commit -m "Auto-commit: shift ${new Date().toISOString().slice(0,10)}"`, { cwd });
       }
       execSync("git push origin main 2>/dev/null || true", { cwd });
-    } catch {}
+    } catch (e) {}
   }
 
   // ── HEALTH CHECK (every tick) ──
@@ -241,7 +241,7 @@ async function tick() {
         health.push(`${count} Terminal windows accumulated — closing`);
         execSync("osascript -e 'tell application \"Terminal\" to close every window' 2>/dev/null");
       }
-    } catch {}
+    } catch (e) {}
 
     if (health.length > 0) {
       console.log(`[shift]   ⚠️ HEALTH: ${health.join(' | ')}`);
@@ -249,7 +249,7 @@ async function tick() {
         "INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('system_health', ?, datetime('now'))"
       ).run(JSON.stringify({ issues: health, checked_at: new Date().toISOString() }));
     }
-  } catch {}
+  } catch (e) {}
 
   console.log(`[shift] ${now.toLocaleTimeString()} — Tick complete.`);
 }
