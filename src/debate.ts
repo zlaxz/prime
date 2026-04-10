@@ -62,6 +62,12 @@ async function callLocal(prompt: string, opts: { sessionId?: string; maxTurns?: 
     if (opts.maxTurns) args.push('--max-turns', String(opts.maxTurns));
     if (opts.sessionId) args.push('--resume', opts.sessionId);
 
+    // Load MCP config so debate agents have Prime tools (search, retrieve, etc.)
+    const { existsSync } = require('fs');
+    const { join } = require('path');
+    const mcpConfig = join(process.env.HOME || '', '.claude', '.mcp.json');
+    if (existsSync(mcpConfig)) args.push('--mcp-config', mcpConfig);
+
     const proc = execFile('claude', args, {
       timeout: (opts.timeout || 120) * 1000,
       maxBuffer: 10 * 1024 * 1024,
@@ -120,7 +126,7 @@ export async function debate(options: DebateOptions): Promise<DebateResult> {
   const transcript: DebateTurn[] = [];
   const sessionIds: Record<string, string> = {};
   const call = options.mode === 'proxy' ? callProxy : callLocal;
-  const callOpts = { maxTurns: options.maxTurns ?? 3, timeout: options.timeout ?? 120, proxyUrl: options.proxyUrl };
+  const callOpts = { maxTurns: options.maxTurns ?? 10, timeout: options.timeout ?? 180, proxyUrl: options.proxyUrl };
 
   // Initialize session IDs from agent configs
   for (const agent of options.agents) {
