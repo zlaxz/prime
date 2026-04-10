@@ -88,7 +88,7 @@ export function extractOtterCredentials(): OtterCredentials | null {
     ).get() as { value: string } | undefined;
 
     cookieDb.close();
-    try { unlinkSync(tmpPath); } catch {}
+    try { unlinkSync(tmpPath); } catch (_e) {}
     // Clean up debug logging
 
 

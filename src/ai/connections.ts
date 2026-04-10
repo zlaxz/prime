@@ -411,7 +411,7 @@ export function getConnections(
           // Parse JSON fields
           for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
             if (item[field] && typeof item[field] === 'string') {
-              try { item[field] = JSON.parse(item[field]); } catch {}
+              try { item[field] = JSON.parse(item[field]); } catch (_e) {}
             }
           }
           item.embedding = null; // Don't return embeddings
@@ -471,7 +471,7 @@ export function getContactGraph(
       if (connItem) {
         for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
           if (connItem[field] && typeof connItem[field] === 'string') {
-            try { connItem[field] = JSON.parse(connItem[field] as string); } catch {}
+            try { connItem[field] = JSON.parse(connItem[field] as string); } catch (_e) {}
           }
         }
         connItem.embedding = null;

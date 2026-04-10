@@ -82,7 +82,7 @@ function discoverSessionsFromPath(basePath: string, days: number): CodeSession[]
             const ts = msg.timestamp || '';
             if (ts && (!firstTs || ts < firstTs)) firstTs = ts;
             if (ts && ts > lastTs) lastTs = ts;
-          } catch {}
+          } catch (_e) {}
         }
 
         // Need at least one user and one assistant message
@@ -98,7 +98,7 @@ function discoverSessionsFromPath(basePath: string, days: number): CodeSession[]
           firstTimestamp: firstTs,
           lastTimestamp: lastTs,
         });
-      } catch {}
+      } catch (_e) {}
     }
   }
 
@@ -318,7 +318,7 @@ export async function scanClaudeCode(
       insertKnowledge(db, item);
       stats.memory++;
       stats.items++;
-    } catch {}
+    } catch (_e) {}
   }
   console.log(`  ${stats.memory} memory files ingested`);
 

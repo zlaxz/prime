@@ -123,7 +123,7 @@ Return JSON:
               });
               parsed = true;
               break;
-            } catch {}
+            } catch (_e) {}
           }
           if (!parsed) {
             findings.push({

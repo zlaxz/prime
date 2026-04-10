@@ -221,7 +221,7 @@ export async function extractSessionKey(): Promise<string | null> {
         timeout: 10000,
       }).trim();
     } finally {
-      try { unlinkSync(scriptPath); } catch {}
+      try { unlinkSync(scriptPath); } catch (_e) {}
     }
 
     if (result.startsWith('sk-ant-')) {
@@ -772,7 +772,7 @@ export async function scanClaude(
           project: projectName || extracted.project || undefined,
           tags: ['claude-artifact', `artifact-type:${artifact.type}`],
         });
-      } catch {}
+      } catch (_e) {}
     }
   }
 

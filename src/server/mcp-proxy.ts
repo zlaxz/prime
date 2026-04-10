@@ -43,7 +43,7 @@ async function getServer(): Promise<string | null> {
         _lastCheck = Date.now();
         return server;
       }
-    } catch {}
+    } catch (_e) {}
   }
 
   _activeServer = null;
@@ -756,7 +756,7 @@ server.tool(
             alerts.push(`  ${tag} ${d.decision}`);
           }
         }
-      } catch {}
+      } catch (_e) {}
 
       return { content: [{ type: "text" as const, text: alerts.length > 0 ? alerts.join('\n') : 'No proactive alerts. All clear.' }] };
     } catch (err: any) {

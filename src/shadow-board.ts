@@ -50,7 +50,7 @@ function getBusinessContext(db: Database.Database): string {
       const parsed = JSON.parse(profiles);
       const lines = Object.entries(parsed).map(([k, v]: [string, any]) => `- ${k}: ${v.status || 'unknown'} — ${v.description || ''}`);
       if (lines.length) sections.push(`ACTIVE PROJECTS:\n${lines.join('\n')}`);
-    } catch {}
+    } catch (_e) {}
   }
 
   // Key entities
@@ -72,7 +72,7 @@ function parseAdvisorResponse(raw: string): any {
   // Extract JSON from response — advisor may wrap it in markdown
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
   if (jsonMatch) {
-    try { return JSON.parse(jsonMatch[0]); } catch {}
+    try { return JSON.parse(jsonMatch[0]); } catch (_e) {}
   }
   return { assessment: raw, error: 'Could not parse structured response' };
 }

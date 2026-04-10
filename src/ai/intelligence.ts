@@ -12,7 +12,7 @@ function queryRows(db: Database.Database, sql: string, params: any[] = []): any[
   for (const row of rows) {
     for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
       if (row[field] && typeof row[field] === 'string') {
-        try { row[field] = JSON.parse(row[field] as string); } catch {}
+        try { row[field] = JSON.parse(row[field] as string); } catch (_e) {}
       }
     }
   }
@@ -22,7 +22,7 @@ function queryRows(db: Database.Database, sql: string, params: any[] = []): any[
 function parseJson(value: any): any {
   if (Array.isArray(value)) return value;
   if (value && typeof value === 'object') return value;
-  if (typeof value === 'string') { try { return JSON.parse(value); } catch {} }
+  if (typeof value === 'string') { try { return JSON.parse(value); } catch (_e) {} }
   return [];
 }
 
@@ -90,7 +90,7 @@ function loadEntityFilters(db: Database.Database): EntityFilters {
       WHERE (user_label = 'noise' OR relationship_type = 'noise') AND user_dismissed = 0
     `).all() as any[];
     for (const n of noise) filters.noiseEntityIds.add(n.id);
-  } catch {}
+  } catch (_e) {}
 
   return filters;
 }
@@ -147,7 +147,7 @@ function buildPersonContexts(db: Database.Database, filters: EntityFilters): Map
             entityId = entity.id;
             entityName = entity.canonical_name;
           }
-        } catch {}
+        } catch (_e) {}
 
         // Check dismissed domain
         if (!entityId) {
@@ -174,7 +174,7 @@ function buildPersonContexts(db: Database.Database, filters: EntityFilters): Map
               break;
             }
           }
-        } catch {}
+        } catch (_e) {}
       }
 
       // Still no entity — use first non-self contact as key
@@ -255,7 +255,7 @@ function buildPersonContexts(db: Database.Database, filters: EntityFilters): Map
           const entityRow = db.prepare('SELECT relationship_type, user_label FROM entities WHERE id = ?').get(entityId) as any;
           relType = entityRow?.relationship_type;
           userLabel = entityRow?.user_label;
-        } catch {}
+        } catch (_e) {}
       }
 
       contexts.set(entityId!, {
@@ -354,7 +354,7 @@ export function getAlerts(db: Database.Database): AlertItem[] {
             });
           }
         }
-      } catch {}
+      } catch (_e) {}
     }
 
     // ── Layer 2: Real-time heuristics (no profile available) ────────
@@ -445,7 +445,7 @@ export function getAlerts(db: Database.Database): AlertItem[] {
         }
       }
     }
-  } catch {}
+  } catch (_e) {}
 
   // ── 3. Cold relationships ─────────────────────────────────
   // Only alert on relationships that WERE active and went cold — not one-offs
@@ -502,7 +502,7 @@ export function getAlerts(db: Database.Database): AlertItem[] {
         reasoning: reasoning.trim(),
       });
     }
-  } catch {}
+  } catch (_e) {}
 
   // Sort: severity first, then confidence descending
   const severityOrder: Record<string, number> = { critical: 0, high: 1, normal: 2 };

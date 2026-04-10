@@ -311,7 +311,7 @@ function parseActions(response: string, db: Database.Database, sessionId: string
       ) as any;
 
       if (id) actionIds.push(String(id.id));
-    } catch {}
+    } catch (_e) {}
   }
 
   return actionIds;

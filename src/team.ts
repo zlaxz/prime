@@ -540,7 +540,7 @@ export async function runAgent(
     const { getWorldModelForPrompt } = await import('./ai/world.js');
     const { getDb: getDbForWorld } = await import('./db.js');
     worldContext = getWorldModelForPrompt(getDbForWorld());
-  } catch {}
+  } catch (_e) {}
 
   // Inject domain knowledge files
   let knowledgeContext = '';
@@ -556,7 +556,7 @@ export async function runAgent(
         knowledgeContext = `<domain-knowledge>\n${docs}\n</domain-knowledge>\n`;
       }
     }
-  } catch {}
+  } catch (_e) {}
 
   const prompt = [
     worldContext ? `<world-model>\n${worldContext}\n</world-model>\n` : '',
@@ -600,10 +600,10 @@ export async function runAgent(
       agent.last_report = stdout.slice(0, 500);
       saveAgent(agent);
 
-      try { unlinkTmp(promptPath); } catch {}
+      try { unlinkTmp(promptPath); } catch (_e) {}
       return { status: 'completed', output: stdout };
     } catch (err: any) {
-      try { unlinkTmp(promptPath); } catch {}
+      try { unlinkTmp(promptPath); } catch (_e) {}
       return { status: 'error', output: err.message?.slice(0, 500) };
     }
   }

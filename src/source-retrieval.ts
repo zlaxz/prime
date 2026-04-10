@@ -244,7 +244,7 @@ export async function retrieveGmailAttachments(
           } catch {
             text = `[Could not extract text from ${part.filename}]`;
           }
-          try { unlinkSync(tmpPath); } catch {}
+          try { unlinkSync(tmpPath); } catch (_e) {}
         } else if (ext.endsWith('.pdf')) {
           const { spawnSync } = await import('child_process');
           const { writeFileSync, unlinkSync } = await import('fs');
@@ -267,7 +267,7 @@ except:
           } catch {
             text = `[Could not extract text from ${part.filename}]`;
           }
-          try { unlinkSync(tmpPath); } catch {}
+          try { unlinkSync(tmpPath); } catch (_e) {}
         }
 
         if (text && text.length > 10) {
@@ -277,7 +277,7 @@ except:
             mimeType: part.mimeType || 'unknown',
           });
         }
-      } catch {}
+      } catch (_e) {}
     }
 
     return attachments;
@@ -312,7 +312,7 @@ export async function retrieveSourceContent(
         retrieved_at: new Date().toISOString(),
       };
     }
-  } catch {}
+  } catch (_e) {}
 
   // Retrieve via API — the index points to the source, go read it
   if (item.source === 'gmail' || item.source === 'gmail-sent') {
@@ -326,7 +326,7 @@ export async function retrieveSourceContent(
     try {
       db.prepare('UPDATE knowledge SET raw_content = ? WHERE source_ref = ?')
         .run(content, item.source_ref);
-    } catch {}
+    } catch (_e) {}
 
     return {
       source: item.source,
@@ -398,7 +398,7 @@ export async function retrieveSourceContent(
         try {
           db.prepare('UPDATE knowledge SET raw_content = ? WHERE source_ref = ?')
             .run(content.slice(0, 50000), item.source_ref);
-        } catch {}
+        } catch (_e) {}
 
         return {
           source: item.source,
@@ -408,7 +408,7 @@ export async function retrieveSourceContent(
           retrieved_at: new Date().toISOString(),
         };
       }
-    } catch {}
+    } catch (_e) {}
   }
 
   // Otter.ai meetings — retrieve via internal API
@@ -472,7 +472,7 @@ export async function retrieveSourceContent(
           retrieved_at: new Date().toISOString(),
         };
       }
-    } catch {}
+    } catch (_e) {}
   }
 
   // For other sources (cowork, etc.), use stored metadata.conversation_text if available

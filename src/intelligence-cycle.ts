@@ -639,7 +639,7 @@ const cosPrompt = [
         brief = JSON.parse(response.slice(jsonStart, end));
         parsed = true;
         break;
-      } catch {}
+      } catch (_e) {}
     }
     if (!parsed) {
       // Last resort: greedy match

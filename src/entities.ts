@@ -143,7 +143,7 @@ export function mergeEntities(db: Database.Database, fromName: string, toName: s
     try {
       db.prepare('INSERT OR IGNORE INTO entity_mentions (id, entity_id, knowledge_item_id, role, direction, mention_date, source_account) VALUES (?, ?, ?, ?, ?, ?, ?)')
         .run(uuid(), toEntity.id, m.knowledge_item_id, m.role, m.direction, m.mention_date);
-    } catch {}
+    } catch (_e) {}
   }
 
   // Temporal edge migration: invalidate source edges, create new ones pointing to target
@@ -191,7 +191,7 @@ export function mergeEntities(db: Database.Database, fromName: string, toName: s
   try {
     db.prepare('INSERT OR IGNORE INTO entity_aliases (id, entity_id, alias, alias_normalized, source) VALUES (?, ?, ?, ?, ?)')
       .run(uuid(), toEntity.id, fromEntity.canonical_name, normalizeName(fromEntity.canonical_name), 'merge');
-  } catch {}
+  } catch (_e) {}
 
   // Copy email if target doesn't have one
   if (!toEntity.email && fromEntity.email) {
@@ -303,7 +303,7 @@ export function buildEntityGraph(
         db.prepare('INSERT OR IGNORE INTO entity_mentions (id, entity_id, knowledge_item_id, role, direction, mention_date, source_account) VALUES (?, ?, ?, ?, ?, ?, ?)')
           .run(uuid(), entityId, item.id, 'mentioned', direction, item.source_date);
         stats.mentions++;
-      } catch {}
+      } catch (_e) {}
 
       // Update last_seen_date
       db.prepare('UPDATE entities SET last_seen_date = MAX(COALESCE(last_seen_date, ?), ?) WHERE id = ?')
@@ -333,7 +333,7 @@ export function buildEntityGraph(
         db.prepare('INSERT OR IGNORE INTO entity_mentions (id, entity_id, knowledge_item_id, role, direction, mention_date, source_account) VALUES (?, ?, ?, ?, ?, ?, ?)')
           .run(uuid(), entityId, item.id, 'mentioned', null, item.source_date);
         stats.mentions++;
-      } catch {}
+      } catch (_e) {}
 
       entityIds.add(entityId);
     }
@@ -378,7 +378,7 @@ export function buildEntityGraph(
           // Add evidence (link to current valid edge)
           db.prepare('INSERT OR IGNORE INTO edge_evidence (id, edge_id, knowledge_item_id, evidence_date) VALUES (?, (SELECT id FROM entity_edges WHERE source_entity_id = ? AND target_entity_id = ? AND edge_type = ? AND invalid_at IS NULL), ?, ?)')
             .run(uuid(), a, b, 'co_occurs', itemId, null);
-        } catch {}
+        } catch (_e) {}
       }
     }
   }
@@ -566,7 +566,7 @@ export function getLivingProfile(db: Database.Database, nameOrEmail: string): an
         t.entity?.toLowerCase().includes(entity.canonical_name.toLowerCase()) ||
         entity.canonical_name.toLowerCase().includes(t.entity?.toLowerCase())
       );
-    } catch {}
+    } catch (_e) {}
   }
 
   // f) Active commitments
@@ -831,7 +831,7 @@ export function computeRelationshipMomentum(db: Database.Database): Relationship
 function parseJsonArray(val: any): string[] {
   if (Array.isArray(val)) return val;
   if (typeof val === 'string') {
-    try { return JSON.parse(val); } catch {}
+    try { return JSON.parse(val); } catch (_e) {}
   }
   return [];
 }
@@ -839,7 +839,7 @@ function parseJsonArray(val: any): string[] {
 function parseJsonObj(val: any): any {
   if (val && typeof val === 'object' && !Array.isArray(val)) return val;
   if (typeof val === 'string') {
-    try { return JSON.parse(val); } catch {}
+    try { return JSON.parse(val); } catch (_e) {}
   }
   return {};
 }

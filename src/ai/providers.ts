@@ -141,7 +141,7 @@ export async function getDefaultProvider(apiKey?: string): Promise<LLMProvider> 
       _claudeProvider = createClaudeCodeProvider();
       return _claudeProvider;
     }
-  } catch {}
+  } catch (_e) {}
 
   // Fall back to DeepSeek via OpenRouter or direct
   if (process.env.DEEPSEEK_API_KEY) {

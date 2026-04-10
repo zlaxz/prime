@@ -968,7 +968,7 @@ export function searchByText(db: Database.Database, query: string, limit = 20): 
   for (const row of rows) {
     for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
       if (row[field] && typeof row[field] === 'string') {
-        try { row[field] = JSON.parse(row[field] as string); } catch {}
+        try { row[field] = JSON.parse(row[field] as string); } catch (_e) {}
       }
     }
   }
@@ -994,7 +994,7 @@ export function searchByFTS(db: Database.Database, query: string, limit = 20): a
     for (const row of rows) {
       for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
         if (row[field] && typeof row[field] === 'string') {
-          try { row[field] = JSON.parse(row[field] as string); } catch {}
+          try { row[field] = JSON.parse(row[field] as string); } catch (_e) {}
         }
       }
     }
@@ -1035,7 +1035,7 @@ export function searchByEmbedding(db: Database.Database, queryEmbedding: number[
       // Parse JSON fields
       for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
         if (obj[field] && typeof obj[field] === 'string') {
-          try { obj[field] = JSON.parse(obj[field]); } catch {}
+          try { obj[field] = JSON.parse(obj[field]); } catch (_e) {}
         }
       }
 
@@ -1082,7 +1082,7 @@ export function getAllKnowledge(db: Database.Database, limit?: number): any[] {
   for (const row of rows) {
     for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
       if (row[field] && typeof row[field] === 'string') {
-        try { row[field] = JSON.parse(row[field] as string); } catch {}
+        try { row[field] = JSON.parse(row[field] as string); } catch (_e) {}
       }
     }
   }
@@ -1163,7 +1163,7 @@ export function getEpisodes(db: Database.Database, limit?: number): any[] {
 
   for (const row of rows) {
     if (row.item_ids && typeof row.item_ids === 'string') {
-      try { row.item_ids = JSON.parse(row.item_ids); } catch {}
+      try { row.item_ids = JSON.parse(row.item_ids); } catch (_e) {}
     }
   }
   return rows;
@@ -1236,7 +1236,7 @@ export function getSemantics(db: Database.Database, options?: { project?: string
   for (const row of rows) {
     for (const field of ['episode_ids', 'item_ids', 'contacts']) {
       if (row[field] && typeof row[field] === 'string') {
-        try { row[field] = JSON.parse(row[field] as string); } catch {}
+        try { row[field] = JSON.parse(row[field] as string); } catch (_e) {}
       }
     }
   }
@@ -1282,7 +1282,7 @@ export function getThemes(db: Database.Database): any[] {
 
   for (const row of rows) {
     if (row.semantic_ids && typeof row.semantic_ids === 'string') {
-      try { row.semantic_ids = JSON.parse(row.semantic_ids); } catch {}
+      try { row.semantic_ids = JSON.parse(row.semantic_ids); } catch (_e) {}
     }
   }
   return rows;

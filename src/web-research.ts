@@ -66,7 +66,7 @@ export async function runDailyWebResearch(db: Database.Database): Promise<{ arti
         console.log('[research] Skipping — last ran ' + hoursSince.toFixed(1) + 'h ago');
         return { articles: 0, skipped: true };
       }
-    } catch {}
+    } catch (_e) {}
   }
 
   console.log('[research] Starting daily web research...');

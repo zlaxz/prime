@@ -135,7 +135,7 @@ async function executeTool(db: Database.Database, name: string, args: any): Prom
           ORDER BY fts.rank LIMIT ?
         `).all(args.query, limit) as any[];
         if (ftsResults.length > 0) return JSON.stringify(ftsResults);
-      } catch {}
+      } catch (_e) {}
       // Fallback to LIKE
       const projectWhere = args.project ? `AND project = '${args.project.replace(/'/g, "''")}'` : '';
       const likeResults = db.prepare(`
@@ -360,7 +360,7 @@ export async function compileProjectWiki(
     const { readFileSync } = await import('fs');
     const homedir = process.env.HOME || '/Users/zachstock';
     preamble = readFileSync(homedir + '/.prime/agents/research/IDENTITY.md', 'utf-8');
-  } catch {}
+  } catch (_e) {}
 
   const parts: string[] = [];
 
@@ -437,7 +437,7 @@ export async function compileEntityWiki(
     const { readFileSync } = await import('fs');
     const homedir = process.env.HOME || '/Users/zachstock';
     preamble = readFileSync(homedir + '/.prime/agents/research/IDENTITY.md', 'utf-8');
-  } catch {}
+  } catch (_e) {}
 
   const parts: string[] = [];
   if (preamble) {

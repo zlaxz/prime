@@ -67,7 +67,7 @@ program
       if (stdout.includes('Claude Code')) {
         hasClaudeCode = true;
       }
-    } catch {}
+    } catch (_e) {}
 
     console.log('  Setting up your intelligence stack:\n');
 
@@ -1890,7 +1890,7 @@ program
         const { execSync } = await import('child_process');
         execSync(`launchctl unload "${plistPath}"`);
         unlinkSync(plistPath);
-      } catch {}
+      } catch (_e) {}
     }
 
     if (removeAgent(name)) {
@@ -2020,7 +2020,7 @@ program
     try {
       const { stdout } = await execFileAsync('claude', ['--version'], { timeout: 5000 });
       if (stdout.includes('Claude Code')) hasClaude = true;
-    } catch {}
+    } catch (_e) {}
     console.log(`    ${hasClaude ? '✓' : '✗'} Claude Code CLI ${hasClaude ? '(LLM provider — free via Max)' : '(REQUIRED — install: npm i -g @anthropic-ai/claude-code)'}`);
     if (!hasClaude) {
       console.log('\n  ✗ Claude Code CLI is required. Install it and re-run recall activate.\n');
@@ -2199,9 +2199,9 @@ program
 </plist>`;
 
     const syncPlistPath = join(launchAgentsDir, 'com.prime-recall.sync.plist');
-    try { execSync(`launchctl unload "${syncPlistPath}" 2>/dev/null`); } catch {}
+    try { execSync(`launchctl unload "${syncPlistPath}" 2>/dev/null`); } catch (_e) {}
     writeFileSync(syncPlistPath, syncPlist);
-    try { execSync(`launchctl load "${syncPlistPath}"`); } catch {}
+    try { execSync(`launchctl load "${syncPlistPath}"`); } catch (_e) {}
     console.log('    ✓ Sync schedule installed (every 2 hours)');
 
     // Setup Claude Desktop MCP

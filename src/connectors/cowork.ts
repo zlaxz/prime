@@ -92,7 +92,7 @@ function discoverSessionsFromPath(basePath: string): CoworkSession[] {
                   const ts = msg.timestamp || '';
                   if (ts && (!firstTs || ts < firstTs)) firstTs = ts;
                   if (ts && ts > lastTs) lastTs = ts;
-                } catch {}
+                } catch (_e) {}
               }
 
               if (messages.length < 2) continue;
@@ -107,7 +107,7 @@ function discoverSessionsFromPath(basePath: string): CoworkSession[] {
                 firstTimestamp: firstTs,
                 lastTimestamp: lastTs,
               });
-            } catch {}
+            } catch (_e) {}
           }
         }
       }
@@ -534,7 +534,7 @@ export function backfillCoworkRawContent(db: Database.Database): { updated: numb
         const tags: string[] = existingTags?.tags ? JSON.parse(existingTags.tags) : [];
         const mergedTags = [...new Set([...tags, ...searchTerms])];
         db.prepare('UPDATE knowledge SET tags = ? WHERE id = ?').run(JSON.stringify(mergedTags), row.id);
-      } catch {}
+      } catch (_e) {}
     }
 
     db.prepare('UPDATE knowledge SET raw_content = ?, extraction_version = 3 WHERE id = ?')

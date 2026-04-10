@@ -246,7 +246,7 @@ function queryRows(db: Database.Database, sql: string, params: any[]): any[] {
   for (const row of rows) {
     for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
       if (row[field] && typeof row[field] === 'string') {
-        try { row[field] = JSON.parse(row[field] as string); } catch {}
+        try { row[field] = JSON.parse(row[field] as string); } catch (_e) {}
       }
     }
   }
@@ -257,7 +257,7 @@ function parseJsonField(value: any): any {
   if (Array.isArray(value)) return value;
   if (value && typeof value === 'object') return value;
   if (typeof value === 'string') {
-    try { return JSON.parse(value); } catch {}
+    try { return JSON.parse(value); } catch (_e) {}
   }
   return [];
 }

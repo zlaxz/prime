@@ -55,7 +55,7 @@ function hasHighConfidence(action: PendingAction): boolean {
   try {
     const payload = JSON.parse(action.payload);
     if (typeof payload.confidence === 'number' && payload.confidence > 0.7) return true;
-  } catch {}
+  } catch (_e) {}
   // If payload doesn't have explicit confidence, assume high confidence
   // since the action was already filtered at creation (confidence > 0.7 in dream.ts)
   return true;
