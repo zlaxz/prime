@@ -203,6 +203,7 @@ class HTTPServer {
 
         let timeout = json["timeout"] as? Int ?? 300
         let extraArgs = json["args"] as? [String] ?? []
+        let isBackground = json["background"] as? Bool ?? false
 
         // Build claude -p command
         // Allow enough turns for tool use (web search, MCP calls)
@@ -213,6 +214,30 @@ class HTTPServer {
         let mcpConfig = NSHomeDirectory() + "/.claude/.mcp.json"
         if FileManager.default.fileExists(atPath: mcpConfig) {
             args += ["--mcp-config", mcpConfig]
+        }
+
+        // Background mode: spawn claude, respond immediately with 202, don't wait
+        if isBackground {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/claude")
+            proc.arguments = args
+            proc.environment = ProcessInfo.processInfo.environment
+
+            let stdinPipe = Pipe()
+            proc.standardInput = stdinPipe
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+
+            do {
+                try proc.run()
+                stdinPipe.fileHandleForWriting.write(prompt.data(using: .utf8)!)
+                stdinPipe.fileHandleForWriting.closeFile()
+                print("[claude-proxy] Background agent spawned (pid \(proc.processIdentifier))")
+                sendResponse(fd, status: 202, body: "{\"status\":\"spawned\",\"pid\":\(proc.processIdentifier)}")
+            } catch {
+                sendResponse(fd, status: 500, body: "{\"error\":\"\(error.localizedDescription)\"}")
+            }
+            return
         }
 
         let proc = Process()
@@ -273,7 +298,7 @@ class HTTPServer {
     }
 
     func sendResponse(_ fd: Int32, status: Int, body: String) {
-        let statusText = status == 200 ? "OK" : status == 400 ? "Bad Request" : status == 404 ? "Not Found" : status == 504 ? "Gateway Timeout" : "Error"
+        let statusText = status == 200 ? "OK" : status == 202 ? "Accepted" : status == 400 ? "Bad Request" : status == 404 ? "Not Found" : status == 504 ? "Gateway Timeout" : "Error"
         let response = "HTTP/1.1 \(status) \(statusText)\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n\(body)"
         write(fd, response, response.utf8.count)
         close(fd)

@@ -156,7 +156,7 @@ When done, save your report using prime_remember with these exact tags: ['agent:
 
   if (background) {
     // Spawn in background — don't wait for result
-    spawnClaudeBackground({
+    await spawnClaudeBackground({
       prompt,
       extraArgs: ['--allowedTools', 'mcp__prime-recall__*'],
     });
