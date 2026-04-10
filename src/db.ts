@@ -8,7 +8,7 @@ const DB_PATH = join(PRIME_DIR, 'prime.db');
 
 // Belief System: Source classification
 // Derived sources are the system's OWN output — never feed entity graph, search, or world model
-export const DERIVED_SOURCES = ['agent-report', 'agent-notification', 'briefing', 'directive', 'training'] as const;
+export const DERIVED_SOURCES = ['agent-report', 'agent-notification', 'briefing', 'directive', 'training', 'cos-insight', 'verification'] as const;
 
 let _db: Database.Database | null = null;
 
@@ -52,6 +52,8 @@ function initSchema(db: Database.Database) {
       tags TEXT DEFAULT '[]',
       project TEXT,
       importance TEXT DEFAULT 'normal',
+      provenance TEXT DEFAULT 'primary',
+      source_account TEXT,
       valid_from TEXT DEFAULT (datetime('now')),
       valid_until TEXT,
       superseded_by TEXT,
@@ -395,7 +397,7 @@ function initSchema(db: Database.Database) {
     -- ============================================================
     CREATE VIEW IF NOT EXISTS knowledge_primary AS
       SELECT * FROM knowledge
-      WHERE source NOT IN ('agent-report', 'agent-notification', 'briefing', 'directive', 'training');
+      WHERE source NOT IN ('agent-report', 'agent-notification', 'briefing', 'directive', 'training', 'cos-insight', 'verification');
 
     CREATE VIEW IF NOT EXISTS knowledge_derived AS
       SELECT * FROM knowledge
