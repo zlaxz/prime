@@ -507,7 +507,7 @@ WHAT TO PRODUCE:
 - "The one thing" must be genuinely the highest-leverage action, not the scariest scenario.
 - 2-3 ACTIONS max. Each concrete with a person and deadline. For emails, draft in Zach's voice — direct, peer-to-peer, never lecturing.
 - 0-2 research questions ONLY if genuinely useful. Do NOT generate research questions just to fill the field.
-- Skip implication chains, weak signals, and contradictions unless they're genuinely surprising. Empty arrays are fine.`;
+- You MUST produce at least 2 hypotheses and 1 weak signal per cycle. These are the primary intelligence outputs. Contradictions and theories of mind can be empty if nothing genuine exists.`;
 
 // ── Main Entry Point ────────────────────────────────────────
 
