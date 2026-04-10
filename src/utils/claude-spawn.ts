@@ -90,8 +90,9 @@ export function spawnClaude(options: {
 }
 
 /**
- * Run claude -p with a prompt via stdin. Returns stdout as a string.
- * This is the most common pattern — fire prompt, get response.
+ * Run claude via the GUI proxy (localhost:3211) first — this handles
+ * Keychain/OAuth on the Mac Mini. Falls back to direct claude -p
+ * if the proxy is unavailable (laptop use).
  */
 export async function runClaude(prompt: string, options: {
   sessionId?: string;
@@ -100,6 +101,14 @@ export async function runClaude(prompt: string, options: {
   maxTurns?: number;
   timeout?: number;
 } = {}): Promise<string> {
+  // Try proxy first — works on Mac Mini where direct claude -p can't access Keychain
+  try {
+    const result = await runClaudeViaProxy(prompt, options);
+    return result;
+  } catch {
+    // Proxy unavailable — fall back to direct claude -p (works on laptop)
+  }
+
   return new Promise((resolve, reject) => {
     const proc = spawnClaude(options);
 
@@ -116,6 +125,52 @@ export async function runClaude(prompt: string, options: {
 
     proc.stdin!.write(prompt);
     proc.stdin!.end();
+  });
+}
+
+/**
+ * Call claude via the localhost:3211 GUI proxy.
+ * The proxy is a headless macOS app with Keychain access.
+ */
+async function runClaudeViaProxy(prompt: string, options: {
+  sessionId?: string;
+  maxTurns?: number;
+  timeout?: number;
+} = {}): Promise<string> {
+  const { request: httpRequest } = await import('http');
+  const args: string[] = [];
+  if (options.sessionId) args.push('--resume', options.sessionId);
+  if (options.maxTurns) args.push('--max-turns', String(options.maxTurns));
+
+  const timeoutSec = Math.round((options.timeout || 120000) / 1000);
+  const body = JSON.stringify({ prompt, timeout: timeoutSec, args });
+
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port: 3211,
+      path: '/claude',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      timeout: (timeoutSec + 30) * 1000,
+    }, (res) => {
+      let data = '';
+      res.on('data', (d: Buffer) => { data += d.toString(); });
+      res.on('end', () => {
+        if (res.statusCode === 200) {
+          try {
+            const parsed = JSON.parse(data);
+            resolve(parsed.result || data);
+          } catch { resolve(data); }
+        } else {
+          reject(new Error('Proxy ' + res.statusCode));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Proxy timeout')); });
+    req.write(body);
+    req.end();
   });
 }
 
