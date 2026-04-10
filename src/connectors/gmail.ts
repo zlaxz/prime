@@ -795,18 +795,20 @@ export async function sendEmail(
       },
     });
 
-    // Log the sent email as a knowledge item
+    // Log the sent email — but mark system-sent emails as derived to prevent contamination
+    const isSystemEmail = options.to.includes('zach.stock@recaptureinsurance') && options.subject?.includes('Brief');
     const { v4: uuidv4 } = await import('uuid');
     insertKnowledge(db, {
       id: uuidv4(),
       title: `Sent: ${options.subject}`,
       summary: `Email sent to ${options.to}. ${options.body.slice(0, 200)}`,
-      source: 'gmail-sent',
+      source: isSystemEmail ? 'agent-notification' : 'gmail-sent',
       source_ref: `sent:${result.data.id}`,
       source_date: new Date().toISOString(),
       contacts: [options.to.split('<').pop()?.replace('>', '').trim() || options.to],
-      tags: ['sent', 'agent-action'],
+      tags: isSystemEmail ? ['sent', 'system-email', 'quinn'] : ['sent', 'agent-action'],
       importance: 'normal',
+      provenance: isSystemEmail ? 'derived' : 'primary',
       metadata: {
         message_id: result.data.id,
         thread_id: result.data.threadId,
