@@ -6,14 +6,12 @@ import {
   insertEpisode,
   insertSemantic,
   insertTheme,
-  getSemantics,
-  getThemes,
   cosineSimilarity,
   type Episode,
   type Semantic,
   type Theme,
 } from '../db.js';
-import { generateEmbedding, generateEmbeddings } from '../embedding.js';
+import { generateEmbeddings } from '../embedding.js';
 import { getBulkProvider } from './providers.js';
 
 // ============================================================
@@ -632,92 +630,3 @@ Return JSON: {"themes": [{"index": 0, "name": "Theme Name (2-4 words)", "descrip
   return stats;
 }
 
-// ============================================================
-// Hierarchical Context Retrieval
-// ============================================================
-
-export async function getHierarchicalContext(
-  db: Database.Database,
-  query: string,
-  queryEmbedding: number[]
-): Promise<string> {
-  // 1. Search themes by embedding similarity → top 3
-  const themes = getThemes(db);
-  const scoredThemes = themes
-    .map(theme => {
-      let sim = 0;
-      if (theme.centroid) {
-        const centroid = decodeEmbedding(theme.centroid);
-        if (centroid) sim = cosineSimilarity(queryEmbedding, centroid);
-      }
-      return { ...theme, similarity: sim };
-    })
-    .sort((a, b) => b.similarity - a.similarity)
-    .slice(0, 3);
-
-  if (scoredThemes.length === 0) return '';
-
-  // 2. From those themes, get all semantics → rank by query similarity → top 10
-  const semanticIds = new Set<string>();
-  for (const theme of scoredThemes) {
-    const ids = Array.isArray(theme.semantic_ids) ? theme.semantic_ids : JSON.parse(theme.semantic_ids || '[]');
-    for (const id of ids) semanticIds.add(id);
-  }
-
-  const allSemantics = getSemantics(db, { current: true });
-  const relevantSemantics = allSemantics
-    .filter(s => semanticIds.has(s.id))
-    .map(s => {
-      let sim = 0;
-      if (s.embedding) {
-        const emb = decodeEmbedding(s.embedding);
-        if (emb) sim = cosineSimilarity(queryEmbedding, emb);
-      }
-      return { ...s, similarity: sim };
-    })
-    .sort((a, b) => b.similarity - a.similarity)
-    .slice(0, 10);
-
-  // 3. Build structured context string
-  const parts: string[] = [];
-  parts.push('HIERARCHICAL CONTEXT:');
-  parts.push('');
-
-  parts.push('Relevant Themes:');
-  for (const theme of scoredThemes) {
-    parts.push(`  - ${theme.name}: ${theme.description || ''} (${theme.size} facts, ${(theme.similarity * 100).toFixed(0)}% match)`);
-  }
-  parts.push('');
-
-  parts.push('Key Facts:');
-  for (const sem of relevantSemantics) {
-    const contacts = Array.isArray(sem.contacts) ? sem.contacts : [];
-    const contactStr = contacts.length > 0 ? ` [${contacts.join(', ')}]` : '';
-    const projectStr = sem.project ? ` (${sem.project})` : '';
-    parts.push(`  - [${sem.fact_type}] ${sem.fact}${contactStr}${projectStr}`);
-  }
-
-  // 4. If low confidence (top semantic similarity < 0.5), expand to episodes
-  const topSemSim = relevantSemantics[0]?.similarity || 0;
-  if (topSemSim < 0.5) {
-    // Get episode IDs from relevant semantics
-    const episodeIds = new Set<string>();
-    for (const sem of relevantSemantics) {
-      const eids = Array.isArray(sem.episode_ids) ? sem.episode_ids : [];
-      for (const eid of eids) episodeIds.add(eid);
-    }
-
-    if (episodeIds.size > 0) {
-      const placeholders = Array.from(episodeIds).map(() => '?').join(',');
-      const epRows = db.prepare(`SELECT * FROM episodes WHERE id IN (${placeholders})`).all(...Array.from(episodeIds)) as any[];
-
-      parts.push('');
-      parts.push('Expanded Episode Context:');
-      for (const ep of epRows) {
-        parts.push(`  - ${ep.title}: ${ep.summary || ''}`);
-      }
-    }
-  }
-
-  return parts.join('\n');
-}

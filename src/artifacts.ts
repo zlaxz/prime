@@ -177,16 +177,3 @@ export async function migrateArtifactsFromKnowledge(db: Database.Database): Prom
   return { migrated, skipped };
 }
 
-/**
- * Pull full artifact content from Claude.ai API for all artifacts
- * that only have preview content (content_length < actual).
- */
-export async function enrichArtifactContent(db: Database.Database): Promise<{ enriched: number }> {
-  // This would use the Claude.ai API to fetch full artifact content
-  // via the wiggle filesystem endpoints:
-  // GET /organizations/{org}/conversations/{conv}/wiggle/list-files
-  // GET /organizations/{org}/conversations/{conv}/wiggle/download-file?path=X
-  //
-  // For now, we store what we have from the <antArtifact> tags (which IS the full content)
-  return { enriched: 0 };
-}

@@ -468,25 +468,3 @@ export async function processOtterMeeting(
   };
 }
 
-export async function importOtterFile(
-  db: Database.Database,
-  filePath: string,
-  options: { project?: string } = {}
-): Promise<{ id: string; title: string }> {
-  const { readFileSync } = await import('fs');
-  const content = readFileSync(filePath, 'utf-8');
-
-  let meeting: any;
-
-  try {
-    meeting = JSON.parse(content);
-  } catch {
-    meeting = {
-      title: filePath.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Otter Meeting',
-      transcript: content,
-    };
-  }
-
-  const result = await processOtterMeeting(db, meeting);
-  return result;
-}

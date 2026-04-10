@@ -1048,49 +1048,6 @@ export function searchByEmbedding(db: Database.Database, queryEmbedding: number[
   return scored;
 }
 
-// ── Semantics → Facts migration ─────────────────────────────
-
-export function migrateSemanticsToFacts(db: Database.Database): { migrated: number; skipped: number } {
-  const existingFacts = (db.prepare('SELECT COUNT(*) as cnt FROM facts').get() as any).cnt;
-  if (existingFacts > 0) {
-    return { migrated: 0, skipped: existingFacts }; // already migrated
-  }
-
-  const semantics = db.prepare('SELECT * FROM semantics').all() as any[];
-  let migrated = 0;
-
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO facts (id, tier, fact_type, text, basis_count, basis_item_ids, confidence, entity_ids, project, valid_from, valid_until, superseded_by, embedding, created_at)
-    VALUES (?, 'pattern', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  for (const s of semantics) {
-    const itemIds = s.item_ids || s.episode_ids || '[]';
-    const basisCount = (() => {
-      try { return JSON.parse(itemIds).length || 1; } catch { return 1; }
-    })();
-
-    insert.run(
-      s.id,
-      s.fact_type,
-      s.fact,
-      basisCount,
-      itemIds,
-      s.confidence || 1.0,
-      s.contacts || '[]',
-      s.project,
-      s.valid_from,
-      s.valid_until,
-      s.superseded_by,
-      s.embedding,
-      s.created_at || new Date().toISOString()
-    );
-    migrated++;
-  }
-
-  return { migrated, skipped: 0 };
-}
-
 export function getStats(db: Database.Database) {
   const total = db.prepare('SELECT COUNT(*) as count FROM knowledge').get() as any;
   const bySrc = db.prepare('SELECT source, COUNT(*) as count FROM knowledge GROUP BY source').all() as any[];
