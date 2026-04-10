@@ -40,28 +40,12 @@ function createClaudeCodeProvider(): LLMProvider {
       }
 
       try {
-        // Use stdin piping to avoid shell arg length limits with large prompts
-        const stdout = await new Promise<string>((resolve, reject) => {
-          const proc = spawnClaude({
-            extraArgs: ['-'],
-            outputFormat: 'json',
-            maxTurns: 1,
-            timeout: 120000,
-          });
-
-          let out = '';
-          let err = '';
-          proc.stdout!.on('data', (d: Buffer) => { out += d.toString(); });
-          proc.stderr!.on('data', (d: Buffer) => { err += d.toString(); });
-          proc.on('close', (code) => {
-            if (code === 0) resolve(out);
-            else reject(new Error(`claude -p exited with ${code}: ${err.slice(0, 200)}`));
-          });
-          proc.on('error', reject);
-
-          // Write prompt to stdin
-          proc.stdin!.write(prompt);
-          proc.stdin!.end();
+        // Route through proxy (Mac Mini) or direct claude -p (laptop)
+        const { runClaude } = await import('../utils/claude-spawn.js');
+        const stdout = await runClaude(prompt, {
+          outputFormat: 'json',
+          maxTurns: 1,
+          timeout: 120000,
         });
 
         // Parse result — claude -p outputs JSON envelope with .result field
