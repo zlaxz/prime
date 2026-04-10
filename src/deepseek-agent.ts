@@ -383,6 +383,22 @@ export async function compileProjectWiki(
   parts.push(`Your current assignment: compile a wiki page for ${projectName}.`);
   parts.push(`TODAY IS: ${dateStr}`);
   parts.push('');
+  parts.push('=== REQUIRED OUTPUT FORMAT (you MUST follow this exactly) ===');
+  parts.push('Your final response MUST contain exactly TWO sections separated by the marker ---AGENT_MEMORY---');
+  parts.push('');
+  parts.push('SECTION 1: The wiki page (Status, Situation, Key People, Timeline, Open Items, What Zach Should Know)');
+  parts.push('');
+  parts.push('---AGENT_MEMORY---');
+  parts.push('');
+  parts.push('SECTION 2: 5-10 bullet points about what you learned researching this project:');
+  parts.push('- Which search terms found the best results');
+  parts.push('- Which sources were most informative');
+  parts.push('- Key people and their communication patterns');
+  parts.push('- Anything that surprised you or was hard to find');
+  parts.push('');
+  parts.push('You MUST include both sections. Do NOT stop after the wiki page. The ---AGENT_MEMORY--- section is required.');
+  parts.push('=== END OUTPUT FORMAT ===');
+  parts.push('');
 
   if (corrections.length > 0) {
     parts.push('VERIFIED CORRECTIONS (absolute truth):');
@@ -403,14 +419,7 @@ export async function compileProjectWiki(
   parts.push('Every claim must be based on something you actually retrieved and read.');
   parts.push('Stay focused on ' + projectName + '. When you have enough information, WRITE THE PAGE.');
   parts.push('');
-  parts.push('After writing the wiki page, add a section:');
-  parts.push('---AGENT_MEMORY---');
-  parts.push('Note what you learned about researching this project that will help next cycle:');
-  parts.push('- Which search terms found the best results');
-  parts.push('- Which sources were most informative');
-  parts.push('- Key people and their communication patterns');
-  parts.push('- Anything that surprised you or was hard to find');
-  parts.push('Keep it concise — 5-10 bullet points max.');
+  parts.push('REMINDER: After the wiki page, you MUST include ---AGENT_MEMORY--- followed by your research notes. Do not end without it.');
 
   const agent = new DeepSeekAgent(db, options);
   return agent.run(parts.join('\n'));
@@ -447,6 +456,22 @@ export async function compileEntityWiki(
   parts.push(`Your current assignment: compile a wiki page for the entity ${entityName}.`);
   parts.push(`TODAY IS: ${dateStr}`);
   parts.push('');
+  parts.push('=== REQUIRED OUTPUT FORMAT (you MUST follow this exactly) ===');
+  parts.push('Your final response MUST contain exactly TWO sections separated by the marker ---AGENT_MEMORY---');
+  parts.push('');
+  parts.push('SECTION 1: The wiki page (Role, Relationship to Zach, Current State, Key Facts, Recent Communication, Open Items)');
+  parts.push('');
+  parts.push('---AGENT_MEMORY---');
+  parts.push('');
+  parts.push('SECTION 2: 5-10 bullet points about what you learned researching this entity:');
+  parts.push('- Which search terms found the best results');
+  parts.push('- Which sources were most informative');
+  parts.push('- Key communication patterns you noticed');
+  parts.push('- Anything that surprised you or was hard to find');
+  parts.push('');
+  parts.push('You MUST include both sections. Do NOT stop after the wiki page. The ---AGENT_MEMORY--- section is required.');
+  parts.push('=== END OUTPUT FORMAT ===');
+  parts.push('');
 
   if (corrections.length > 0) {
     parts.push('VERIFIED CORRECTIONS:');
@@ -469,14 +494,7 @@ export async function compileEntityWiki(
   parts.push('Use tools to investigate. Read actual source material. Compile a wiki page with:');
   parts.push('Role, Relationship to Zach, Current State, Key Facts, Recent Communication, Open Items.');
   parts.push('');
-  parts.push('After writing the wiki page, add a section:');
-  parts.push('---AGENT_MEMORY---');
-  parts.push('Note what you learned about researching this entity that will help next cycle:');
-  parts.push('- Which search terms found the best results');
-  parts.push('- Which sources were most informative');
-  parts.push('- Key communication patterns you noticed');
-  parts.push('- Anything that surprised you or was hard to find');
-  parts.push('Keep it concise — 5-10 bullet points max.');
+  parts.push('REMINDER: After the wiki page, you MUST include ---AGENT_MEMORY--- followed by your research notes. Do not end without it.');
 
   const agent = new DeepSeekAgent(db, { maxTurns: 50, ...options });
   return agent.run(parts.join('\n'));
