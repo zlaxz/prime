@@ -138,7 +138,7 @@ export async function compileWikiPages(db: Database.Database): Promise<CompileRe
           const pmConcerns = pmState?.concerns ? "PM CONCERNS:\n" + pmState.concerns.slice(0, 500) : '';
 
           const result = await compileProjectWiki(db, project, {
-            maxTurns: state?.last_wiki_page ? 30 : 100,
+            maxTurns: state?.last_wiki_page ? 60 : 100,
             previousPage: state?.last_wiki_page || undefined,
             memory: state?.memory || undefined,
             // Pass downstream context as soul (injected at top of prompt)
