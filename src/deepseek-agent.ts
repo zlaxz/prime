@@ -1,3 +1,5 @@
+import { readFileSync, existsSync } from "fs";
+import { join } from "path";
 import type Database from 'better-sqlite3';
 import { OpenAI } from 'openai';
 import { getConfig } from './db.js';
@@ -357,7 +359,7 @@ export async function compileProjectWiki(
   // Load research agent identity preamble
   let preamble = '';
   try {
-    const { readFileSync } = await import('fs');
+    
     const homedir = process.env.HOME || '/Users/zachstock';
     preamble = readFileSync(homedir + '/.prime/agents/research/IDENTITY.md', 'utf-8');
   } catch (_e) {}
@@ -443,7 +445,7 @@ export async function compileEntityWiki(
   // Load research agent identity preamble
   let preamble = '';
   try {
-    const { readFileSync } = await import('fs');
+    
     const homedir = process.env.HOME || '/Users/zachstock';
     preamble = readFileSync(homedir + '/.prime/agents/research/IDENTITY.md', 'utf-8');
   } catch (_e) {}
