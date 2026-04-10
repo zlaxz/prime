@@ -100,6 +100,12 @@ export async function compileWikiPages(db: Database.Database): Promise<CompileRe
 
   console.log(`    Wiki compiler: ${toCompile.length} pages to compile (${skipped} up to date)`);
 
+  // Load Quinn's active concerns to pass relevant ones to each research agent
+  const cosState = db.prepare(
+    "SELECT concerns FROM agent_state WHERE agent_type = 'cos' AND subject_id = 'global'"
+  ).get() as any;
+  const quinnConcerns = cosState?.concerns || '';
+
   // Compile in batches
   for (let i = 0; i < toCompile.length; i += BATCH_SIZE) {
     const batch = toCompile.slice(i, i + BATCH_SIZE);
@@ -113,10 +119,36 @@ export async function compileWikiPages(db: Database.Database): Promise<CompileRe
             "SELECT memory, last_wiki_page FROM agent_state WHERE agent_type = 'wiki_project' AND subject_id = ?"
           ).get(project) as any;
 
+          // Extract Quinn's concerns relevant to this project
+          let projectConcerns = '';
+          if (quinnConcerns) {
+            const lines = quinnConcerns.split('
+').filter((l: string) =>
+              l.toLowerCase().includes(project.toLowerCase()) ||
+              l.toLowerCase().includes(project.split(' ')[0].toLowerCase())
+            );
+            if (lines.length > 0) {
+              projectConcerns = 'COS PRIORITY — Quinn is specifically watching:
+' + lines.join('
+');
+            }
+          }
+
+          // Also load PM concerns if a PM exists for this project
+          const pmState = db.prepare(
+            "SELECT concerns FROM agent_state WHERE agent_type = 'pm' AND subject_id = ?"
+          ).get(project) as any;
+          const pmConcerns = pmState?.concerns ? 'PM CONCERNS:
+' + pmState.concerns.slice(0, 500) : '';
+
           const result = await compileProjectWiki(db, project, {
-            maxTurns: state?.last_wiki_page ? 30 : 100,  // fewer turns for updates
+            maxTurns: state?.last_wiki_page ? 30 : 100,
             previousPage: state?.last_wiki_page || undefined,
             memory: state?.memory || undefined,
+            // Pass downstream context as soul (injected at top of prompt)
+            soul: [projectConcerns, pmConcerns].filter(Boolean).join('
+
+') || undefined,
           });
 
           // Parse memory from agent output
