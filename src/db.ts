@@ -465,7 +465,7 @@ function initSchema(db: Database.Database) {
   // Only enforce uniqueness on ACTIVE edges via partial unique index.
   // Check if migration needed by looking for the old sqlite_autoindex constraint.
   const edgeIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='entity_edges' AND name LIKE 'sqlite_autoindex%'").all() as any[];
-  if (edgeIndexes.length > 0) {
+  if (edgeIndexes.length > 1) {
     // Rebuild table without the inline UNIQUE constraint
     db.exec(`
       CREATE TABLE IF NOT EXISTS entity_edges_new (
