@@ -81,7 +81,7 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
       const { execSync } = await import('child_process');
       execSync('npx tsx scripts/index-cowork-outputs.ts', { cwd: join(homedir(), 'GitHub', 'prime'), timeout: 60000, stdio: 'ignore' });
       results.push({ source: 'cowork-output', items: 0 }); // count tracked internally
-    } catch {}
+    } catch (_e) {}
   }
 
   // Gmail Sent — corrects false awaiting_reply tags + captures Zach-initiated threads
@@ -170,7 +170,7 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
           const meta = typeof m.metadata === 'string' ? JSON.parse(m.metadata) : m.metadata || {};
           attendees = (meta.attendee_details || []).map((a: any) => a.displayName || a.email || '').filter(Boolean);
           if (!attendees.length && meta.attendees) attendees = meta.attendees;
-        } catch {}
+        } catch (_e) {}
         return {
           title: m.title,
           time: m.source_date,
@@ -185,7 +185,7 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
 
       console.log(`  📅 MEETING PREP: ${upcomingMeetings.length} meeting(s) in next 2 hours`);
     }
-  } catch {}
+  } catch (_e) {}
 
   // ── EVENT-DRIVEN TRIGGER LAYER ──
   // After sync, check if any new items from high-priority entities arrived.
@@ -238,7 +238,7 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
           }).catch((err: any) => {
             console.log(`  ⚡ Ripple failed: ${err.message?.slice(0, 80)}`);
           });
-        } catch {}
+        } catch (_e) {}
 
         // Event-driven intelligence: trigger intelligence cycle immediately
         // Don't wait for the next dream cron — analyze NOW while the signal is fresh
@@ -257,11 +257,11 @@ export async function syncAll(db: Database.Database): Promise<SyncResult[]> {
             }).catch((err: any) => {
               console.log(`  ⚡ Real-time intelligence failed: ${err.message?.slice(0, 80)}`);
             });
-          } catch {}
+          } catch (_e) {}
         }
       }
     }
-  } catch {}
+  } catch (_e) {}
 
   return results;
 }

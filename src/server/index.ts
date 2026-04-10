@@ -353,7 +353,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       try {
         const profilesRaw = db.prepare("SELECT value FROM graph_state WHERE key = 'project_profiles'").get() as any;
         if (profilesRaw) projectProfiles = JSON.parse(profilesRaw.value);
-      } catch {}
+      } catch (_e) {}
 
       // Surface ALL projects with next actions — the system already figured out what matters
       const statusUrgency: Record<string, string> = {
@@ -392,7 +392,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
 
       for (const a of rawActions) {
         let payload: any = {};
-        try { payload = typeof a.payload === 'string' ? JSON.parse(a.payload) : (a.payload || {}); } catch {}
+        try { payload = typeof a.payload === 'string' ? JSON.parse(a.payload) : (a.payload || {}); } catch (_e) {}
 
         // QUALITY GATE: Skip actions targeting dismissed/noise entities
         if (payload.to) {
@@ -467,7 +467,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
             created_at: ea.last_verified_at,
           });
         }
-      } catch {}
+      } catch (_e) {}
 
       // ---- RECENCY WEIGHTING ----
       // Same formula as search.ts: score * 1/(1 + days_old * 0.05)
@@ -506,7 +506,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         }
         const actionsRaw = (db.prepare("SELECT value FROM graph_state WHERE key = 'intelligence_actions'").get() as any)?.value;
         if (actionsRaw) intelActions = JSON.parse(actionsRaw);
-      } catch {}
+      } catch (_e) {}
       // Fallback to old staged_actions if no intelligence brief
       if (oneThing === 'No urgent priorities. Focus on what matters most to you.' && priorities.length > 0) {
         const top = priorities[0];
@@ -559,14 +559,14 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       try {
         const gapsRaw = db.prepare("SELECT value FROM graph_state WHERE key = 'detected_gaps'").get() as any;
         if (gapsRaw) detectedGaps = JSON.parse(gapsRaw.value);
-      } catch {}
+      } catch (_e) {}
 
       // Load pending questions for display
       let pendingQuestions: any[] = [];
       try {
         const qRaw = db.prepare("SELECT value FROM graph_state WHERE key = 'pending_questions'").get() as any;
         if (qRaw) pendingQuestions = JSON.parse(qRaw.value);
-      } catch {}
+      } catch (_e) {}
 
       res.json({
         display_state: displayState,
@@ -1137,7 +1137,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
               }
             }
           }
-        } catch {}
+        } catch (_e) {}
       }
 
       // SOURCE 2: Live Claude.ai API (finds un-indexed + title/summary matches)
@@ -1157,7 +1157,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
               });
             }
           }
-        } catch {}
+        } catch (_e) {}
       }
 
       res.json({ conversations: results.slice(0, 50), total: results.length, sources: { knowledge_base: results.filter(r => r.match_source === 'knowledge_base').length, live_api: results.filter(r => r.match_source === 'live_api').length } });
@@ -1178,7 +1178,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         try {
           convo = await (claudeApiGet as any)(`/organizations/${org.uuid}/chat_conversations/${req.params.uuid}`, sessionKey, db);
           if (convo?.chat_messages) break;
-        } catch {}
+        } catch (_e) {}
       }
       if (!convo?.chat_messages) return res.status(404).json({ error: 'Conversation not found' });
 
@@ -1207,7 +1207,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
         try {
           convo = await (claudeApiGet as any)(`/organizations/${org.uuid}/chat_conversations/${req.params.uuid}`, sessionKey, db);
           if (convo?.chat_messages) { orgId = org.uuid; break; }
-        } catch {}
+        } catch (_e) {}
       }
       if (!convo?.chat_messages) return res.status(404).json({ error: 'Not found' });
 
@@ -1302,7 +1302,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
               });
               if (retrieved?.content) rawContent = retrieved.content.slice(0, 5000);
             }
-          } catch {}
+          } catch (_e) {}
         }
         keyDocuments.push({
           title: item.title,
@@ -1337,7 +1337,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
               crossRefItems.push(item);
             }
           }
-        } catch {}
+        } catch (_e) {}
       }
       // Deduplicate cross-refs
       const seenIds = new Set(primaryItems.map((i: any) => i.id));
@@ -1380,7 +1380,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
           items: t.item_count,
           latest_date: t.latest_source_date,
         }));
-      } catch {}
+      } catch (_e) {}
 
       // ── Step 6: Commitments related to topic/entity ──
       let commitments: any[] = [];
@@ -1407,7 +1407,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
           project: c.project,
           importance: c.importance,
         }));
-      } catch {}
+      } catch (_e) {}
 
       // ── Step 7: Entity graph relationships ──
       let entitiesInvolved: any[] = [];
@@ -1431,7 +1431,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
             ).all(entityRow.id, entityRow.id) as any[];
 
             let props: any = {};
-            try { props = typeof entityRow.properties === 'string' ? JSON.parse(entityRow.properties) : entityRow.properties || {}; } catch {}
+            try { props = typeof entityRow.properties === 'string' ? JSON.parse(entityRow.properties) : entityRow.properties || {}; } catch (_e) {}
 
             entitiesInvolved.push({
               name: entityRow.canonical_name,
@@ -1448,7 +1448,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
             });
           }
         }
-      } catch {}
+      } catch (_e) {}
 
       // ── Step 8: Build timeline from all gathered items ──
       const allItems = [...primaryItems, ...uniqueCrossRefs];
@@ -1828,7 +1828,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
       for (const e of events as any[]) {
         for (const f of ['contacts', 'metadata']) {
           if (e[f] && typeof e[f] === 'string') {
-            try { e[f] = JSON.parse(e[f]); } catch {}
+            try { e[f] = JSON.parse(e[f]); } catch (_e) {}
           }
         }
       }
@@ -1994,7 +1994,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
 
       const mapped = actions.map((a: any) => {
         let payload: any = {};
-        try { payload = typeof a.payload === 'string' ? JSON.parse(a.payload) : (a.payload || {}); } catch {}
+        try { payload = typeof a.payload === 'string' ? JSON.parse(a.payload) : (a.payload || {}); } catch (_e) {}
         return {
           ...a,
           action_id: a.id,

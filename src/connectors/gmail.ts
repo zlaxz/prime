@@ -700,7 +700,7 @@ export async function scanSentMail(
               insertMention.run(uuid(), entity.id, item.id, td.lastDate ? new Date(td.lastDate).toISOString() : null);
             }
           }
-        } catch {}
+        } catch (_e) {}
       }));
 
       process.stdout.write(`\r  Extracted: ${Math.min(i + CONCURRENCY, newThreads.length)}/${newThreads.length}`);

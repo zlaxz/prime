@@ -325,7 +325,7 @@ Return JSON: {"episodes": [{"index": 0, "title": "Episode title", "summary": "On
   const episodes = db.prepare('SELECT * FROM episodes ORDER BY date_start DESC').all() as any[];
   for (const row of episodes) {
     if (row.item_ids && typeof row.item_ids === 'string') {
-      try { row.item_ids = JSON.parse(row.item_ids); } catch {}
+      try { row.item_ids = JSON.parse(row.item_ids); } catch (_e) {}
     }
   }
 

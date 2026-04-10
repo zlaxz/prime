@@ -28,7 +28,7 @@ export async function loadBusinessContext(): Promise<string> {
       _contextLoadedAt = Date.now();
       return _cachedBusinessContext;
     }
-  } catch {}
+  } catch (_e) {}
 
   return '';
 }

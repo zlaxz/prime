@@ -79,13 +79,13 @@ export async function scanDrive(
         const v2 = await extractIntelligenceV2('Document: ' + file.name + '\n\nContent:\n' + content.slice(0, 5000), apiKey);
         ext = toV1(v2);
         ext.tags = [...(ext.tags || []), 'drive'];
-      } catch {}
+      } catch (_e) {}
     }
 
     let embedding: number[] | null = null;
     try {
       embedding = await generateEmbedding(ext.summary, apiKey);
-    } catch {}
+    } catch (_e) {}
 
     const item: KnowledgeItem = {
       id: uuid(),

@@ -124,7 +124,7 @@ function parseJsonField(val: any): any[] {
 function parseJsonFields(row: any): any {
   for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
     if (row[field] && typeof row[field] === 'string') {
-      try { row[field] = JSON.parse(row[field]); } catch {}
+      try { row[field] = JSON.parse(row[field]); } catch (_e) {}
     }
   }
   return row;
@@ -306,7 +306,7 @@ async function semanticSearch(
         // Parse JSON fields
         for (const field of ['contacts', 'organizations', 'decisions', 'commitments', 'action_items', 'tags', 'metadata']) {
           if (parent[field] && typeof parent[field] === 'string') {
-            try { parent[field] = JSON.parse(parent[field]); } catch {}
+            try { parent[field] = JSON.parse(parent[field]); } catch (_e) {}
           }
         }
         directScores.set(knowledgeId, { item: parent, score: chunkScore });

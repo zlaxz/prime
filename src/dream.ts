@@ -94,7 +94,7 @@ async function callClaudeOnce(prompt: string, timeoutMs: number = 300000, sessio
                   const db = getDb();
                   db.prepare("INSERT OR REPLACE INTO graph_state (key, value, updated_at) VALUES ('last_claude_session_id', ?, datetime('now'))")
                     .run(JSON.stringify(parsed.session_id));
-                } catch {}
+                } catch (_e) {}
               }
               resolve(parsed.result || '');
             } catch {
@@ -232,7 +232,7 @@ export async function callClaude(prompt: string, timeoutMs: number = 300000, ses
       );
       console.log(`    ⚡ Self-improvement: ${category.trim()} — ${description.trim().slice(0, 60)}`);
     }
-  } catch {}
+  } catch (_e) {}
 
   return response;
 }
@@ -240,7 +240,7 @@ export async function callClaude(prompt: string, timeoutMs: number = 300000, ses
 function tryParseJSON(text: string): any {
   // Strip markdown code fences
   const cleaned = text.replace(/^```(?:json)?\s*\n?/m, '').replace(/\n?```\s*$/m, '').trim();
-  try { return JSON.parse(cleaned); } catch {}
+  try { return JSON.parse(cleaned); } catch (_e) {}
 
   // Progressive extraction: find the JSON by trying progressively shorter substrings
   // This handles trailing text after the JSON (from token escalation, markdown, etc.)
@@ -252,7 +252,7 @@ function tryParseJSON(text: string): any {
   if (start >= 0) {
     for (let end = text.length; end > start; end--) {
       if (text[end - 1] !== endChar) continue;
-      try { return JSON.parse(text.slice(start, end)); } catch {}
+      try { return JSON.parse(text.slice(start, end)); } catch (_e) {}
     }
   }
 
@@ -493,7 +493,7 @@ async function task13EpisodicExtraction(db: Database.Database): Promise<TaskResu
         if (stored?.raw_content) {
           content = `[${item.source}] ${item.title}\n\nFULL CONTENT:\n${stored.raw_content.slice(0, 5000)}`;
         }
-      } catch {}
+      } catch (_e) {}
 
       const contacts = JSON.parse(item.contacts || '[]');
       const commits = JSON.parse(item.commitments || '[]');
@@ -679,7 +679,7 @@ Open commitments: ${commitments.map((c: any) => `${c.text} [${c.state}]${c.due_d
       if (existsSync(voicePath)) {
         voiceReference = '\n\n' + readFileSync(voicePath, 'utf-8');
       }
-    } catch {}
+    } catch (_e) {}
 
     // SOURCE RETRIEVAL: Get actual content for top projects so DeepSeek has real material
     let deepSourceMaterial = '';
@@ -710,7 +710,7 @@ Open commitments: ${commitments.map((c: any) => `${c.text} [${c.state}]${c.due_d
             return `- ${tag} ${d.decision}`;
           }).join('\n');
       }
-    } catch {}
+    } catch (_e) {}
 
     // Use Claude for drafts — DeepSeek produces generic corporate-speak
     const actionPrompt = `You are drafting REAL business communications for Zach Stock, founder of Recapture Insurance (an MGA specializing in senior living/healthcare insurance). Today is ${today}.${standingDecisions}
@@ -762,7 +762,7 @@ Return JSON:
             ).join('\n');
           }
         }
-      } catch {}
+      } catch (_e) {}
       return projectContext + (deepSourceMaterial ? '\n\nSOURCE MATERIAL:\n' + deepSourceMaterial : '') + gapBlock;
     })(), { timeout: 300000 });
 
@@ -887,8 +887,8 @@ async function task14Investigation(db: Database.Database): Promise<TaskResult> {
                 for (const att of attachments) {
                   narrativeParts.push(`\n=== [ATTACHED DOCUMENT] ${att.filename} ===\n${att.content}`);
                 }
-              } catch {}
-            } catch {}
+              } catch (_e) {}
+            } catch (_e) {}
           }
         } else if (item.source === 'fireflies') {
           const meetingId = item.source_ref?.replace('fireflies:', '');
@@ -897,7 +897,7 @@ async function task14Investigation(db: Database.Database): Promise<TaskResult> {
               const { retrieveFirefliesTranscript } = await import('./source-retrieval.js');
               const transcript = await retrieveFirefliesTranscript(db, meetingId);
               if (transcript) narrativeParts.push(`\n=== [MEETING TRANSCRIPT] ${item.source_date?.slice(0,10)} — ${item.title} ===\n${transcript}`);
-            } catch {}
+            } catch (_e) {}
           }
         } else {
           // Claude conversations, Cowork sessions, Otter transcripts, manual entries
@@ -907,7 +907,7 @@ async function task14Investigation(db: Database.Database): Promise<TaskResult> {
       }
 
       deepContent = narrativeParts.join('\n');
-    } catch {}
+    } catch (_e) {}
 
     const itemContext = items.map((i: any) => {
       const c = JSON.parse(i.contacts || '[]');
@@ -932,7 +932,7 @@ async function task14Investigation(db: Database.Database): Promise<TaskResult> {
             return `- ${tag} ${d.decision}`;
           }).join('\n') + '\n';
       }
-    } catch {}
+    } catch (_e) {}
 
     const prompt = `You are Prime, AI Chief of Staff for Zach Stock (Recapture Insurance MGA, ADHD founder).
 ${investigationDecisions}
@@ -1229,7 +1229,7 @@ Return plain text, not JSON.`;
             brief,
           });
         }
-      } catch {}
+      } catch (_e) {}
     }
 
     if (preps.length > 0) {
@@ -2670,7 +2670,7 @@ async function task09WorldNarrative(db: Database.Database): Promise<TaskResult> 
           return line;
         }).join('\n\n');
       }
-    } catch {}
+    } catch (_e) {}
 
     const feedbackBlock = yesterdayOutcomes.length > 0
       ? 'YESTERDAY\'S ACTION OUTCOMES (learn from what user approved vs rejected):\n' +
@@ -2745,7 +2745,7 @@ async function task09WorldNarrative(db: Database.Database): Promise<TaskResult> 
     // Load the SQL world model as verified facts
     const worldModelPath = join(homedir(), '.prime', 'world.md');
     let verifiedFacts = '';
-    try { verifiedFacts = readFileSync(worldModelPath, 'utf-8'); } catch {}
+    try { verifiedFacts = readFileSync(worldModelPath, 'utf-8'); } catch (_e) {}
 
     const prompt = `You are the AI Chief of Staff synthesizing a daily intelligence briefing for Zach Stock, founder of Recapture Insurance (MGA/insurtech).
 
@@ -3852,7 +3852,7 @@ export async function runDreamPipeline(
     const { execSync } = await import('child_process');
     execSync("osascript -e 'tell application \"Terminal\" to close every window' 2>/dev/null", { timeout: 5000 });
     console.log('  ✓ Terminal windows cleaned up');
-  } catch {}
+  } catch (_e) {}
 
   console.log('');
 

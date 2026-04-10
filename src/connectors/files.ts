@@ -126,6 +126,6 @@ function getFiles(dir: string, recursive: boolean): string[] {
         files.push(...getFiles(fullPath, true));
       }
     }
-  } catch {}
+  } catch (_e) {}
   return files;
 }

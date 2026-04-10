@@ -221,7 +221,7 @@ Return JSON array:
             .run(JSON.stringify(history.slice(-100)));
         }
       }
-    } catch {}
+    } catch (_e) {}
 
     return {
       task: '15-prediction-verification',

@@ -172,7 +172,7 @@ export async function extractPlaybooks(db: Database.Database): Promise<TaskResul
     let parsed: any;
     for (let end = response.length; end > jsonStart; end--) {
       if (response[end - 1] !== '}') continue;
-      try { parsed = JSON.parse(response.slice(jsonStart, end)); break; } catch {}
+      try { parsed = JSON.parse(response.slice(jsonStart, end)); break; } catch (_e) {}
     }
 
     const playbooks: Playbook[] = (parsed?.playbooks || []).map((p: any) => ({

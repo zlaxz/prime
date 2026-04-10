@@ -203,7 +203,7 @@ export async function spawnClaudeBackground(options: {
     await spawnClaudeBackgroundViaProxy(prompt, options.extraArgs);
     // Proxy accepted the request — clean up temp file if any
     if (options.promptPath) {
-      try { const { unlinkSync } = await import('fs'); unlinkSync(options.promptPath); } catch {}
+      try { const { unlinkSync } = await import('fs'); unlinkSync(options.promptPath); } catch (_e) {}
     }
     return;
   } catch {

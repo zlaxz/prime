@@ -197,7 +197,7 @@ export function getAgentActivity(db: Database.Database, options: { agent?: strin
   for (const row of rows) {
     for (const field of ['tags', 'metadata', 'contacts', 'commitments', 'decisions']) {
       if (row[field] && typeof row[field] === 'string') {
-        try { row[field] = JSON.parse(row[field]); } catch {}
+        try { row[field] = JSON.parse(row[field]); } catch (_e) {}
       }
     }
   }

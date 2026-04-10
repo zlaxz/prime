@@ -360,7 +360,7 @@ srv.tool(
 
       // Load Quinn's identity
       let soul = '';
-      try { soul = readFileSync(homedir + '/.prime/agents/cos/SOUL.md', 'utf-8'); } catch {}
+      try { soul = readFileSync(homedir + '/.prime/agents/cos/SOUL.md', 'utf-8'); } catch (_e) {}
 
       // Load memory and concerns from agent_state
       const state = db.prepare("SELECT memory, concerns FROM agent_state WHERE agent_type = 'cos' AND subject_id = 'global'").get() as any;
@@ -1142,7 +1142,7 @@ srv.tool(
       try {
         const { retrieveDeepContext } = await import('../source-retrieval.js');
         deepContent = await retrieveDeepContext(db, items.slice(0, 5), 5) || '';
-      } catch {}
+      } catch (_e) {}
     }
 
     // Step 3: Get thread context

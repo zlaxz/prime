@@ -85,7 +85,7 @@ function loadEntityIntelligence(db: Database.Database, entityName: string): {
         t.entity?.toLowerCase().includes(entityName.toLowerCase()) ||
         entityName.toLowerCase().includes(t.entity?.toLowerCase())
       );
-    } catch {}
+    } catch (_e) {}
   }
 
   // 4. Load recent communication history (last 10 items via entity_mentions)
@@ -232,7 +232,7 @@ function getSimulationSession(db: Database.Database, entityName: string): {
     try {
       const data = JSON.parse(row);
       return { sessionId: data.session_id, turn: data.turn || 0 };
-    } catch {}
+    } catch (_e) {}
   }
   return { sessionId: undefined, turn: 0 };
 }

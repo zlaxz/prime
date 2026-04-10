@@ -141,7 +141,7 @@ ${context}`,
               stats.reclassified++;
             }
           }
-        } catch {}
+        } catch (_e) {}
       }
 
       if (stats.reclassified > 0) {

@@ -139,7 +139,7 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
     const { readFileSync } = await import('fs');
     const homedir = process.env.HOME || '/Users/zachstock';
     quinnSoul = readFileSync(homedir + '/.prime/agents/cos/SOUL.md', 'utf-8');
-  } catch {}
+  } catch (_e) {}
 
   // 7. Build COS prompt
   const now = new Date();
@@ -327,10 +327,10 @@ export async function runCOS(db: Database.Database): Promise<COSResult> {
         try {
           brief = JSON.parse(candidates.slice(0, end));
           break;
-        } catch {}
+        } catch (_e) {}
       }
     }
-  } catch {}
+  } catch (_e) {}
 
   // If no email section, extract from after JSON
   if (!emailBody && content.length > jsonPart.length) {
