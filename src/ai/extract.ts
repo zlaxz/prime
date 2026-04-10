@@ -305,6 +305,8 @@ function validateExtractionV2(result: ExtractionResultV2, sourceContent: string)
     "ltc": "Carefront",
     "long-term care": "Carefront",
     "foresite acquisition": "Foresite",
+    "coi processing automation": "COI Processing",
+    "coi automation": "COI Processing",
     "foresite healthcare": "Foresite",
   };
   if (result.project) {
