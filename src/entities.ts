@@ -563,8 +563,8 @@ export function getLivingProfile(db: Database.Database, nameOrEmail: string): an
     try {
       const theories = JSON.parse(theoriesRaw);
       theoryOfMind = theories.find((t: any) =>
-        t.entity?.toLowerCase().includes(entity.canonical_name.toLowerCase()) ||
-        entity.canonical_name.toLowerCase().includes(t.entity?.toLowerCase())
+        t.entity?.toLowerCase().includes((entity.canonical_name || '').toLowerCase()) ||
+        (entity.canonical_name || '').toLowerCase().includes(t.entity?.toLowerCase() || '')
       );
     } catch (_e) {}
   }

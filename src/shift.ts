@@ -209,6 +209,13 @@ async function tick() {
     } catch (e) {}
   }
 
+  // ── LOG ROTATION (every tick) ──
+  try {
+    const { execSync } = await import('child_process');
+    const rotateOutput = execSync('bash /Users/zachstock/GitHub/prime/scripts/rotate-logs.sh 2>&1', { encoding: 'utf-8', timeout: 5000 }).trim();
+    if (rotateOutput) console.log(`[shift]   ${rotateOutput}`);
+  } catch (e) {}
+
   // ── HEALTH CHECK (every tick) ──
   try {
     const health: string[] = [];

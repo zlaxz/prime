@@ -356,7 +356,7 @@ async function task01Consolidate(db: Database.Database): Promise<TaskResult> {
       const decisions = typeof directive.decisions === 'string' ? JSON.parse(directive.decisions) : (directive.decisions || []);
 
       for (const decision of decisions) {
-        const lower = decision.toLowerCase();
+        const lower = (decision || '').toLowerCase();
         // Extract entity name from the decision text
         const contacts = typeof directive.contacts === 'string' ? JSON.parse(directive.contacts) : (directive.contacts || []);
 
@@ -1607,7 +1607,7 @@ Return ONLY this JSON array (no other text):
 
             // Find matching entity
             const matchEntity = batch.find((e: any) =>
-              e.canonical_name.toLowerCase() === item.name.toLowerCase()
+              (e.canonical_name || '').toLowerCase() === (item.name || '').toLowerCase()
             );
             if (!matchEntity) continue;
 
@@ -2000,8 +2000,8 @@ async function task10ConsistencyVerification(db: Database.Database): Promise<Tas
 
     for (const m of commitMismatches) {
       // Only auto-fix if names are genuinely different (not just case/variant)
-      const commitNorm = m.commit_project.toLowerCase().replace(/[^a-z]/g, '');
-      const sourceNorm = m.source_project.toLowerCase().replace(/[^a-z]/g, '');
+      const commitNorm = (m.commit_project || '').toLowerCase().replace(/[^a-z]/g, '');
+      const sourceNorm = (m.source_project || '').toLowerCase().replace(/[^a-z]/g, '');
       if (commitNorm !== sourceNorm) {
         db.prepare('UPDATE commitments SET project = ? WHERE id = ?')
           .run(m.source_project, m.id);
@@ -2037,8 +2037,8 @@ async function task10ConsistencyVerification(db: Database.Database): Promise<Tas
 
     let factFixes = 0;
     for (const m of factMismatches) {
-      const fNorm = m.fact_project.toLowerCase().replace(/[^a-z]/g, '');
-      const sNorm = m.source_project.toLowerCase().replace(/[^a-z]/g, '');
+      const fNorm = (m.fact_project || '').toLowerCase().replace(/[^a-z]/g, '');
+      const sNorm = (m.source_project || '').toLowerCase().replace(/[^a-z]/g, '');
       if (fNorm !== sNorm) {
         db.prepare('UPDATE facts SET project = ? WHERE id = ?').run(m.source_project, m.id);
         factFixes++;
@@ -2998,7 +2998,7 @@ async function task21QuestionGenerator(db: Database.Database): Promise<TaskResul
 
     // Check for existing pending questions to avoid duplicates
     const existingQs = db.prepare("SELECT question FROM prime_questions WHERE status = 'pending'").all() as any[];
-    const existingSet = new Set(existingQs.map((q: any) => q.question.toLowerCase().slice(0, 50)));
+    const existingSet = new Set(existingQs.map((q: any) => (q.question || '').toLowerCase().slice(0, 50)));
 
     const prompt = `You are the AI Chief of Staff analyzing dream pipeline outputs. Your job: identify 3-5 questions that ONLY Zach (the founder) can answer. These are things the data cannot resolve.
 
@@ -3048,7 +3048,7 @@ Rules:
     for (const q of questions.slice(0, 5)) {
       if (!q.question || !q.category) continue;
       // Skip near-duplicates of existing pending questions
-      if (existingSet.has(q.question.toLowerCase().slice(0, 50))) continue;
+      if (existingSet.has((q.question || '').toLowerCase().slice(0, 50))) continue;
 
       db.prepare(`INSERT INTO prime_questions (id, question, category, project, entity, context, priority, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`)
         .run(uuidv4(), q.question, q.category, q.project || null, q.entity || null, q.context || null, q.priority || 'medium');
