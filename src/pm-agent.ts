@@ -88,7 +88,7 @@ async function callProxy(prompt: string, maxTurns: number, timeoutSec: number, s
 export async function runPMAgent(db: Database.Database, config: PMConfig): Promise<PMResult> {
   const start = Date.now();
   const dir = getAgentDir(config.agentId);
-  const maxTurns = config.maxTurns || 25;
+  const maxTurns = config.maxTurns || 50;
   const timeoutSec = config.timeoutSec || 600;
 
   // Load agent identity and memory

@@ -34,7 +34,7 @@ export interface AgentResult {
 
 const DEFAULT_OPTIONS: Required<AgentOptions> = {
   model: 'deepseek-reasoner',
-  maxTurns: 100,
+  maxTurns: 200,
   maxTokens: 16000,
   temperature: 0.5,
   toolResultLimit: 12000,
@@ -498,6 +498,6 @@ export async function compileEntityWiki(
   parts.push('');
   parts.push('REMINDER: After the wiki page, you MUST include ---AGENT_MEMORY--- followed by your research notes. Do not end without it.');
 
-  const agent = new DeepSeekAgent(db, { maxTurns: 50, ...options });
+  const agent = new DeepSeekAgent(db, { maxTurns: 200, ...options });
   return agent.run(parts.join('\n'));
 }
