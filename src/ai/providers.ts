@@ -138,46 +138,6 @@ function createAPIProvider(config: { model: string; apiKey: string; baseUrl?: st
   };
 }
 
-/**
- * Create an LLM provider based on configuration.
- *
- * Priority:
- * 1. 'claude-code' — free via Max subscription (DEFAULT)
- * 2. 'openai' — gpt-4.1-nano for cheap extraction, gpt-4o for reasoning
- * 3. 'deepseek' — deepseek-chat for extraction, deepseek-reasoner for reasoning
- * 4. 'openrouter' — access any model
- */
-export function createProvider(config: {
-  provider?: string;
-  model?: string;
-  apiKey?: string;
-  baseUrl?: string;
-}): LLMProvider {
-  const provider = config.provider || 'claude-code';
-
-  // Default: Claude Code CLI (free with Max subscription)
-  if (provider === 'claude-code' || provider === 'claude') {
-    return createClaudeCodeProvider();
-  }
-
-  // API-based providers
-  if (provider === 'openai' || provider === 'deepseek' || provider === 'openrouter') {
-    const baseUrl = config.baseUrl ||
-      (provider === 'deepseek' ? 'https://api.deepseek.com' :
-       provider === 'openrouter' ? 'https://openrouter.ai/api/v1' :
-       undefined);
-
-    const model = config.model ||
-      (provider === 'deepseek' ? 'deepseek-chat' :
-       provider === 'openrouter' ? 'deepseek/deepseek-v3.2' :
-       'gpt-4.1-nano');
-
-    return createAPIProvider({ model, apiKey: config.apiKey || '', baseUrl });
-  }
-
-  throw new Error(`Unknown provider: ${provider}. Supported: claude-code, openai, deepseek, openrouter`);
-}
-
 // Cached provider instances
 let _claudeProvider: LLMProvider | null = null;
 let _deepseekProvider: LLMProvider | null = null;

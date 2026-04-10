@@ -2,7 +2,7 @@ import { execSync } from 'child_process';
 import { platform } from 'os';
 import type Database from 'better-sqlite3';
 import { v4 as uuid } from 'uuid';
-import { getConfig, setConfig, insertKnowledge, type KnowledgeItem } from './db.js';
+import { getConfig, insertKnowledge, type KnowledgeItem } from './db.js';
 
 // ============================================================
 // Multi-Channel Notification System
@@ -213,16 +213,3 @@ async function sendGmailNotification(
   });
 }
 
-// ============================================================
-// CLI helper: configure notification settings
-// ============================================================
-
-export function configureNotifications(db: Database.Database, key: string, value: string): void {
-  const validKeys = ['notify_phone_number', 'notify_email', 'notify_channels'];
-  if (!validKeys.includes(key)) {
-    console.log(`  Unknown config key: ${key}. Valid: ${validKeys.join(', ')}`);
-    return;
-  }
-  setConfig(db, key, value);
-  console.log(`  ✓ Set ${key} = ${value}`);
-}

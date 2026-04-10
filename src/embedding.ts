@@ -1,6 +1,4 @@
 import OpenAI from 'openai';
-import { randomUUID } from 'crypto';
-import type Database from 'better-sqlite3';
 
 // ============================================================
 // Embedding providers: OpenAI (cloud) or Ollama (local, free)
@@ -67,28 +65,6 @@ async function openaiEmbed(texts: string[], apiKey: string, model?: string): Pro
 // ── Public API ────────────────────────────────────────────────
 
 /**
- * Resolve the embedding config from the database or env.
- * Called by consumers to figure out which provider to use.
- */
-export function resolveEmbeddingConfig(dbConfig: {
-  openai_api_key?: string;
-  embedding_provider?: string;
-  ollama_url?: string;
-  embedding_model?: string;
-}): EmbeddingConfig {
-  const provider = (dbConfig.embedding_provider as EmbeddingProvider) ||
-    (process.env.EMBEDDING_PROVIDER as EmbeddingProvider) ||
-    (dbConfig.openai_api_key ? 'openai' : 'ollama');
-
-  return {
-    provider,
-    apiKey: dbConfig.openai_api_key,
-    model: dbConfig.embedding_model || process.env.EMBEDDING_MODEL,
-    ollamaUrl: dbConfig.ollama_url || process.env.OLLAMA_URL || 'http://localhost:11434',
-  };
-}
-
-/**
  * Generate a single embedding. Falls back to Ollama if no OpenAI key.
  *
  * For backward compatibility, accepts (text, apiKey) signature.
@@ -146,66 +122,3 @@ export async function generateEmbeddings(texts: string[], apiKeyOrConfig: string
   }
 }
 
-/**
- * Get the dimensions for the configured embedding provider.
- */
-export async function getEmbeddingDimensions(config: EmbeddingConfig): Promise<number> {
-  const test = await generateEmbedding('test', config);
-  return test.length;
-}
-
-/**
- * Split text into overlapping chunks and embed each one.
- * Inserts into knowledge_chunks table. Returns count of chunks created.
- */
-export async function chunkAndEmbed(
-  db: Database.Database,
-  knowledgeId: string,
-  text: string,
-  apiKeyOrConfig: string | EmbeddingConfig,
-  chunkSize: number = 4000,
-  overlap: number = 500,
-): Promise<number> {
-  // Split text into overlapping chunks
-  const chunks: string[] = [];
-  let start = 0;
-  while (start < text.length) {
-    const end = Math.min(start + chunkSize, text.length);
-    chunks.push(text.slice(start, end));
-    if (end >= text.length) break;
-    start += chunkSize - overlap;
-  }
-
-  if (chunks.length === 0) return 0;
-
-  // Generate embeddings for all chunks in batch
-  const embeddings = await generateEmbeddings(chunks, apiKeyOrConfig);
-
-  // Insert into knowledge_chunks
-  const insertStmt = db.prepare(
-    `INSERT OR REPLACE INTO knowledge_chunks (id, knowledge_id, chunk_index, chunk_text, embedding, created_at)
-     VALUES (?, ?, ?, ?, ?, datetime('now'))`
-  );
-
-  const txn = db.transaction(() => {
-    // Clear existing chunks for this knowledge item (idempotent re-runs)
-    db.prepare('DELETE FROM knowledge_chunks WHERE knowledge_id = ?').run(knowledgeId);
-
-    for (let i = 0; i < chunks.length; i++) {
-      const embedding = embeddings[i];
-      const blob = embedding && embedding.length > 0
-        ? Buffer.from(new Float32Array(embedding).buffer)
-        : null;
-      insertStmt.run(
-        randomUUID(),
-        knowledgeId,
-        i,
-        chunks[i],
-        blob,
-      );
-    }
-  });
-  txn();
-
-  return chunks.length;
-}

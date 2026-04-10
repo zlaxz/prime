@@ -1,5 +1,4 @@
 import { spawn, execFile, type ChildProcess } from 'child_process';
-import { existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { promisify } from 'util';
@@ -19,15 +18,6 @@ const execFileAsync = promisify(execFile);
 // ============================================================
 
 const GUI_WRAPPER = join(homedir(), 'GitHub', 'prime', 'scripts', 'claude-gui.sh');
-const OAUTH_TOKEN = join(homedir(), '.claude', 'oauth-token.txt');
-
-/**
- * Detect whether we should route through the GUI wrapper.
- * True when: (1) the wrapper script exists AND (2) an OAuth token file exists.
- */
-export function shouldUseGuiWrapper(): boolean {
-  return false; // GUI wrapper DELETED — proxy is the only path
-}
 
 /**
  * Build the command + args for a claude -p invocation.

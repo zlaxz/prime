@@ -8,7 +8,7 @@ const DB_PATH = join(PRIME_DIR, 'prime.db');
 
 // Belief System: Source classification
 // Derived sources are the system's OWN output — never feed entity graph, search, or world model
-export const DERIVED_SOURCES = ['agent-report', 'agent-notification', 'briefing', 'directive', 'training'] as const;
+export const DERIVED_SOURCES = ['agent-report', 'agent-notification', 'briefing', 'directive', 'training', 'cos-insight', 'verification'] as const;
 
 let _db: Database.Database | null = null;
 
@@ -52,6 +52,8 @@ function initSchema(db: Database.Database) {
       tags TEXT DEFAULT '[]',
       project TEXT,
       importance TEXT DEFAULT 'normal',
+      provenance TEXT DEFAULT 'primary',
+      source_account TEXT,
       valid_from TEXT DEFAULT (datetime('now')),
       valid_until TEXT,
       superseded_by TEXT,
@@ -395,7 +397,7 @@ function initSchema(db: Database.Database) {
     -- ============================================================
     CREATE VIEW IF NOT EXISTS knowledge_primary AS
       SELECT * FROM knowledge
-      WHERE source NOT IN ('agent-report', 'agent-notification', 'briefing', 'directive', 'training');
+      WHERE source NOT IN ('agent-report', 'agent-notification', 'briefing', 'directive', 'training', 'cos-insight', 'verification');
 
     CREATE VIEW IF NOT EXISTS knowledge_derived AS
       SELECT * FROM knowledge
@@ -1044,49 +1046,6 @@ export function searchByEmbedding(db: Database.Database, queryEmbedding: number[
     .slice(0, limit);
 
   return scored;
-}
-
-// ── Semantics → Facts migration ─────────────────────────────
-
-export function migrateSemanticsToFacts(db: Database.Database): { migrated: number; skipped: number } {
-  const existingFacts = (db.prepare('SELECT COUNT(*) as cnt FROM facts').get() as any).cnt;
-  if (existingFacts > 0) {
-    return { migrated: 0, skipped: existingFacts }; // already migrated
-  }
-
-  const semantics = db.prepare('SELECT * FROM semantics').all() as any[];
-  let migrated = 0;
-
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO facts (id, tier, fact_type, text, basis_count, basis_item_ids, confidence, entity_ids, project, valid_from, valid_until, superseded_by, embedding, created_at)
-    VALUES (?, 'pattern', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  for (const s of semantics) {
-    const itemIds = s.item_ids || s.episode_ids || '[]';
-    const basisCount = (() => {
-      try { return JSON.parse(itemIds).length || 1; } catch { return 1; }
-    })();
-
-    insert.run(
-      s.id,
-      s.fact_type,
-      s.fact,
-      basisCount,
-      itemIds,
-      s.confidence || 1.0,
-      s.contacts || '[]',
-      s.project,
-      s.valid_from,
-      s.valid_until,
-      s.superseded_by,
-      s.embedding,
-      s.created_at || new Date().toISOString()
-    );
-    migrated++;
-  }
-
-  return { migrated, skipped: 0 };
 }
 
 export function getStats(db: Database.Database) {
