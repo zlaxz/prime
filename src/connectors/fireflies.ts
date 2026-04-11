@@ -189,6 +189,7 @@ export async function scanFireflies(
         // Build FULL content for extraction — include transcript if available
         const sentences = meeting.sentences || [];
         let transcriptText = '';
+        let fullTranscript = '';
         if (sentences.length > 0) {
           let currentSpeaker = '';
           const parts: string[] = [];
@@ -199,7 +200,7 @@ export async function scanFireflies(
             }
             parts.push(s.text);
           }
-          const fullTranscript = parts.join('\n');
+          fullTranscript = parts.join('\n');
           transcriptText = fullTranscript.slice(0, 12000); // Truncated for LLM extraction only
         }
 
