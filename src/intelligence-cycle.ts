@@ -422,7 +422,9 @@ function detectAnomalies(db: Database.Database): string {
 
 // ── Phase 3: One Deep Claude Call ────────────────────────────
 
-const INTELLIGENCE_PROMPT = `You are a strategic intelligence analyst with COMPLETE visibility into all of Zach Stock's business operations. You have been given every signal the system has collected — project status, entity profiles, commitments, narrative threads, cross-project patterns, investigation results, communication anomalies, and contradictions.
+const correctionRulesForIntel = getCorrectionRules(db) || ;
+
+  const INTELLIGENCE_PROMPT = `You are a strategic intelligence analyst with COMPLETE visibility into all of Zach Stock's business operations. You have been given every signal the system has collected — project status, entity profiles, commitments, narrative threads, cross-project patterns, investigation results, communication anomalies, and contradictions.
 
 Your job is not to summarize. Your job is to REASON. Find what the data implies that it doesn't state. Generate knowledge that doesn't exist in any individual item.
 
@@ -499,6 +501,9 @@ GROUND RULES (read these FIRST):
 - Do NOT present generic industry knowledge as a discovery. If you learned it from a web search, it's background context, not breaking news.
 - Research findings are LOW CONFIDENCE unless verified against Zach's actual situation. Never build an 80%+ hypothesis on a Google search result.
 - Fewer, better outputs. 2 solid hypotheses > 5 speculative ones. 2 clear actions > 5 dramatic ones.
+
+ACTIVE LESSONS FROM PAST CYCLES (respect these — they override defaults):
+${correctionRulesForIntel}
 - Use CALM language. "Worth checking:" not "CRITICAL RISK." "Consider:" not "Act NOW."
 - Never lecture Zach's own contacts about things they obviously know (e.g., don't tell a Lloyd's broker about Lloyd's rules).
 
