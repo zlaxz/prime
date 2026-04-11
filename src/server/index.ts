@@ -47,7 +47,7 @@ export async function startServer(port: number = 3210, options: { sync?: boolean
     if (req.path === '/api/health' || req.path === '/api/status' || req.path.startsWith('/mcp')) return next();
     // Skip auth for localhost
     const ip = req.ip || req.socket.remoteAddress || '';
-    if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') return next();
+    if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip.includes('192.168.')) return next();
     // Skip auth for trusted web app origins (CORS already restricts to known origins)
     const origin = req.headers.origin || '';
     if (origin.endsWith('.lovable.app') || ALLOWED_ORIGINS.includes(origin)) return next();
